@@ -1,0 +1,75 @@
+"""Conservative and explainable risk aggregation."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+
+from fraude_detector.models import Finding, RiskAssessment
+
+FAMILY_CAPS: dict[str, float] = {
+    "annotations": 10.0,
+    "document_integrity": 20.0,
+    "metadata": 15.0,
+    "page_composition": 45.0,
+    "raster_forensics": 30.0,
+    "revision_history": 15.0,
+    "revision_visual": 60.0,
+}
+
+
+def assess_risk(findings: tuple[Finding, ...]) -> RiskAssessment:
+    """Aggregate independent signal families without claiming probability."""
+
+    by_family: dict[str, list[float]] = defaultdict(list)
+    for finding in findings:
+        if finding.risk_points > 0:
+            by_family[finding.category].append(finding.risk_points)
+
+    family_scores: list[float] = []
+    for family, values in by_family.items():
+        ordered = sorted(values, reverse=True)
+        raw_score = ordered[0] + 0.2 * sum(ordered[1:])
+        family_scores.append(min(FAMILY_CAPS.get(family, 20.0), raw_score))
+
+    family_scores.sort(reverse=True)
+    if not family_scores:
+        score = 0
+    else:
+        weighted = family_scores[0]
+        if len(family_scores) >= 2:
+            weighted += 0.35 * family_scores[1]
+        if len(family_scores) >= 3:
+            weighted += 0.15 * sum(family_scores[2:])
+        score = round(min(100.0, weighted))
+
+    if len(family_scores) < 2:
+        score = min(score, 69)
+
+    if score >= 70:
+        level = "high"
+        label = "indices forts de modification"
+        explanation = (
+            "Plusieurs familles de signaux independantes se corroborent. "
+            "Une revue humaine reste obligatoire avant toute conclusion de fraude."
+        )
+    elif score >= 30:
+        level = "review"
+        label = "revue manuelle necessaire"
+        explanation = (
+            "Au moins un signal technique merite un controle humain et un "
+            "rapprochement avec les donnees metier."
+        )
+    else:
+        level = "low"
+        label = "aucun signal fort detecte"
+        explanation = (
+            "Le pipeline n'a pas trouve de signal fort dans son perimetre. "
+            "Cela ne prouve ni l'authenticite ni l'absence de modification."
+        )
+
+    return RiskAssessment(
+        score=score,
+        level=level,
+        label=label,
+        explanation=explanation,
+    )
