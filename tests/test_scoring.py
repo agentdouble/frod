@@ -20,6 +20,13 @@ def test_one_family_never_reaches_high() -> None:
     assert assessment.level == "review"
 
 
+def test_repeated_regions_with_same_code_do_not_inflate_score() -> None:
+    single = assess_risk((finding("revision_visual", 55),))
+    fragmented = assess_risk(tuple(finding("revision_visual", 55) for _ in range(8)))
+
+    assert fragmented.score == single.score
+
+
 def test_independent_strong_families_can_reach_high() -> None:
     assessment = assess_risk(
         (

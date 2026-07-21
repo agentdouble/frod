@@ -22,6 +22,7 @@ class AnalysisConfig:
     ela_block_size: int = 64
     ela_robust_z_threshold: float = 3.5
     ela_max_image_dimension: int = 2400
+    ela_max_region_area_fraction: float = 0.25
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -36,3 +37,5 @@ class AnalysisConfig:
             raise ValueError("max_embedded_image_pixels must be at least 1")
         if not 1 <= self.ela_jpeg_quality <= 100:
             raise ValueError("ela_jpeg_quality must be between 1 and 100")
+        if not 0 < self.ela_max_region_area_fraction <= 1:
+            raise ValueError("ela_max_region_area_fraction must be between 0 and 1")

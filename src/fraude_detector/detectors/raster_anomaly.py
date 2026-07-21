@@ -39,6 +39,7 @@ class RasterAnomalyDetector:
         scan_images = 0
         jpeg_images = 0
         oversized_images = 0
+        non_local_regions = 0
 
         for page_index in range(context.analyzed_page_count):
             page = context.pdfium_document[page_index]
@@ -79,7 +80,13 @@ class RasterAnomalyDetector:
                         block_size=context.config.ela_block_size,
                         robust_z_threshold=context.config.ela_robust_z_threshold,
                     )
-                    if not analysis.regions:
+                    localized_regions = tuple(
+                        region
+                        for region in analysis.regions
+                        if region.area_fraction <= context.config.ela_max_region_area_fraction
+                    )
+                    non_local_regions += len(analysis.regions) - len(localized_regions)
+                    if not localized_regions:
                         continue
 
                     artifact_path = context.artifact_path(
@@ -90,7 +97,7 @@ class RasterAnomalyDetector:
                     relative_artifact = context.relative_artifact(artifact_path)
                     artifacts.append(relative_artifact)
 
-                    for region in analysis.regions[:5]:
+                    for region in localized_regions[:5]:
                         pdf_box = _map_image_region_to_page(
                             region.pixel_box,
                             image.size,
@@ -130,6 +137,7 @@ class RasterAnomalyDetector:
             f"Images de scan couvrant la page: {scan_images}.",
             f"JPEG originaux analyses par ELA: {jpeg_images}.",
             f"Images ignorees car trop grandes: {oversized_images}.",
+            f"Regions ELA trop etendues pour etre locales: {non_local_regions}.",
             "ELA n'est pas appliquee aux rendus de page ni aux images sans compression JPEG.",
         )
         return DetectorResult(

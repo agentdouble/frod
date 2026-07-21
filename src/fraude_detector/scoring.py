@@ -20,14 +20,18 @@ FAMILY_CAPS: dict[str, float] = {
 def assess_risk(findings: tuple[Finding, ...]) -> RiskAssessment:
     """Aggregate independent signal families without claiming probability."""
 
-    by_family: dict[str, list[float]] = defaultdict(list)
+    by_family: dict[str, dict[str, float]] = defaultdict(dict)
     for finding in findings:
         if finding.risk_points > 0:
-            by_family[finding.category].append(finding.risk_points)
+            code_scores = by_family[finding.category]
+            code_scores[finding.code] = max(
+                code_scores.get(finding.code, 0.0),
+                finding.risk_points,
+            )
 
     family_scores: list[float] = []
-    for family, values in by_family.items():
-        ordered = sorted(values, reverse=True)
+    for family, code_scores in by_family.items():
+        ordered = sorted(code_scores.values(), reverse=True)
         raw_score = ordered[0] + 0.2 * sum(ordered[1:])
         family_scores.append(min(FAMILY_CAPS.get(family, 20.0), raw_score))
 

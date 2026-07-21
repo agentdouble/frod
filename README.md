@@ -98,8 +98,27 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Les tests generent leurs PDF a la volee ; aucun document d'assurance ni donnee
-personnelle n'est versionne.
+Deux PDF d'assurance entierement synthetiques sont versionnes comme oracles
+d'integration :
+
+- `tests/fixtures/assurance-sans-fraude.pdf` : document intact attendu en `low` ;
+- `tests/fixtures/assurance-fraude.pdf` : meme document avec le montant remplace dans
+  une revision incrementale et un tampon image ajoute, attendu en `high` avec des
+  zones localisees.
+
+Ils ne contiennent aucune donnee personnelle reelle. Le mot `fraude` designe ici une
+alteration volontaire connue, pas une qualification juridique. Pour les regenerer :
+
+```bash
+uv run python tests/fixtures/generate_fixtures.py
+```
+
+Pour lancer manuellement les deux analyses :
+
+```bash
+uv run fraude-detect tests/fixtures/assurance-sans-fraude.pdf -o tmp/fixture-clean
+uv run fraude-detect tests/fixtures/assurance-fraude.pdf -o tmp/fixture-fraude
+```
 
 ## Limites connues
 
