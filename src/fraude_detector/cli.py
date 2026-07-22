@@ -8,20 +8,26 @@ import sys
 from pathlib import Path
 
 from fraude_detector import __version__
+from fraude_detector.ai_images import AiImageModelAdapter
+from fraude_detector.community_forensics import (
+    CommunityForensicsError,
+    create_community_forensics_adapter,
+)
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
+from fraude_detector.image_pipeline import ImageAnalysisPipeline
 from fraude_detector.pipeline import AnalysisPipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fraude-detect",
+        prog="frod",
         description=(
-            "Analyse un PDF d'assurance et produit des indices explicables de "
+            "Analyse un PDF ou une image et produit des indices explicables de "
             "modification avec artefacts visuels."
         ),
     )
-    parser.add_argument("input_pdf", type=Path, help="PDF a analyser")
+    parser.add_argument("input_file", type=Path, help="PDF ou image a analyser")
     parser.add_argument(
         "--output",
         "-o",
@@ -42,6 +48,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=25,
         help="Nombre maximal de pages analysees visuellement",
     )
+    parser.add_argument(
+        "--ai-model",
+        choices=("community-forensics",),
+        help="Modele passif optionnel a charger explicitement",
+    )
+    parser.add_argument(
+        "--ai-model-path",
+        type=Path,
+        help="Checkpoint local Community Forensics (.safetensors, .pt ou .pth)",
+    )
+    parser.add_argument(
+        "--ai-model-download",
+        action="store_true",
+        help="Autoriser explicitement le telechargement des poids officiels epingles",
+    )
+    parser.add_argument(
+        "--ai-model-variant",
+        choices=("224", "384"),
+        default="384",
+        help="Variante Community Forensics (defaut: 384)",
+    )
+    parser.add_argument(
+        "--ai-model-device",
+        choices=("cpu", "mps", "cuda"),
+        default="cpu",
+        help="Peripherique d'inference du modele passif (defaut: cpu)",
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -49,27 +82,86 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    output_dir = args.output or Path("output") / args.input_pdf.stem
+    output_dir = args.output or Path("output") / args.input_file.stem
     password = args.password or os.environ.get("FRAUDE_PDF_PASSWORD")
+    input_is_pdf = _is_pdf(args.input_file)
 
     try:
+        ai_adapters = _build_ai_adapters(args)
         config = AnalysisConfig(render_dpi=args.dpi, max_pages=args.max_pages)
-        report = AnalysisPipeline(config=config).analyze(
-            input_path=args.input_pdf,
-            output_dir=output_dir,
-            password=password,
-        )
-    except (AnalysisError, ValueError) as error:
-        code = error.code if isinstance(error, AnalysisError) else "invalid_option"
+        if input_is_pdf:
+            report = AnalysisPipeline(
+                config=config,
+                ai_image_adapters=ai_adapters,
+            ).analyze(
+                input_path=args.input_file,
+                output_dir=output_dir,
+                password=password,
+            )
+        else:
+            report = ImageAnalysisPipeline(
+                config=config,
+                ai_image_adapters=ai_adapters,
+            ).analyze(
+                input_path=args.input_file,
+                output_dir=output_dir,
+            )
+    except (AnalysisError, CommunityForensicsError, RuntimeError, ValueError) as error:
+        if isinstance(error, AnalysisError):
+            code = error.code
+        elif isinstance(error, CommunityForensicsError):
+            code = "ai_model_unavailable"
+        else:
+            code = "invalid_option"
         print(f"Erreur [{code}]: {error}", file=sys.stderr)
         return 1
 
+    print(f"Type d'entree: {'PDF' if input_is_pdf else 'image'}")
     print(f"Niveau: {report.assessment.level}")
     print(f"Score de revue: {report.assessment.score}/100")
     print(f"Verdict: {report.assessment.label}")
-    print(f"Signaux: {len(report.findings)}")
+    scored_findings = sum(finding.risk_points > 0 for finding in report.findings)
+    diagnostics = len(report.findings) - scored_findings
+    print(f"Signaux scores: {scored_findings}")
+    print(f"Diagnostics non scores: {diagnostics}")
+    if scored_findings:
+        print("Indices scores:")
+        for finding in report.findings:
+            if finding.risk_points > 0:
+                print(f"- {finding.code}: {finding.title} (+{finding.risk_points:g})")
     print(f"Rapport: {(output_dir / 'report.json').resolve()}")
     return 0
+
+
+def _is_pdf(input_path: Path) -> bool:
+    try:
+        with input_path.expanduser().open("rb") as input_file:
+            return b"%PDF-" in input_file.read(1024)
+    except OSError:
+        return input_path.suffix.casefold() == ".pdf"
+
+
+def _build_ai_adapters(args: argparse.Namespace) -> tuple[AiImageModelAdapter, ...]:
+    model_options_used = (
+        args.ai_model_path is not None
+        or args.ai_model_download
+        or args.ai_model_variant != "384"
+        or args.ai_model_device != "cpu"
+    )
+    if args.ai_model is None:
+        if model_options_used:
+            raise ValueError("Les options --ai-model-* exigent --ai-model")
+        return ()
+
+    if args.ai_model_path is not None and args.ai_model_download:
+        raise ValueError("Choisissez un checkpoint local ou --ai-model-download, pas les deux")
+    adapter = create_community_forensics_adapter(
+        weights_path=args.ai_model_path,
+        variant=args.ai_model_variant,
+        device=args.ai_model_device,
+        allow_hf_download=args.ai_model_download,
+    )
+    return (adapter,)
 
 
 if __name__ == "__main__":

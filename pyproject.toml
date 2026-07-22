@@ -5,15 +5,26 @@ description = "Pipeline explicable de detection d'indices de fraude dans des PDF
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "c2pa-python>=0.37,<0.38",
     "numpy>=2.0",
     "opencv-python-headless>=4.10",
     "pillow>=10.4",
     "pypdf>=6.0",
     "pypdfium2>=5.0,<6",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 fraude-detect = "fraude_detector.cli:main"
+frod = "fraude_detector.cli:main"
+
+[project.optional-dependencies]
+ai = [
+    "huggingface-hub>=0.30,<2",
+    "safetensors>=0.5,<1",
+    "timm==1.0.15",
+    "torch==2.7.1",
+]
 
 [dependency-groups]
 dev = [

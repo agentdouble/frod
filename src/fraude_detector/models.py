@@ -71,6 +71,17 @@ class DocumentInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageInfo:
+    filename: str
+    sha256: str
+    size_bytes: int
+    format: str
+    width: int
+    height: int
+    mode: str
+
+
+@dataclass(frozen=True, slots=True)
 class RiskAssessment:
     score: int
     level: RiskLevel
@@ -83,6 +94,21 @@ class AnalysisReport:
     schema_version: str
     analyzed_at: str
     document: DocumentInfo
+    assessment: RiskAssessment
+    detectors: tuple[DetectorResult, ...]
+    findings: tuple[Finding, ...]
+    artifacts: dict[str, tuple[str, ...]]
+    limitations: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageAnalysisReport:
+    schema_version: str
+    analyzed_at: str
+    image: ImageInfo
     assessment: RiskAssessment
     detectors: tuple[DetectorResult, ...]
     findings: tuple[Finding, ...]

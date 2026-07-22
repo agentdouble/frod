@@ -43,3 +43,23 @@ def test_no_signal_is_low_but_not_authenticity_claim() -> None:
     assessment = assess_risk(())
     assert assessment.level == "low"
     assert "authenticite" in assessment.explanation
+
+
+def test_synthetic_media_family_is_capped_and_cannot_reach_high_alone() -> None:
+    assessment = assess_risk(
+        (
+            finding("synthetic_media", 45),
+            Finding(
+                detector="test",
+                code="SECOND_AI_SIGNAL",
+                category="synthetic_media",
+                title="Test",
+                description="Another synthetic-media signal",
+                risk_points=45,
+                confidence=1,
+            ),
+        )
+    )
+
+    assert assessment.score == 45
+    assert assessment.level == "review"

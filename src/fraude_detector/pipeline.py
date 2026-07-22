@@ -13,8 +13,11 @@ from pathlib import Path
 import pypdfium2
 from pypdf import PdfReader
 
+from fraude_detector.ai_images import AiImageModelAdapter
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.detectors import (
+    AiGeneratedImageDetector,
+    ImageProvenanceDetector,
     PageCompositionDetector,
     PdfStructureDetector,
     RasterAnomalyDetector,
@@ -39,8 +42,10 @@ class AnalysisPipeline:
         self,
         config: AnalysisConfig | None = None,
         detectors: Iterable[Detector] | None = None,
+        ai_image_adapters: Iterable[AiImageModelAdapter] = (),
     ) -> None:
         self.config = config or AnalysisConfig()
+        adapters = tuple(ai_image_adapters)
         self.detectors = tuple(
             detectors
             or (
@@ -48,6 +53,8 @@ class AnalysisPipeline:
                 RevisionDiffDetector(),
                 PageCompositionDetector(),
                 RasterAnomalyDetector(),
+                ImageProvenanceDetector(),
+                AiGeneratedImageDetector(adapters),
             )
         )
 
@@ -93,7 +100,12 @@ class AnalysisPipeline:
                 for detector_result in detector_results
                 for finding in detector_result.findings
             )
-            review_overlays = create_review_overlays(context, rendered_pages, findings)
+            scored_findings = tuple(finding for finding in findings if finding.risk_points > 0)
+            review_overlays = create_review_overlays(
+                context,
+                rendered_pages,
+                scored_findings,
+            )
             forensics = tuple(
                 dict.fromkeys(
                     artifact
@@ -133,6 +145,14 @@ class AnalysisPipeline:
                     "peuvent expliquer legitimement un changement.",
                     "L'analyse ELA est un signal faible limite aux JPEG originaux "
                     "embarques et doit etre corroboree.",
+                    "L'absence de C2PA ou de metadonnees ne prouve pas une origine humaine; "
+                    "une declaration C2PA decrit l'origine, pas une intention frauduleuse.",
+                    "Les modeles passifs d'images IA sont sensibles au domaine, aux nouveaux "
+                    "generateurs et aux recompressions; seul un consensus stable est score.",
+                    "Le routage image du MVP est geometrique: une photo pleine page peut etre "
+                    "exclue et un document partiel peut rester candidat au modele passif.",
+                    "Les masques alpha PDF separes ne sont pas recomposes lors du decodage "
+                    "natif; certains pixels analyses peuvent differer du rendu visible.",
                     "L'absence de signal ne prouve pas l'authenticite du document.",
                 ),
             )

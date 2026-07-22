@@ -1,0 +1,2 @@
+# Chemin absolu, ou relatif a ce fichier, du PDF ou de l'image a analyser.
+input_path: "tests/fixtures/0ca1ba88-2a9c-49bc-abe2-604986b6b06a.png"

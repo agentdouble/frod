@@ -4,7 +4,31 @@ import json
 from pathlib import Path
 
 from fraude_detector.config import AnalysisConfig
+from fraude_detector.models import BoundingBox, DetectorResult, Finding
 from fraude_detector.pipeline import AnalysisPipeline
+
+
+class ZeroRiskDetector:
+    name = "zero_risk"
+
+    def analyze(self, context: object) -> DetectorResult:
+        return DetectorResult(
+            name=self.name,
+            status="completed",
+            findings=(
+                Finding(
+                    detector=self.name,
+                    code="DIAGNOSTIC_ONLY",
+                    category="analysis_quality",
+                    title="Diagnostic",
+                    description="Not a scored review signal",
+                    risk_points=0,
+                    confidence=1,
+                    page=1,
+                    bbox=BoundingBox(10, 10, 100, 100),
+                ),
+            ),
+        )
 
 
 def test_pipeline_writes_report_and_page_render(vector_pdf: Path, tmp_path: Path) -> None:
@@ -37,3 +61,20 @@ def test_scan_pdf_runs_image_detectors(scan_pdf: Path, tmp_path: Path) -> None:
     detector_by_name = {result.name: result for result in report.detectors}
     assert detector_by_name["page_composition"].status == "completed"
     assert detector_by_name["raster_anomaly"].status == "completed"
+    assert detector_by_name["image_provenance"].status in {"completed", "partial"}
+    assert detector_by_name["ai_generated_image"].status == "not_applicable"
+
+
+def test_zero_risk_diagnostic_does_not_create_review_overlay(
+    vector_pdf: Path,
+    tmp_path: Path,
+) -> None:
+    report = AnalysisPipeline(
+        config=AnalysisConfig(render_dpi=72),
+        detectors=(ZeroRiskDetector(),),
+    ).analyze(vector_pdf, tmp_path / "diagnostic-analysis")
+
+    assert len(report.findings) == 1
+    assert report.findings[0].risk_points == 0
+    assert report.assessment.score == 0
+    assert report.artifacts["review_overlays"] == ()
