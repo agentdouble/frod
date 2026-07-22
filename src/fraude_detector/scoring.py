@@ -12,8 +12,10 @@ FAMILY_CAPS: dict[str, float] = {
     "metadata": 15.0,
     "page_composition": 45.0,
     "raster_forensics": 30.0,
+    "provenance_integrity": 20.0,
     "revision_history": 15.0,
     "revision_visual": 60.0,
+    "synthetic_media": 45.0,
 }
 
 
