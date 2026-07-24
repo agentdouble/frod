@@ -10,54 +10,28 @@ controler.
 Prerequis : [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync
 ./start.sh
 ```
 
-`start.sh` analyse le PDF ou l'image indique dans `config.yaml`. Le chemin peut etre absolu ou
-relatif au dossier qui contient le fichier de configuration :
+Le script installe les dependances, telecharge et verifie le modele necessaire au
+premier demarrage, puis lance l'interface Streamlit. L'adresse locale a ouvrir est
+affichee dans le terminal.
 
-```yaml
-input_path: "tests/fixtures/assurance-fraude.pdf"
-```
+L'interface accepte les PDF et les images PNG, JPEG, WebP, TIFF, GIF ou BMP. Toutes
+les analyses applicables sont lancees avec le meme bouton.
 
-Les images PNG, JPEG, WebP, TIFF, GIF et BMP sont analysees directement, sans
-conversion en PDF, afin de conserver leurs metadonnees et leur provenance C2PA.
-
-La commande directe reste disponible pour choisir le PDF dans le terminal :
+La ligne de commande reste disponible pour produire directement un rapport et ses
+artefacts :
 
 ```bash
 uv run frod chemin/vers/document.pdf --output output/analyse
 ```
 
-`uv run fraude-detect ...` reste disponible comme nom long equivalent.
+La CLI utilise GAPL par defaut et produit le meme rapport que l'interface pour les
+memes options d'analyse. `--without-gapl` permet de le desactiver explicitement.
 
-Pour un PDF chiffre, preferer une variable d'environnement afin de ne pas laisser le
-mot de passe dans l'historique du shell :
-
-```bash
-FRAUDE_PDF_PASSWORD='mot-de-passe' uv run frod document.pdf
-```
-
-La commande retourne notamment :
-
-```text
-output/analyse/
-├── report.json
-├── pages/
-│   └── page-001.png
-├── review/
-│   └── page-001-review.png
-└── forensics/
-    ├── page-001-revision-diff.png
-    ├── page-001-image-01-ela.png
-    └── ai/
-        └── page-001-image-01-provenance.json
-```
-
-`review/` et `forensics/` ne contiennent des fichiers que lorsqu'une zone a ete
-localisee. Les rendus originaux des pages analysees sont toujours places dans
-`pages/`.
+Les modeles, fichiers importes et sorties d'analyse restent locaux et ne sont pas
+suivis par Git.
 
 ## Indices verifies dans le MVP
 
@@ -70,8 +44,8 @@ localisee. Les rendus originaux des pages analysees sont toujours places dans
 - provenance C2PA du PDF et des images natives, avec validation separee de la
   confiance accordee au certificat ;
 - noms explicites de generateurs IA dans les metadonnees EXIF/XMP ;
-- analyse passive optionnelle des photos embarquees, avec controle de stabilite
-  apres JPEG 95, JPEG 75 et redimensionnement.
+- analyse passive GAPL des images et des photos embarquees eligibles, avec
+  aggregation multi-fenetre et controle de stabilite.
 
 L'absence de C2PA, d'EXIF ou de XMP n'ajoute aucun point. Une declaration C2PA
 d'origine algorithmique indique comment un media a ete produit; elle ne dit pas si
@@ -80,38 +54,19 @@ ne charge ni manifeste distant ni reponse OCSP depuis un document non fiable.
 
 ## Images generees par IA
 
-Le chemin par defaut analyse la provenance et les metadonnees, sans telecharger de
-modele. Les images sont d'abord routees par role :
+Frod combine la provenance C2PA, les metadonnees EXIF/XMP et le modele local GAPL.
+Pour une image autonome, GAPL analyse plusieurs fenetres completes de 224 x 224
+pixels, sans inventer de pixels aux bords. Pour un PDF, seules les photographies
+embarquees et eligibles sont transmises au modele.
 
-- `document` : image couvrant la majorite d'une page, presumee scan et exclue des
-  modeles passifs par prudence ;
-- `decorative` : logo, icone ou petit tampon, exclu ;
-- `photo` : seule categorie eligible a l'analyse passive ;
-- `unknown` : dimensions insuffisantes, donc abstention.
+Les scores des fenetres sont agreges en un indice global robuste aux modifications
+locales. Cet indice commence a ajouter quelques points au-dessus de 50 % et ajoute
+30 points Frod a partir de 90 %, ce qui declenche une revue manuelle. Il s'agit d'un
+indice statistique appris, pas d'une probabilite de fraude ni d'une preuve qu'une
+image a ete generee par IA.
 
-L'adaptateur Community Forensics est optionnel. Ses dependances lourdes ne sont pas
-installees par defaut et ses poids ne sont jamais telecharges implicitement :
-
-```bash
-uv sync --extra ai
-
-# Avec un checkpoint deja present
-uv run frod document.pdf \
-  --ai-model community-forensics \
-  --ai-model-path /chemin/model.safetensors
-
-# Ou avec telechargement explicite des poids officiels epingles
-uv run frod document.pdf \
-  --ai-model community-forensics \
-  --ai-model-download
-```
-
-Un seul modele peut produire `AI_PIXEL_TRACE_SINGLE_MODEL`, diagnostic a zero point.
-Un signal score `AI_PIXEL_TRACE_CONSENSUS` exige au moins deux familles de methodes
-distinctes, toutes deux elevees et stables. Les adapters supplementaires s'injectent
-via `AnalysisPipeline(ai_image_adapters=...)`; le modele n'est donc jamais couple au
-coeur du pipeline. Les diagnostics a zero point restent dans `report.json`, mais ne
-sont ni comptes comme signaux scores ni dessines comme zones a controler.
+La cartographie des fenetres et les controles de stabilite restent accessibles dans
+le dossier technique de l'interface.
 
 Le champ s'appelle `incremental_updates_detected`, jamais `save_count` : une
 reecriture complete peut supprimer tout l'historique precedent. Une signature, un
@@ -138,6 +93,8 @@ src/fraude_detector/
 ├── image_provenance.py    # EXIF, XMP et C2PA
 ├── ai_images.py           # contrat des modeles et test de stabilite
 ├── community_forensics.py # adaptateur optionnel, chargement explicite
+├── gapl.py                 # adaptateur GAPL local
+├── gapl_windows.py         # grille, indice global et contribution au score
 ├── pdf_revisions.py       # validation des revisions conservees
 ├── scoring.py             # aggregation prudente
 ├── rendering.py           # rendus et overlays de revue
@@ -170,10 +127,12 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-Deux PDF d'assurance entierement synthetiques sont versionnes comme oracles
+Trois PDF d'assurance entierement synthetiques sont versionnes comme oracles
 d'integration :
 
 - `tests/fixtures/assurance-sans-fraude.pdf` : document intact attendu en `low` ;
+- `tests/fixtures/assurance-ajout-legitime.pdf` : meme document avec un tampon de
+  reception ajoute sans masquer le contenu ;
 - `tests/fixtures/assurance-fraude.pdf` : meme document avec le montant remplace dans
   une revision incrementale et un tampon image ajoute, attendu en `high` avec des
   zones localisees.
@@ -185,11 +144,12 @@ alteration volontaire connue, pas une qualification juridique. Pour les regenere
 uv run python tests/fixtures/generate_fixtures.py
 ```
 
-Pour lancer manuellement les deux analyses :
+Pour lancer manuellement les analyses :
 
 ```bash
-uv run frod tests/fixtures/assurance-sans-fraude.pdf -o tmp/fixture-clean
-uv run frod tests/fixtures/assurance-fraude.pdf -o tmp/fixture-fraude
+uv run frod tests/fixtures/assurance-sans-fraude.pdf -o output/fixture-clean
+uv run frod tests/fixtures/assurance-ajout-legitime.pdf -o output/fixture-legitimate
+uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 ```
 
 ## Limites connues

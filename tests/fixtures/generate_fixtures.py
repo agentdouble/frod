@@ -18,8 +18,8 @@ IMAGE_HEIGHT = 1697
 AMOUNT_REGION = (96, 600, 900, 700)
 
 
-def generate_fixtures(output_dir: Path) -> tuple[Path, Path]:
-    """Create the intact PDF and its intentionally altered incremental revision."""
+def generate_fixtures(output_dir: Path) -> tuple[Path, Path, Path]:
+    """Create intact, altered and legitimate-update insurance fixtures."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     repo_root = Path(__file__).resolve().parents[2]
@@ -28,6 +28,7 @@ def generate_fixtures(output_dir: Path) -> tuple[Path, Path]:
 
     clean_path = output_dir / "assurance-sans-fraude.pdf"
     fraud_path = output_dir / "assurance-fraude.pdf"
+    legitimate_path = output_dir / "assurance-ajout-legitime.pdf"
 
     with tempfile.TemporaryDirectory(prefix="fixture-generation-", dir=temporary_root) as directory:
         work_dir = Path(directory)
@@ -35,6 +36,8 @@ def generate_fixtures(output_dir: Path) -> tuple[Path, Path]:
         initial_pdf = work_dir / "assurance-initial.pdf"
         overlay_pdf = work_dir / "montant-modifie-overlay.pdf"
         stamp_path = work_dir / "tampon-ajoute.png"
+        legitimate_overlay_pdf = work_dir / "reception-overlay.pdf"
+        legitimate_stamp_path = work_dir / "tampon-reception.png"
 
         _create_scan(scan_path)
         _embed_scan(scan_path, initial_pdf)
@@ -42,8 +45,15 @@ def generate_fixtures(output_dir: Path) -> tuple[Path, Path]:
         _create_stamp(stamp_path)
         _create_modified_amount_overlay(overlay_pdf, stamp_path)
         _write_incremental_fraud_pdf(clean_path, overlay_pdf, fraud_path)
+        _create_legitimate_stamp(legitimate_stamp_path)
+        _create_legitimate_overlay(legitimate_overlay_pdf, legitimate_stamp_path)
+        _write_incremental_legitimate_pdf(
+            clean_path,
+            legitimate_overlay_pdf,
+            legitimate_path,
+        )
 
-    return clean_path, fraud_path
+    return clean_path, fraud_path, legitimate_path
 
 
 def _create_scan(path: Path) -> None:
@@ -161,6 +171,23 @@ def _create_stamp(output_path: Path) -> None:
     stamp.save(output_path, format="PNG")
 
 
+def _create_legitimate_stamp(output_path: Path) -> None:
+    stamp = Image.new("RGBA", (420, 170), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(stamp)
+    title_font = ImageFont.load_default(size=42)
+    detail_font = ImageFont.load_default(size=24)
+    draw.rounded_rectangle(
+        (8, 8, 412, 162),
+        radius=22,
+        fill=(255, 255, 255, 220),
+        outline="#0369A1",
+        width=10,
+    )
+    draw.text((102, 38), "RECU", font=title_font, fill="#0369A1")
+    draw.text((67, 96), "23/07/2026 - Service sinistres", font=detail_font, fill="#075985")
+    stamp.save(output_path, format="PNG")
+
+
 def _create_modified_amount_overlay(output_path: Path, stamp_path: Path) -> None:
     page_width, page_height = A4
     x0, y0, x1, y1 = AMOUNT_REGION
@@ -200,6 +227,25 @@ def _create_modified_amount_overlay(output_path: Path, stamp_path: Path) -> None
     pdf.save()
 
 
+def _create_legitimate_overlay(output_path: Path, stamp_path: Path) -> None:
+    pdf = canvas.Canvas(
+        str(output_path),
+        pagesize=A4,
+        invariant=1,
+        pageCompression=1,
+    )
+    pdf.drawImage(
+        str(stamp_path),
+        380,
+        55,
+        width=160,
+        height=65,
+        mask="auto",
+    )
+    pdf.showPage()
+    pdf.save()
+
+
 def _write_incremental_fraud_pdf(
     clean_path: Path,
     overlay_path: Path,
@@ -212,6 +258,23 @@ def _write_incremental_fraud_pdf(
         {
             "/ModDate": "D:20260721123000+02'00'",
             "/FixtureMutation": "Montant remplace de 1 250 EUR par 9 500 EUR",
+        }
+    )
+    writer.write(output_path)
+
+
+def _write_incremental_legitimate_pdf(
+    clean_path: Path,
+    overlay_path: Path,
+    output_path: Path,
+) -> None:
+    writer = PdfWriter(clean_path, incremental=True)
+    overlay = PdfReader(overlay_path)
+    writer.pages[0].merge_page(overlay.pages[0])
+    writer.add_metadata(
+        {
+            "/ModDate": "D:20260723100000+02'00'",
+            "/FixtureMutation": "Tampon de reception ajoute sans masquer le contenu",
         }
     )
     writer.write(output_path)
@@ -230,9 +293,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    clean_path, fraud_path = generate_fixtures(args.output_dir.resolve())
-    print(f"{clean_path}: {_sha256(clean_path)}")
-    print(f"{fraud_path}: {_sha256(fraud_path)}")
+    paths = generate_fixtures(args.output_dir.resolve())
+    for path in paths:
+        print(f"{path}: {_sha256(path)}")
     return 0
 
 

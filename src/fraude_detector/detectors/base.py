@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -23,6 +24,7 @@ class AnalysisContext:
     config: AnalysisConfig
     revision_end_offsets: tuple[int, ...] = ()
     password: str | None = None
+    progress_callback: Callable[[float, str], None] | None = None
 
     @property
     def analyzed_page_count(self) -> int:
@@ -35,6 +37,10 @@ class AnalysisContext:
 
     def relative_artifact(self, path: Path) -> str:
         return path.relative_to(self.output_dir).as_posix()
+
+    def report_progress(self, value: float, label: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(min(1.0, max(0.0, value)), label)
 
 
 class Detector(Protocol):

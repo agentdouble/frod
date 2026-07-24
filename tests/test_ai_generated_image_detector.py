@@ -118,6 +118,22 @@ def test_one_high_model_is_only_a_zero_risk_diagnostic(tmp_path: Path) -> None:
     assert finding.evidence["score"] == 0.95
 
 
+def test_gapl_global_index_scores_an_eligible_pdf_photo(tmp_path: Path) -> None:
+    context = _context(tmp_path, coverage=0.25)
+    adapter = ConstantAdapter("gapl_cvpr2026", "clip_prototype", 0.95)
+    try:
+        result = AiGeneratedImageDetector((adapter,)).analyze(context)
+    finally:
+        context.pdfium_document.close()
+
+    finding = next(item for item in result.findings if item.code == "AI_GAPL_GLOBAL_TRACE")
+    assert finding.risk_points == 30
+    assert round(float(finding.evidence["global_index"]), 2) == 0.96
+    assert len(finding.artifacts) == 2
+    assert all((context.output_dir / path).is_file() for path in finding.artifacts)
+    assert result.status == "completed"
+
+
 def test_unstable_model_adds_zero_risk_quality_finding(tmp_path: Path) -> None:
     context = _context(tmp_path, coverage=0.25)
     adapters = (
