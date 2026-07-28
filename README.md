@@ -13,7 +13,7 @@ Prerequis : [`uv`](https://docs.astral.sh/uv/).
 ./start.sh
 ```
 
-Le script installe les dependances, telecharge et verifie le modele necessaire au
+Le script installe les dependances, telecharge et verifie les modeles necessaires au
 premier demarrage, puis lance l'interface Streamlit. L'adresse locale a ouvrir est
 affichee dans le terminal.
 
@@ -46,6 +46,8 @@ suivis par Git.
 - noms explicites de generateurs IA dans les metadonnees EXIF/XMP ;
 - analyse passive GAPL des images et des photos embarquees eligibles, avec
   aggregation multi-fenetre et controle de stabilite.
+- localisation experimentale de retouches sur les images autonomes avec TruFor,
+  sans contribution au score Frod.
 
 L'absence de C2PA, d'EXIF ou de XMP n'ajoute aucun point. Une declaration C2PA
 d'origine algorithmique indique comment un media a ete produit; elle ne dit pas si
@@ -67,6 +69,19 @@ image a ete generee par IA.
 
 La cartographie des fenetres et les controles de stabilite restent accessibles dans
 le dossier technique de l'interface.
+
+## Retouches locales
+
+Le laboratoire des images autonomes execute TruFor apres l'analyse Frod. Le modele
+compare les informations visuelles avec une empreinte de bruit Noiseprint++ et
+produit un indice global, une carte d'anomalie et une carte de fiabilite. Frod
+affiche une carte dans laquelle les anomalies sont ponderees par cette fiabilite.
+
+Ce controle vise les retouches locales et les montages. Il est complementaire a
+GAPL, qui recherche des caracteristiques apprises sur les images generees par IA.
+TruFor n'est jamais execute sur un PDF, ne modifie aucun `Finding` et n'ajoute aucun
+point au score. Ses seuils restent experimentaux tant qu'ils ne sont pas calibres
+sur un corpus representatif de documents d'assurance.
 
 Le champ s'appelle `incremental_updates_detected`, jamais `save_count` : une
 reecriture complete peut supprimer tout l'historique precedent. Une signature, un
@@ -95,6 +110,8 @@ src/fraude_detector/
 ├── community_forensics.py # adaptateur optionnel, chargement explicite
 ├── gapl.py                 # adaptateur GAPL local
 ├── gapl_windows.py         # grille, indice global et contribution au score
+├── trufor.py               # execution isolee et artefacts TruFor
+├── trufor_worker.py        # worker court pour liberer la memoire du modele
 ├── pdf_revisions.py       # validation des revisions conservees
 ├── scoring.py             # aggregation prudente
 ├── rendering.py           # rendus et overlays de revue
@@ -159,6 +176,10 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 - les images PNG ou sans compression JPEG ne sont pas analysees par ELA ;
 - les detecteurs passifs d'images IA se degradent sur scans, texte dense,
   recompressions et generateurs absents de leur corpus d'entrainement ;
+- TruFor est non calibre sur les documents d'assurance et peut manquer une retouche
+  IA recente, une petite zone ou une image fortement recomprimee ;
+- la licence amont de TruFor limite son utilisation aux finalites informatives et
+  non lucratives ;
 - le routage actuel est geometrique, sans OCR ni classifieur de contenu : il peut
   exclure une vraie photo pleine page ou accepter une facture partielle comme photo ;
 - les masques alpha PDF separes ne sont pas recomposes dans le decodage natif ;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -23,14 +24,25 @@ from fraude_detector.gapl import (
     create_gapl_adapter,
 )
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
-from fraude_detector.models import AnalysisReport, Finding, ImageAnalysisReport
+from fraude_detector.laboratory import analyze_image_laboratory, analyze_pdf_laboratory
+from fraude_detector.models import (
+    AnalysisReport,
+    Finding,
+    ImageAnalysisReport,
+    LaboratoryCheck,
+    LaboratoryObservation,
+    LaboratoryReport,
+)
 from fraude_detector.pipeline import AnalysisPipeline
+from fraude_detector.trufor import TRUFOR_DEFAULT_CHECKPOINT, TRUFOR_MAX_PIXELS
 
 WORK_DIR = Path(os.environ.get("FROD_WORK_DIR", ".frod"))
 UPLOAD_DIR = WORK_DIR / "uploads"
 RUN_DIR = WORK_DIR / "runs"
 GAPL_WEIGHTS = Path(os.environ.get("FROD_GAPL_WEIGHTS", str(GAPL_DEFAULT_CHECKPOINT)))
-ANALYSIS_POLICY_VERSION = "gapl-p25-90-v2"
+TRUFOR_WEIGHTS = Path(os.environ.get("FROD_TRUFOR_WEIGHTS", str(TRUFOR_DEFAULT_CHECKPOINT)))
+TRUFOR_PIXEL_BUDGET = int(os.environ.get("FROD_TRUFOR_MAX_PIXELS", str(TRUFOR_MAX_PIXELS)))
+ANALYSIS_POLICY_VERSION = "gapl-p25-90-v2-trufor-lab-v1"
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
@@ -147,7 +159,7 @@ def main() -> None:
             progress = st.empty()
             _render_analysis_progress(progress, 0.0, "Preparation de l'analyse")
             try:
-                report, output_dir, input_type = _run_analysis(
+                report, laboratory, output_dir, input_type = _run_analysis(
                     file_name=uploaded_file.name,
                     file_bytes=file_bytes,
                     file_hash=file_hash,
@@ -171,11 +183,13 @@ def main() -> None:
         st.session_state["analysis"] = {
             "key": current_key,
             "report": report,
+            "laboratory": laboratory,
             "output_dir": output_dir,
             "input_type": input_type,
         }
     elif cached is not None and cached.get("key") == current_key:
         report = cached["report"]
+        laboratory = cached.get("laboratory")
         output_dir = cached["output_dir"]
         input_type = cached["input_type"]
     else:
@@ -185,7 +199,7 @@ def main() -> None:
         return
 
     with results:
-        _render_report(report, output_dir, input_type)
+        _render_report(report, laboratory, output_dir, input_type)
 
 
 def _render_input_panel() -> InputDocument | None:
@@ -236,6 +250,7 @@ def _run_analysis(
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> tuple[
     AnalysisReport | ImageAnalysisReport,
+    LaboratoryReport | None,
     Path,
     str,
 ]:
@@ -256,18 +271,20 @@ def _run_analysis(
         shutil.rmtree(output_dir)
 
     adapters = ()
+    gapl_adapter = None
     if GAPL_WEIGHTS.is_file():
         report_progress(0.06, "Chargement du modele GAPL")
-        adapter = _load_gapl_adapter(
+        gapl_adapter = _load_gapl_adapter(
             str(GAPL_WEIGHTS.resolve()),
             best_available_device(),
         )
-        adapters = (adapter,)
-
-    def pipeline_progress(value: float, text: str) -> None:
-        report_progress(0.12 + 0.88 * value, text)
+        adapters = (gapl_adapter,)
 
     if _is_pdf_bytes(file_bytes):
+
+        def pipeline_progress(value: float, text: str) -> None:
+            report_progress(0.12 + 0.62 * value, text)
+
         report = AnalysisPipeline(
             config=config,
             ai_image_adapters=adapters,
@@ -276,7 +293,20 @@ def _run_analysis(
             output_dir,
             progress_callback=pipeline_progress,
         )
-        return report, output_dir, "PDF"
+
+        laboratory = analyze_pdf_laboratory(
+            source,
+            output_dir,
+            config=config,
+            progress_callback=lambda value, text: report_progress(
+                0.74 + 0.26 * value,
+                text,
+            ),
+        )
+        return report, laboratory, output_dir, "PDF"
+
+    def pipeline_progress(value: float, text: str) -> None:
+        report_progress(0.12 + 0.60 * value, text)
 
     report = ImageAnalysisPipeline(
         config=config,
@@ -286,7 +316,18 @@ def _run_analysis(
         output_dir,
         progress_callback=pipeline_progress,
     )
-    return report, output_dir, "Image"
+    _release_transient_memory()
+    laboratory = analyze_image_laboratory(
+        source,
+        output_dir,
+        trufor_weights=TRUFOR_WEIGHTS,
+        trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
+        progress_callback=lambda value, text: report_progress(
+            0.72 + 0.28 * value,
+            text,
+        ),
+    )
+    return report, laboratory, output_dir, "Image"
 
 
 def _render_empty_state() -> None:
@@ -315,6 +356,7 @@ def _render_ready_state(filename: str) -> None:
 
 def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
+    laboratory: LaboratoryReport | None,
     output_dir: Path,
     input_type: str,
 ) -> None:
@@ -331,7 +373,139 @@ def _render_report(
     _render_category_strips(scored)
     _render_findings(scored, diagnostics)
     _render_visual_artifacts(report, output_dir)
+    _render_laboratory(laboratory, output_dir)
     _render_json(report, output_dir)
+
+
+LAB_STATE_LABELS = {
+    "clear": "Conforme",
+    "attention": "A examiner",
+    "detected": "Element detecte",
+    "indeterminate": "Indetermine",
+    "not_applicable": "Non applicable",
+    "error": "Controle interrompu",
+}
+
+LAB_STRENGTH_LABELS = {
+    "strong": "Indice fort",
+    "moderate": "Indice modere",
+    "weak": "Indice faible",
+    "informational": "Information",
+}
+
+
+def _render_laboratory(
+    laboratory: LaboratoryReport | None,
+    output_dir: Path,
+) -> None:
+    if laboratory is None:
+        return
+
+    st.markdown('<h2 class="section-title">Laboratoire</h2>', unsafe_allow_html=True)
+    if not st.toggle("Afficher les controles experimentaux", value=False):
+        return
+
+    st.markdown(
+        """
+        <div class="lab-intro">
+          Ces controles sont experimentaux et ne modifient pas le score Frod.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    for check in laboratory.checks:
+        _render_laboratory_check(check, output_dir)
+
+
+def _render_laboratory_check(check: LaboratoryCheck, output_dir: Path) -> None:
+    state_label = LAB_STATE_LABELS[check.state]
+    st.markdown(
+        f"""
+        <section class="lab-check {check.state}">
+          <div class="lab-check-head">
+            <h3>{_html(check.title)}</h3>
+            <span>{_html(state_label)}</span>
+          </div>
+          <p class="lab-purpose">{_html(check.purpose)}</p>
+          <strong class="lab-summary">{_html(check.summary)}</strong>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    for observation in check.observations:
+        _render_laboratory_observation(observation, output_dir)
+
+    if check.limitations:
+        with st.popover(f"Limites - {check.title}"):
+            for limitation in check.limitations:
+                st.markdown(f"- {limitation}")
+
+
+def _render_laboratory_observation(
+    observation: LaboratoryObservation,
+    output_dir: Path,
+) -> None:
+    strength = LAB_STRENGTH_LABELS[observation.strength]
+    location = f"Page {observation.page}" if observation.page is not None else "Document"
+    st.markdown(
+        f"""
+        <article class="lab-observation {observation.state}">
+          <div class="lab-observation-head">
+            <div>
+              <span class="lab-strength {observation.strength}">{_html(strength)}</span>
+              <span class="lab-location">{_html(location)}</span>
+            </div>
+            <strong>{_html(observation.title)}</strong>
+          </div>
+          <p>{_html(observation.summary)}</p>
+          <small>{_html(observation.explanation)}</small>
+        </article>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    details = bool(observation.evidence)
+    artifacts = _existing_artifacts(
+        output_dir / "laboratory",
+        observation.artifacts,
+    )
+    visible_artifacts = []
+    detail_artifacts = artifacts
+    if observation.code == "TRUFOR_LOCAL_MANIPULATION":
+        visible_artifacts = [
+            path
+            for path in artifacts
+            if path.name
+            in {
+                "trufor-localization-map.png",
+                "trufor-reliable-map.png",
+            }
+        ]
+        detail_artifacts = [path for path in artifacts if path not in visible_artifacts]
+
+    if visible_artifacts:
+        columns = st.columns(len(visible_artifacts))
+        for index, path in enumerate(visible_artifacts):
+            with columns[index]:
+                st.image(
+                    str(path),
+                    caption=_laboratory_artifact_caption(path),
+                    width="stretch",
+                )
+
+    if details or detail_artifacts:
+        with st.popover(f"Details - {observation.title}"):
+            if details:
+                st.json(_json_safe(observation.evidence), expanded=False)
+            for path in detail_artifacts:
+                if path.suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                    continue
+                st.image(
+                    str(path),
+                    caption=_laboratory_artifact_caption(path),
+                    width="stretch",
+                )
 
 
 def _render_analysis_progress(target: Any, value: float, label: str) -> None:
@@ -667,6 +841,18 @@ def _safe_filename(name: str) -> str:
     return clean or "uploaded-file"
 
 
+def _release_transient_memory() -> None:
+    gc.collect()
+    try:
+        import ctypes
+
+        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if malloc_trim is not None:
+            malloc_trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
 def _friendly_artifact_caption(path: Path) -> str:
     name = path.name
     if "revision-diff" in name:
@@ -678,6 +864,18 @@ def _friendly_artifact_caption(path: Path) -> str:
     if "analysis" in name:
         return "Analyse image avancee"
     return "Artefact d'analyse"
+
+
+def _laboratory_artifact_caption(path: Path) -> str:
+    if "trufor-localization" in path.name:
+        return "Carte de localisation TruFor"
+    if "trufor-reliable" in path.name:
+        return "Carte ponderee par la fiabilite"
+    if "trufor-confidence" in path.name:
+        return "Fiabilite locale - noir faible, blanc fort"
+    if "revision" in path.name:
+        return "Difference entre revisions"
+    return "Resultat experimental"
 
 
 def _json_safe(value: Any) -> Any:
@@ -1064,6 +1262,100 @@ def _inject_styles() -> None:
           background: #2dd4bf;
           transition: width .18s ease;
         }
+        .lab-intro {
+          color: #d0c8bd;
+          border-left: 4px solid #38bdf8;
+          background: #132635;
+          padding: .75rem 1rem;
+          margin-bottom: 1rem;
+        }
+        .lab-check {
+          border: 1px solid var(--line);
+          border-left: 7px solid #64748b;
+          border-radius: 8px;
+          background: var(--panel);
+          padding: 1rem;
+          margin-top: 1.15rem;
+        }
+        .lab-check.clear { border-left-color: #10b981; }
+        .lab-check.attention { border-left-color: #fb7185; background: #2d171c; }
+        .lab-check.detected { border-left-color: #38bdf8; background: #132635; }
+        .lab-check.indeterminate { border-left-color: #fbbf24; background: #2b2110; }
+        .lab-check.error { border-left-color: #a78bfa; background: #211a34; }
+        .lab-check-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 1rem;
+        }
+        .lab-check-head h3 {
+          margin: 0;
+          font-size: 1.14rem;
+        }
+        .lab-check-head span {
+          border: 1px solid #5d5662;
+          border-radius: 999px;
+          padding: .2rem .55rem;
+          color: #f4ede4;
+          font-size: .74rem;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+        .lab-purpose {
+          color: var(--muted);
+          margin: .55rem 0 .7rem;
+          font-size: .87rem;
+        }
+        .lab-summary {
+          display: block;
+          color: #f7f2ea;
+        }
+        .lab-observation {
+          border: 1px solid #423d46;
+          border-left: 4px solid #64748b;
+          background: #1d1c22;
+          padding: .85rem 1rem;
+          margin: .5rem 0 0 1rem;
+        }
+        .lab-observation.clear { border-left-color: #10b981; }
+        .lab-observation.attention { border-left-color: #fb7185; }
+        .lab-observation.detected { border-left-color: #38bdf8; }
+        .lab-observation.indeterminate { border-left-color: #fbbf24; }
+        .lab-observation-head {
+          display: grid;
+          grid-template-columns: minmax(170px, .34fr) 1fr;
+          gap: .8rem;
+          align-items: center;
+        }
+        .lab-observation-head > div {
+          display: flex;
+          gap: .45rem;
+          flex-wrap: wrap;
+        }
+        .lab-strength,
+        .lab-location {
+          border-radius: 999px;
+          padding: .18rem .5rem;
+          font-size: .7rem;
+          font-weight: 800;
+        }
+        .lab-strength.strong { background: #5b1320; color: #fecdd3; }
+        .lab-strength.moderate { background: #4a3108; color: #fde68a; }
+        .lab-strength.weak { background: #193247; color: #bae6fd; }
+        .lab-strength.informational { background: #303038; color: #d6d3d1; }
+        .lab-location {
+          border: 1px solid #554d58;
+          color: #d6d3d1;
+        }
+        .lab-observation p {
+          margin: .6rem 0 .3rem;
+          color: #f0e9df;
+        }
+        .lab-observation small {
+          display: block;
+          color: var(--muted);
+          line-height: 1.45;
+        }
         @media (max-width: 980px) {
           .topbar,
           .score-hero,
@@ -1079,6 +1371,12 @@ def _inject_styles() -> None:
           }
           .score-meta {
             grid-template-columns: 1fr 1fr;
+          }
+          .lab-observation {
+            margin-left: 0;
+          }
+          .lab-observation-head {
+            grid-template-columns: 1fr;
           }
         }
         </style>
