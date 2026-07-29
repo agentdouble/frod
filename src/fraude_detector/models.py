@@ -7,6 +7,15 @@ from typing import Any, Literal
 
 DetectorStatus = Literal["completed", "not_applicable", "partial"]
 RiskLevel = Literal["low", "review", "high"]
+LaboratoryState = Literal[
+    "clear",
+    "attention",
+    "detected",
+    "indeterminate",
+    "not_applicable",
+    "error",
+]
+EvidenceStrength = Literal["strong", "moderate", "weak", "informational"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +123,45 @@ class ImageAnalysisReport:
     findings: tuple[Finding, ...]
     artifacts: dict[str, tuple[str, ...]]
     limitations: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class LaboratoryObservation:
+    """One non-scoring observation emitted by an experimental PDF control."""
+
+    code: str
+    title: str
+    summary: str
+    state: LaboratoryState
+    strength: EvidenceStrength
+    explanation: str
+    page: int | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)
+    artifacts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LaboratoryCheck:
+    """User-facing summary for one experimental control."""
+
+    code: str
+    title: str
+    purpose: str
+    state: LaboratoryState
+    summary: str
+    observations: tuple[LaboratoryObservation, ...] = ()
+    limitations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LaboratoryReport:
+    """Experimental results kept separate from the production risk report."""
+
+    schema_version: str
+    checks: tuple[LaboratoryCheck, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

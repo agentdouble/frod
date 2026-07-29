@@ -6,7 +6,8 @@ import hashlib
 import io
 import json
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -63,11 +64,18 @@ class AnalysisPipeline:
         input_path: str | Path,
         output_dir: str | Path,
         password: str | None = None,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> AnalysisReport:
+        def report_progress(value: float, label: str) -> None:
+            if progress_callback is not None:
+                progress_callback(min(1.0, max(0.0, value)), label)
+
+        report_progress(0.02, "Lecture du document")
         source = Path(input_path).expanduser().resolve()
         destination = Path(output_dir).expanduser().resolve()
         raw_pdf = self._read_input(source)
 
+        report_progress(0.06, "Validation du PDF")
         reader = self._open_reader(raw_pdf, password)
         pdfium_document = self._open_pdfium(raw_pdf, password)
         try:
@@ -79,6 +87,7 @@ class AnalysisPipeline:
                 raise AnalysisError("empty_pdf", "Le PDF ne contient aucune page.")
 
             destination.mkdir(parents=True, exist_ok=True)
+            report_progress(0.10, "Preparation des pages")
             revision_offsets = find_valid_revision_end_offsets(raw_pdf, password)
             context = AnalysisContext(
                 input_path=source,
@@ -92,9 +101,22 @@ class AnalysisPipeline:
             )
 
             rendered_pages = render_input_pages(context)
-            detector_results = tuple(
-                self._run_detector(detector, context) for detector in self.detectors
-            )
+            report_progress(0.20, "Pages preparees")
+            detector_results_list: list[DetectorResult] = []
+            detector_count = max(1, len(self.detectors))
+            for index, detector in enumerate(self.detectors):
+                start = 0.20 + 0.65 * index / detector_count
+                width = 0.65 / detector_count
+                detector_context = replace(
+                    context,
+                    progress_callback=lambda value, label, start=start, width=width: (
+                        report_progress(start + width * value, label)
+                    ),
+                )
+                report_progress(start, f"Analyse : {detector.name}")
+                detector_results_list.append(self._run_detector(detector, detector_context))
+            detector_results = tuple(detector_results_list)
+            report_progress(0.86, "Calcul du score")
             findings = tuple(
                 finding
                 for detector_result in detector_results
@@ -106,6 +128,7 @@ class AnalysisPipeline:
                 rendered_pages,
                 scored_findings,
             )
+            report_progress(0.94, "Preparation des resultats")
             forensics = tuple(
                 dict.fromkeys(
                     artifact
@@ -157,6 +180,7 @@ class AnalysisPipeline:
                 ),
             )
             self._write_report(report, destination / "report.json")
+            report_progress(1.0, "Analyse terminee")
             return report
         finally:
             pdfium_document.close()

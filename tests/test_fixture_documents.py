@@ -18,6 +18,13 @@ def test_fraud_fixture_preserves_the_clean_pdf_as_its_first_revision() -> None:
     assert fraud_pdf.startswith(clean_pdf)
 
 
+def test_legitimate_update_fixture_preserves_the_clean_first_revision() -> None:
+    clean_pdf = (FIXTURES / "assurance-sans-fraude.pdf").read_bytes()
+    legitimate_pdf = (FIXTURES / "assurance-ajout-legitime.pdf").read_bytes()
+
+    assert legitimate_pdf.startswith(clean_pdf)
+
+
 @pytest.mark.parametrize("render_dpi", [72, 144])
 def test_committed_clean_fixture_has_no_detected_signal(
     tmp_path: Path,

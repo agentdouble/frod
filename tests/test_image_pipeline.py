@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from fraude_detector.ai_images import AiImagePrediction
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
 
 
@@ -32,3 +33,33 @@ def test_committed_c2pa_png_reports_declared_ai_origin(tmp_path: Path) -> None:
     assert finding.risk_points == 40
     assert report.assessment.score == 40
     assert report.assessment.level == "review"
+
+
+def test_gapl_global_index_contributes_to_standalone_image_score(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGB", (672, 672), "blue").save(source)
+
+    report = ImageAnalysisPipeline(
+        ai_image_adapters=(_ConstantGaplAdapter(0.95),),
+    ).analyze(source, tmp_path / "analysis")
+
+    finding = next(item for item in report.findings if item.code == "AI_GAPL_GLOBAL_TRACE")
+    assert finding.risk_points == 30
+    assert round(float(finding.evidence["global_index"]), 2) == 0.96
+    assert report.assessment.score == 30
+    assert report.assessment.level == "review"
+    assert report.detectors[-1].status == "completed"
+
+
+class _ConstantGaplAdapter:
+    adapter_id = "gapl_cvpr2026"
+    method_family = "clip_prototype"
+    model_version = "test"
+
+    def __init__(self, score: float) -> None:
+        self.score = score
+
+    def predict(self, image: Image.Image) -> AiImagePrediction:
+        return AiImagePrediction(synthetic_score=self.score)

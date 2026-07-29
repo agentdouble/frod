@@ -15,6 +15,12 @@ from fraude_detector.community_forensics import (
 )
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
+from fraude_detector.gapl import (
+    GAPL_DEFAULT_CHECKPOINT,
+    GaplError,
+    best_available_device,
+    create_gapl_adapter,
+)
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
 from fraude_detector.pipeline import AnalysisPipeline
 
@@ -47,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=25,
         help="Nombre maximal de pages analysees visuellement",
+    )
+    parser.add_argument(
+        "--without-gapl",
+        action="store_true",
+        help="Desactiver explicitement l'analyse GAPL",
+    )
+    parser.add_argument(
+        "--gapl-model-path",
+        type=Path,
+        help="Utiliser un autre checkpoint GAPL local",
     )
     parser.add_argument(
         "--ai-model",
@@ -106,11 +122,19 @@ def main(argv: list[str] | None = None) -> int:
                 input_path=args.input_file,
                 output_dir=output_dir,
             )
-    except (AnalysisError, CommunityForensicsError, RuntimeError, ValueError) as error:
+    except (
+        AnalysisError,
+        CommunityForensicsError,
+        GaplError,
+        RuntimeError,
+        ValueError,
+    ) as error:
         if isinstance(error, AnalysisError):
             code = error.code
         elif isinstance(error, CommunityForensicsError):
             code = "ai_model_unavailable"
+        elif isinstance(error, GaplError):
+            code = "gapl_unavailable"
         else:
             code = "invalid_option"
         print(f"Erreur [{code}]: {error}", file=sys.stderr)
@@ -142,6 +166,20 @@ def _is_pdf(input_path: Path) -> bool:
 
 
 def _build_ai_adapters(args: argparse.Namespace) -> tuple[AiImageModelAdapter, ...]:
+    adapters: list[AiImageModelAdapter] = []
+    if not args.without_gapl:
+        gapl_path = args.gapl_model_path or Path(
+            os.environ.get("FROD_GAPL_WEIGHTS", str(GAPL_DEFAULT_CHECKPOINT))
+        )
+        if not gapl_path.expanduser().is_file():
+            raise GaplError("Le modele GAPL est absent. Executez ./start.sh pour preparer Frod.")
+        adapters.append(
+            create_gapl_adapter(
+                weights_path=gapl_path,
+                device=best_available_device(),
+            )
+        )
+
     model_options_used = (
         args.ai_model_path is not None
         or args.ai_model_download
@@ -151,17 +189,19 @@ def _build_ai_adapters(args: argparse.Namespace) -> tuple[AiImageModelAdapter, .
     if args.ai_model is None:
         if model_options_used:
             raise ValueError("Les options --ai-model-* exigent --ai-model")
-        return ()
+        return tuple(adapters)
 
     if args.ai_model_path is not None and args.ai_model_download:
         raise ValueError("Choisissez un checkpoint local ou --ai-model-download, pas les deux")
-    adapter = create_community_forensics_adapter(
-        weights_path=args.ai_model_path,
-        variant=args.ai_model_variant,
-        device=args.ai_model_device,
-        allow_hf_download=args.ai_model_download,
+    adapters.append(
+        create_community_forensics_adapter(
+            weights_path=args.ai_model_path,
+            variant=args.ai_model_variant,
+            device=args.ai_model_device,
+            allow_hf_download=args.ai_model_download,
+        )
     )
-    return (adapter,)
+    return tuple(adapters)
 
 
 if __name__ == "__main__":

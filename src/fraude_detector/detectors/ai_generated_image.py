@@ -16,6 +16,12 @@ from fraude_detector.ai_images import (
     one_evaluation_per_family,
 )
 from fraude_detector.detectors.base import AnalysisContext
+from fraude_detector.gapl import GaplError
+from fraude_detector.gapl_windows import (
+    analyze_centered_windows,
+    build_gapl_global_finding,
+    write_gapl_window_artifacts,
+)
 from fraude_detector.image_assets import (
     ImageAssetDecodeError,
     decode_image_asset,
@@ -34,6 +40,7 @@ class AiGeneratedImageDetector:
         self._adapters = tuple(adapters)
 
     def analyze(self, context: AnalysisContext) -> DetectorResult:
+        context.report_progress(0.02, "Inventaire des images du PDF")
         assets = extract_image_assets(
             context,
             max_images=context.config.ai_max_inventory_images + 1,
@@ -96,10 +103,18 @@ class AiGeneratedImageDetector:
             for adapter in self._adapters
             if str(getattr(adapter, "method_family", "")).strip()
         }
-        if len(method_families) < context.config.ai_min_consensus_families:
+        has_gapl_adapter = any(adapter.adapter_id == "gapl_cvpr2026" for adapter in self._adapters)
+        if len(method_families) < context.config.ai_min_consensus_families and not has_gapl_adapter:
             partial_reasons.append("independent_model_families_insufficient")
 
-        for routed in photos:
+        photo_count = len(photos)
+        for photo_index, routed in enumerate(photos):
+            photo_start = photo_index / photo_count
+            photo_width = 1 / photo_count
+            context.report_progress(
+                photo_start,
+                f"Preparation de la photo {photo_index + 1}/{photo_count}",
+            )
             try:
                 decoded = decode_image_asset(
                     context,
@@ -112,16 +127,57 @@ class AiGeneratedImageDetector:
                 )
                 continue
 
+            gapl_analyses = []
             try:
-                evaluations = tuple(
-                    evaluate_ai_image_adapter(
-                        adapter,
-                        decoded.image,
-                        max_dimension=context.config.ai_max_image_dimension,
-                        stability_max_delta=context.config.ai_stability_max_delta,
+                evaluations_list: list[AiImageEvaluation] = []
+                adapter_count = len(self._adapters)
+                for adapter_index, adapter in enumerate(self._adapters):
+                    adapter_start = adapter_index / adapter_count
+                    adapter_width = 1 / adapter_count
+                    evaluations_list.append(
+                        evaluate_ai_image_adapter(
+                            adapter,
+                            decoded.image,
+                            max_dimension=context.config.ai_max_image_dimension,
+                            stability_max_delta=context.config.ai_stability_max_delta,
+                        )
                     )
-                    for adapter in self._adapters
-                )
+                    if adapter.adapter_id != "gapl_cvpr2026":
+                        continue
+                    try:
+
+                        def report_window_progress(
+                            completed: int,
+                            total: int,
+                            start: float = photo_start,
+                            width: float = photo_width,
+                            model_start: float = adapter_start,
+                            model_width: float = adapter_width,
+                            current_photo: int = photo_index,
+                        ) -> None:
+                            context.report_progress(
+                                start
+                                + width
+                                * (model_start + model_width * (0.2 + 0.8 * completed / total)),
+                                (
+                                    "Analyse GAPL des zones "
+                                    f"- photo {current_photo + 1}/{photo_count} "
+                                    f"- {completed}/{total}"
+                                ),
+                            )
+
+                        analysis, overlay = analyze_centered_windows(
+                            adapter,
+                            decoded.image,
+                            max_dimension=context.config.ai_max_image_dimension,
+                            progress_callback=report_window_progress,
+                        )
+                        gapl_analyses.append((analysis, overlay))
+                    except GaplError as error:
+                        partial_reasons.append(
+                            f"page_{routed.asset.page}_image_{routed.asset.index}_gapl:{error}"
+                        )
+                evaluations = tuple(evaluations_list)
             finally:
                 decoded.image.close()
 
@@ -135,7 +191,31 @@ class AiGeneratedImageDetector:
             )
             artifacts.append(artifact)
             artifacts.extend(heatmaps.values())
-            diagnostic_artifacts = (artifact, *heatmaps.values())
+            gapl_artifacts: list[str] = []
+            for analysis, overlay in gapl_analyses:
+                window_artifacts = write_gapl_window_artifacts(
+                    context.output_dir,
+                    analysis,
+                    overlay,
+                    stem=(
+                        f"page-{routed.asset.page:03d}-image-{routed.asset.index:02d}-gapl_cvpr2026"
+                    ),
+                )
+                gapl_artifacts.extend(window_artifacts)
+                findings.append(
+                    build_gapl_global_finding(
+                        analysis,
+                        artifacts=window_artifacts,
+                        page=routed.asset.page,
+                        bbox=routed.asset.bbox,
+                    )
+                )
+            artifacts.extend(gapl_artifacts)
+            diagnostic_artifacts = (
+                artifact,
+                *heatmaps.values(),
+                *gapl_artifacts,
+            )
 
             for evaluation in evaluations:
                 if evaluation.status == "error":
@@ -246,6 +326,7 @@ class AiGeneratedImageDetector:
                         )
                     )
 
+        context.report_progress(1.0, "Analyse des images terminee")
         if partial_reasons:
             notes.append("Analyse partielle: " + ", ".join(dict.fromkeys(partial_reasons)) + ".")
         return DetectorResult(

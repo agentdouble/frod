@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -22,6 +22,12 @@ from fraude_detector.ai_images import (
 )
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
+from fraude_detector.gapl import GaplError
+from fraude_detector.gapl_windows import (
+    analyze_centered_windows,
+    build_gapl_global_finding,
+    write_gapl_window_artifacts,
+)
 from fraude_detector.image_provenance import (
     AiDeclarationTrust,
     C2paSummary,
@@ -55,10 +61,17 @@ class ImageAnalysisPipeline:
         self,
         input_path: str | Path,
         output_dir: str | Path,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> ImageAnalysisReport:
+        def report_progress(value: float, label: str) -> None:
+            if progress_callback is not None:
+                progress_callback(min(1.0, max(0.0, value)), label)
+
+        report_progress(0.02, "Lecture de l'image")
         source = Path(input_path).expanduser().resolve()
         destination = Path(output_dir).expanduser().resolve()
         raw_image = self._read_input(source)
+        report_progress(0.08, "Analyse de la provenance")
         provenance = analyze_image_provenance(
             raw_image,
             source.suffix,
@@ -97,7 +110,16 @@ class ImageAnalysisPipeline:
             ),
             artifacts=(provenance_artifact,),
         )
-        ai_detector = self._analyze_pixels(raw_image, destination)
+        report_progress(0.18, "Analyse des pixels")
+        ai_detector = self._analyze_pixels(
+            raw_image,
+            destination,
+            progress_callback=lambda value, label: report_progress(
+                0.18 + 0.72 * value,
+                label,
+            ),
+        )
+        report_progress(0.92, "Calcul du score")
         findings = (*provenance_findings, *ai_detector.findings)
         forensics = tuple(dict.fromkeys((*provenance_detector.artifacts, *ai_detector.artifacts)))
         report = ImageAnalysisReport(
@@ -127,6 +149,7 @@ class ImageAnalysisPipeline:
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        report_progress(1.0, "Analyse terminee")
         return report
 
     def _read_input(self, source: Path) -> bytes:
@@ -140,7 +163,17 @@ class ImageAnalysisPipeline:
             )
         return source.read_bytes()
 
-    def _analyze_pixels(self, raw_image: bytes, destination: Path) -> DetectorResult:
+    def _analyze_pixels(
+        self,
+        raw_image: bytes,
+        destination: Path,
+        *,
+        progress_callback: Callable[[float, str], None] | None = None,
+    ) -> DetectorResult:
+        def report_progress(value: float, label: str) -> None:
+            if progress_callback is not None:
+                progress_callback(min(1.0, max(0.0, value)), label)
+
         if not self.ai_image_adapters:
             return DetectorResult(
                 name="ai_generated_image",
@@ -151,32 +184,87 @@ class ImageAnalysisPipeline:
                 ),
             )
 
+        evaluations: list[AiImageEvaluation] = []
+        gapl_analyses = []
+        gapl_errors: list[str] = []
+        adapter_count = len(self.ai_image_adapters)
         with Image.open(BytesIO(raw_image)) as source_image:
-            evaluations = tuple(
-                evaluate_ai_image_adapter(
+            source_image.load()
+            for index, adapter in enumerate(self.ai_image_adapters):
+                adapter_start = index / adapter_count
+                adapter_width = 1 / adapter_count
+                report_progress(adapter_start, "Analyse du modele IA")
+                evaluation = evaluate_ai_image_adapter(
                     adapter,
                     source_image,
                     max_dimension=self.config.ai_max_image_dimension,
                     stability_max_delta=self.config.ai_stability_max_delta,
                 )
-                for adapter in self.ai_image_adapters
+                evaluations.append(evaluation)
+                if adapter.adapter_id != "gapl_cvpr2026":
+                    continue
+                try:
+
+                    def report_window_progress(
+                        completed: int,
+                        total: int,
+                        start: float = adapter_start,
+                        width: float = adapter_width,
+                    ) -> None:
+                        report_progress(
+                            start + width * (0.2 + 0.8 * completed / total),
+                            f"Analyse GAPL des zones - {completed}/{total}",
+                        )
+
+                    analysis, overlay = analyze_centered_windows(
+                        adapter,
+                        source_image,
+                        max_dimension=self.config.ai_max_image_dimension,
+                        progress_callback=report_window_progress,
+                    )
+                    gapl_analyses.append((analysis, overlay))
+                except GaplError as error:
+                    gapl_errors.append(str(error))
+
+        evaluation_tuple = tuple(evaluations)
+        artifacts = list(self._write_ai_artifacts(destination, evaluation_tuple))
+        findings = list(_build_ai_findings(evaluation_tuple, self.config, tuple(artifacts)))
+        for analysis, overlay in gapl_analyses:
+            window_artifacts = write_gapl_window_artifacts(
+                destination,
+                analysis,
+                overlay,
+                stem="image-gapl_cvpr2026",
             )
-        artifacts = self._write_ai_artifacts(destination, evaluations)
-        findings = _build_ai_findings(evaluations, self.config, artifacts)
+            artifacts.extend(window_artifacts)
+            findings.append(
+                build_gapl_global_finding(
+                    analysis,
+                    artifacts=window_artifacts,
+                )
+            )
         partial = (
-            any(item.status != "completed" for item in evaluations)
-            or len({item.method_family for item in evaluations})
-            < self.config.ai_min_consensus_families
+            any(item.status != "completed" for item in evaluation_tuple)
+            or (
+                not gapl_analyses
+                and len({item.method_family for item in evaluation_tuple})
+                < self.config.ai_min_consensus_families
+            )
+            or bool(gapl_errors)
         )
+        report_progress(1.0, "Analyse des pixels terminee")
+        notes = [
+            f"Modeles passifs executes: {len(evaluation_tuple)}.",
+            "Un score de modele indique une trace statistique, pas une fraude.",
+        ]
+        if gapl_errors:
+            notes.append("Analyse GAPL multi-zone incomplete: " + "; ".join(gapl_errors))
         return DetectorResult(
             name="ai_generated_image",
             status="partial" if partial else "completed",
-            findings=findings,
-            notes=(
-                f"Modeles passifs executes: {len(evaluations)}.",
-                "Un score de modele indique une trace statistique, pas une fraude.",
-            ),
-            artifacts=artifacts,
+            findings=tuple(findings),
+            notes=tuple(notes),
+            artifacts=tuple(dict.fromkeys(artifacts)),
         )
 
     def _write_provenance_artifact(
