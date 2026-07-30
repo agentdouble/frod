@@ -158,6 +158,32 @@ def test_business_ui_contains_no_json_renderer() -> None:
     )
 
 
+def test_business_ui_keeps_structural_component_styles() -> None:
+    source = Path("app/streamlit_app.py").read_text(encoding="utf-8")
+    styles = source[source.index("<style>") : source.index("</style>")]
+
+    progress_fill = _css_rule(styles, ".analysis-progress-track i")
+    score_ring = _css_rule(styles, ".score-ring")
+    finding_score = _css_rule(styles, ".finding-score")
+
+    assert "display: block;" in progress_fill
+    assert "height: 100%;" in progress_fill
+    assert "border-radius: 50%;" in score_ring
+    assert "display: grid;" in score_ring
+    assert "place-content: center;" in score_ring
+    assert "display: flex;" in finding_score
+    assert "align-items: center;" in finding_score
+    assert "justify-content: center;" in finding_score
+    assert "h2.workspace-title {" in styles
+    assert "h3.subsection-title {" in styles
+
+
+def _css_rule(styles: str, selector: str) -> str:
+    start = styles.index(f"{selector} {{")
+    end = styles.index("}", start)
+    return styles[start:end]
+
+
 class _Response:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.payload = payload

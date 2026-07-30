@@ -1329,9 +1329,15 @@ def _inject_styles() -> None:
         .analysis-progress-track {
           height: 7px;
           background: #323137;
+          border-radius: 999px;
+          overflow: hidden;
         }
         .analysis-progress-track i {
+          display: block;
+          height: 100%;
           background: var(--cyan);
+          border-radius: inherit;
+          transition: width .18s ease;
         }
         .empty-state {
           min-height: 110px;
@@ -1373,14 +1379,33 @@ def _inject_styles() -> None:
         .score-hero.review { border-top: 1px solid var(--line); border-left-color: var(--amber); }
         .score-hero.high { border-top: 1px solid var(--line); border-left-color: var(--coral); }
         .score-ring {
+          flex: 0 0 auto;
           width: 118px;
           height: 118px;
+          border-radius: 50%;
+          display: grid;
+          place-content: center;
+          text-align: center;
           background:
             radial-gradient(circle at center, #19191d 0 58%, transparent 59%),
             conic-gradient(var(--score-color) 0 var(--score-angle), #35343a var(--score-angle));
         }
+        .score-ring span,
+        .score-ring small {
+          display: block;
+          line-height: 1;
+        }
         .score-ring span {
-          font-size: 2.4rem;
+          color: var(--score-color);
+          font-size: 3rem;
+          font-weight: 900;
+          line-height: .9;
+        }
+        .score-ring small {
+          color: var(--muted);
+          font-size: .68rem;
+          font-weight: 700;
+          margin-top: .22rem;
         }
         .score-copy h2 {
           font-size: 1.45rem;
@@ -1532,15 +1557,18 @@ def _inject_styles() -> None:
           color: var(--muted);
           font-size: .52rem;
         }
-        .workspace-title {
+        div[data-testid="stMarkdownContainer"] h2.workspace-title {
           font-size: 1.02rem;
+          line-height: 1.3;
           margin: .15rem 0 .55rem;
+          padding: 0;
         }
-        .subsection-title {
+        div[data-testid="stMarkdownContainer"] h3.subsection-title {
           font-size: .88rem;
+          line-height: 1.3;
           color: #dedbd5;
           margin: .9rem 0 .45rem;
-          padding-bottom: .32rem;
+          padding: 0 0 .32rem;
           border-bottom: 1px solid var(--line);
         }
         [data-testid="stImage"] img {
@@ -1608,16 +1636,26 @@ def _inject_styles() -> None:
         .finding-card.warning { border-left-color: var(--amber); background: #252117; }
         .finding-card.notice-tone { border-left-color: var(--blue); background: #181e28; }
         .finding-score {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
           width: 48px;
           height: 48px;
           border-radius: 4px;
           background: #0e0e11;
         }
         .finding-score strong {
+          display: block;
           font-size: 1.15rem;
+          line-height: 1;
         }
         .finding-score span {
+          display: block;
           font-size: .58rem;
+          line-height: 1;
+          margin-top: .2rem;
         }
         .finding-content h3 {
           font-size: .94rem;
@@ -1627,8 +1665,13 @@ def _inject_styles() -> None:
           color: #c7c3bd;
           font-size: .78rem;
           line-height: 1.4;
+          margin: 0;
         }
         .finding-kicker {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: .25rem .55rem;
           margin-bottom: .25rem;
         }
         .finding-kicker span {
@@ -1764,9 +1807,11 @@ def _inject_styles() -> None:
           color: #d3cfc8;
           font: .74rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
         }
-        .section-title {
+        div[data-testid="stMarkdownContainer"] h2.section-title {
           font-size: 1rem;
+          line-height: 1.3;
           margin: 1rem 0 .45rem;
+          padding: 0;
         }
         @media (max-width: 1100px) {
           .category-counters {
