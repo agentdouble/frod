@@ -104,7 +104,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         ai_adapters = _build_ai_adapters(args)
-        config = AnalysisConfig(render_dpi=args.dpi, max_pages=args.max_pages)
+        ocr_url = os.environ.get("FROD_OCR_URL", "").strip()
+        config = AnalysisConfig(
+            render_dpi=args.dpi,
+            max_pages=args.max_pages,
+            ocr_enabled=bool(ocr_url),
+            ocr_url=ocr_url or "http://127.0.0.1:8007",
+        )
         if input_is_pdf:
             report = AnalysisPipeline(
                 config=config,

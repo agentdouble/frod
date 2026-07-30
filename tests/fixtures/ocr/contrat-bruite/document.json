@@ -1,0 +1,700 @@
+[
+  [
+    {
+      "bbox_2d": [
+        67,
+        21,
+        210,
+        47
+      ],
+      "content": "Garage Exemple",
+      "index": 0,
+      "label": "header",
+      "native_label": "header",
+      "polygon": [
+        [
+          67,
+          21
+        ],
+        [
+          67,
+          46
+        ],
+        [
+          208,
+          46
+        ],
+        [
+          208,
+          21
+        ],
+        [
+          174,
+          21
+        ],
+        [
+          163,
+          21
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        66,
+        102,
+        495,
+        129
+      ],
+      "content": "## Kaufvertrag Neuwagen Nr. 16839 - v0",
+      "index": 1,
+      "label": "text",
+      "native_label": "paragraph_title",
+      "polygon": [
+        [
+          66,
+          102
+        ],
+        [
+          66,
+          128
+        ],
+        [
+          493,
+          128
+        ],
+        [
+          493,
+          102
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        142,
+        275,
+        159
+      ],
+      "content": "zwischen den Unterzeichnenden",
+      "index": 2,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          273,
+          142
+        ],
+        [
+          205,
+          142
+        ],
+        [
+          199,
+          142
+        ],
+        [
+          184,
+          142
+        ],
+        [
+          67,
+          146
+        ],
+        [
+          67,
+          157
+        ],
+        [
+          273,
+          157
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        169,
+        605,
+        256
+      ],
+      "content": "<table><tr><td>CLIENT DEMO</td><td>und</td><td>Garage Exemple</td></tr><tr><td>10 RUE EXEMPLE</td><td></td><td>20 RUE EXEMPLE</td></tr><tr><td>L-1234 LUXEMBOURG</td><td></td><td>L-1234 LUXEMBOURG</td></tr><tr><td>LUXEMBURG</td><td></td><td>LUXEMBURG</td></tr></table>",
+      "index": 3,
+      "label": "table",
+      "native_label": "table",
+      "polygon": [
+        [
+          67,
+          169
+        ],
+        [
+          67,
+          254
+        ],
+        [
+          603,
+          254
+        ],
+        [
+          603,
+          169
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        66,
+        367,
+        270,
+        384
+      ],
+      "content": "Es wurde Folgendes verdünbart",
+      "index": 4,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          66,
+          367
+        ],
+        [
+          66,
+          383
+        ],
+        [
+          268,
+          383
+        ],
+        [
+          268,
+          367
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        66,
+        384,
+        603,
+        402
+      ],
+      "content": "Der Kunde kauft ein neues Fahrzeug von dem Aulchaus, welches den Kauf abzupfen:",
+      "index": 5,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          66,
+          384
+        ],
+        [
+          66,
+          401
+        ],
+        [
+          601,
+          401
+        ],
+        [
+          601,
+          384
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        66,
+        407,
+        537,
+        426
+      ],
+      "content": "DA1RPT VOLKSWAGEN Golf R \"Black Edition\" 2.0/7.5/24W/DG67",
+      "index": 6,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          66,
+          412
+        ],
+        [
+          72,
+          425
+        ],
+        [
+          535,
+          425
+        ],
+        [
+          535,
+          407
+        ],
+        [
+          152,
+          407
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        428,
+        284,
+        446
+      ],
+      "content": "L9L9 Lapiz Blue Metallic",
+      "index": 7,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          67,
+          428
+        ],
+        [
+          67,
+          445
+        ],
+        [
+          283,
+          445
+        ],
+        [
+          283,
+          428
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        452,
+        283,
+        470
+      ],
+      "content": "Gemäß Beschreibung In Anlage 1",
+      "index": 8,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          281,
+          452
+        ],
+        [
+          263,
+          452
+        ],
+        [
+          67,
+          457
+        ],
+        [
+          67,
+          469
+        ],
+        [
+          281,
+          469
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        64,
+        474,
+        883,
+        628
+      ],
+      "content": "<table><tr><td>Fahrradgurgebiet</td><td>48,191,58</td><td>56,384,14 €</td></tr><tr><td>Zubehörungskosten</td><td>250,26 €</td><td>298,00 €</td></tr><tr><td>Probe der zugelassenen Fahrräume</td><td>48,485,84</td><td>56,680,14 €</td></tr><tr><td>Aufsteuer für Sonderlautungen und Ausstattungsgemäße Beschreibung in Anlage 1</td><td>5,00 €</td><td>5,85 €</td></tr><tr><td>Rechnungstabelle</td><td>48,485,84</td><td>56,680,00 €</td></tr><tr><td>Gesamtkalko bei Leitenung</td><td>48,485,84</td><td>56,686,00 €</td></tr><tr><td>Der Verkauf erstigt gemäß den beigeltigten Allgemeinen Verkaufbedingungen, die der Kunde zur Kantenabtätigkeit entnimmt</td><td></td><td></td></tr></table>",
+      "index": 9,
+      "label": "table",
+      "native_label": "table",
+      "polygon": [
+        [
+          64,
+          474
+        ],
+        [
+          64,
+          626
+        ],
+        [
+          872,
+          626
+        ],
+        [
+          881,
+          612
+        ],
+        [
+          881,
+          474
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        636,
+        291,
+        653
+      ],
+      "content": "voraus. Lieferzeit: +/- 2 wochen",
+      "index": 10,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          67,
+          636
+        ],
+        [
+          67,
+          652
+        ],
+        [
+          289,
+          652
+        ],
+        [
+          289,
+          636
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        656,
+        150,
+        674
+      ],
+      "content": "Bernerkung:",
+      "index": 11,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          67,
+          656
+        ],
+        [
+          67,
+          673
+        ],
+        [
+          148,
+          673
+        ],
+        [
+          148,
+          661
+        ],
+        [
+          118,
+          656
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        67,
+        677,
+        121,
+        692
+      ],
+      "content": "Datum:",
+      "index": 12,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          67,
+          677
+        ],
+        [
+          67,
+          691
+        ],
+        [
+          119,
+          691
+        ],
+        [
+          119,
+          681
+        ],
+        [
+          82,
+          677
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        642,
+        726,
+        737,
+        745
+      ],
+      "content": "Der Verk&auml;fer",
+      "index": 13,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          642,
+          726
+        ],
+        [
+          642,
+          730
+        ],
+        [
+          642,
+          740
+        ],
+        [
+          642,
+          743
+        ],
+        [
+          736,
+          743
+        ],
+        [
+          736,
+          726
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        66,
+        726,
+        140,
+        743
+      ],
+      "content": "Der Kunde",
+      "index": 14,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          66,
+          726
+        ],
+        [
+          66,
+          742
+        ],
+        [
+          139,
+          742
+        ],
+        [
+          139,
+          726
+        ],
+        [
+          135,
+          726
+        ],
+        [
+          124,
+          726
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        461,
+        823,
+        548,
+        840
+      ],
+      "content": "פעולות מקוונת",
+      "index": 15,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          461,
+          823
+        ],
+        [
+          461,
+          839
+        ],
+        [
+          546,
+          839
+        ],
+        [
+          546,
+          823
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        417,
+        839,
+        548,
+        857
+      ],
+      "content": "E-Mail: contact@example.test",
+      "index": 16,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          417,
+          849
+        ],
+        [
+          417,
+          852
+        ],
+        [
+          441,
+          856
+        ],
+        [
+          546,
+          856
+        ],
+        [
+          546,
+          839
+        ],
+        [
+          422,
+          839
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        385,
+        853,
+        546,
+        871
+      ],
+      "content": "Tenforce +352 621 00 00 00",
+      "index": 17,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          385,
+          853
+        ],
+        [
+          385,
+          870
+        ],
+        [
+          545,
+          870
+        ],
+        [
+          545,
+          853
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        425,
+        870,
+        546,
+        887
+      ],
+      "content": "L-6450 6chtermach",
+      "index": 18,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          425,
+          870
+        ],
+        [
+          425,
+          885
+        ],
+        [
+          545,
+          885
+        ],
+        [
+          545,
+          876
+        ],
+        [
+          495,
+          870
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        605,
+        753,
+        944,
+        854
+      ],
+      "content": "SR1CD",
+      "index": 19,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          605,
+          759
+        ],
+        [
+          605,
+          798
+        ],
+        [
+          611,
+          843
+        ],
+        [
+          616,
+          853
+        ],
+        [
+          828,
+          849
+        ],
+        [
+          943,
+          839
+        ],
+        [
+          943,
+          759
+        ],
+        [
+          938,
+          753
+        ],
+        [
+          930,
+          753
+        ],
+        [
+          878,
+          753
+        ],
+        [
+          611,
+          753
+        ]
+      ]
+    }
+  ]
+]

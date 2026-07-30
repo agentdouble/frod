@@ -14,7 +14,9 @@ dependencies = [
     "pypdfium2>=5.0,<6",
     "py2ddoc>=0.1.4,<0.2",
     "pyhanko>=0.36,<0.37",
+    "python-stdnum>=2.2,<3",
     "pyyaml>=6.0",
+    "requests>=2.32,<3",
     "streamlit>=1.47,<2",
     "zxing-cpp>=2.3,<3",
 ]

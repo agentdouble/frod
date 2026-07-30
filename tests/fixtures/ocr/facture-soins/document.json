@@ -1,0 +1,586 @@
+[
+  [
+    {
+      "bbox_2d": [
+        109,
+        153,
+        411,
+        275
+      ],
+      "content": "Cabinet d'Ostéopathie DEMO\n\nCamille Martin\n\nOstéopathe D.O.\n\n10 Rue Exemple\n\nL-1234 Luxembourg\n\nTel : +352 621 00 00 00",
+      "index": 0,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          109,
+          158
+        ],
+        [
+          115,
+          274
+        ],
+        [
+          411,
+          274
+        ],
+        [
+          411,
+          153
+        ],
+        [
+          195,
+          153
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        124,
+        327,
+        330,
+        349
+      ],
+      "content": "NOM: DUPONT",
+      "index": 1,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          124,
+          331
+        ],
+        [
+          124,
+          348
+        ],
+        [
+          330,
+          348
+        ],
+        [
+          330,
+          327
+        ],
+        [
+          155,
+          327
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        127,
+        358,
+        341,
+        384
+      ],
+      "content": "Prénom : Alex",
+      "index": 2,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          127,
+          358
+        ],
+        [
+          127,
+          384
+        ],
+        [
+          341,
+          384
+        ],
+        [
+          341,
+          358
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        132,
+        400,
+        207,
+        417
+      ],
+      "content": "Adresse :",
+      "index": 3,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          132,
+          400
+        ],
+        [
+          132,
+          417
+        ],
+        [
+          207,
+          417
+        ],
+        [
+          207,
+          409
+        ],
+        [
+          207,
+          404
+        ],
+        [
+          207,
+          400
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        137,
+        435,
+        222,
+        452
+      ],
+      "content": "Matricule :",
+      "index": 4,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          137,
+          435
+        ],
+        [
+          137,
+          452
+        ],
+        [
+          221,
+          452
+        ],
+        [
+          221,
+          435
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        144,
+        484,
+        199,
+        502
+      ],
+      "content": "Motif :",
+      "index": 5,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          144,
+          484
+        ],
+        [
+          144,
+          502
+        ],
+        [
+          199,
+          502
+        ],
+        [
+          199,
+          484
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        280,
+        486,
+        455,
+        515
+      ],
+      "content": "Lambo - Sacralgic",
+      "index": 6,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          280,
+          486
+        ],
+        [
+          280,
+          510
+        ],
+        [
+          310,
+          514
+        ],
+        [
+          454,
+          514
+        ],
+        [
+          454,
+          491
+        ],
+        [
+          375,
+          486
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        140,
+        568,
+        188,
+        583
+      ],
+      "content": "## Actes",
+      "index": 7,
+      "label": "text",
+      "native_label": "paragraph_title",
+      "polygon": [
+        [
+          140,
+          568
+        ],
+        [
+          140,
+          583
+        ],
+        [
+          188,
+          583
+        ],
+        [
+          188,
+          568
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        137,
+        586,
+        352,
+        603
+      ],
+      "content": "Consultation ostéopathique",
+      "index": 8,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          137,
+          586
+        ],
+        [
+          137,
+          603
+        ],
+        [
+          352,
+          603
+        ],
+        [
+          352,
+          586
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        655,
+        568,
+        755,
+        603
+      ],
+      "content": "Honoraires\n\n120.00 €",
+      "index": 9,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          655,
+          568
+        ],
+        [
+          655,
+          598
+        ],
+        [
+          660,
+          603
+        ],
+        [
+          755,
+          603
+        ],
+        [
+          755,
+          568
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        129,
+        639,
+        270,
+        658
+      ],
+      "content": "Facture acquittée.",
+      "index": 10,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          129,
+          639
+        ],
+        [
+          129,
+          658
+        ],
+        [
+          269,
+          658
+        ],
+        [
+          269,
+          639
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        123,
+        728,
+        242,
+        748
+      ],
+      "content": "Bettembourg, le",
+      "index": 11,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          123,
+          728
+        ],
+        [
+          123,
+          748
+        ],
+        [
+          242,
+          748
+        ],
+        [
+          242,
+          728
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        286,
+        727,
+        452,
+        753
+      ],
+      "content": "23/05/2020",
+      "index": 12,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          286,
+          727
+        ],
+        [
+          286,
+          753
+        ],
+        [
+          452,
+          753
+        ],
+        [
+          452,
+          727
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        258,
+        770,
+        555,
+        829
+      ],
+      "content": "Z",
+      "index": 13,
+      "label": "image",
+      "native_label": "image",
+      "polygon": [
+        [
+          258,
+          770
+        ],
+        [
+          258,
+          829
+        ],
+        [
+          555,
+          829
+        ],
+        [
+          555,
+          770
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        114,
+        856,
+        400,
+        897
+      ],
+      "content": "NACE : Activités Paramédicales (86902)\n\n2019.05.003/OSTEO",
+      "index": 14,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          114,
+          856
+        ],
+        [
+          114,
+          892
+        ],
+        [
+          265,
+          897
+        ],
+        [
+          400,
+          897
+        ],
+        [
+          400,
+          861
+        ],
+        [
+          260,
+          856
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        615,
+        780,
+        838,
+        835
+      ],
+      "content": "Camille Martin Ostéopathe D.O.",
+      "index": 15,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          615,
+          785
+        ],
+        [
+          615,
+          825
+        ],
+        [
+          620,
+          835
+        ],
+        [
+          749,
+          835
+        ],
+        [
+          833,
+          830
+        ],
+        [
+          837,
+          825
+        ],
+        [
+          837,
+          780
+        ],
+        [
+          724,
+          780
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        604,
+        830,
+        865,
+        904
+      ],
+      "content": "10 Rue Exemple L-1234 Luxembourg tel.+352 621 00 00 00",
+      "index": 16,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          865,
+          830
+        ],
+        [
+          790,
+          830
+        ],
+        [
+          679,
+          835
+        ],
+        [
+          604,
+          840
+        ],
+        [
+          604,
+          903
+        ],
+        [
+          679,
+          903
+        ],
+        [
+          794,
+          899
+        ],
+        [
+          860,
+          894
+        ],
+        [
+          865,
+          889
+        ]
+      ]
+    }
+  ]
+]

@@ -48,6 +48,8 @@ suivis par Git.
   aggregation multi-fenetre et controle de stabilite.
 - localisation experimentale de retouches sur les images autonomes avec TruFor,
   sans contribution au score Frod.
+- controles OCR de coherence interne : identifiants internationaux, contradictions
+  de valeurs, dates, totaux, soldes et referentiels bancaires incompatibles.
 
 L'absence de C2PA, d'EXIF ou de XMP n'ajoute aucun point. Une declaration C2PA
 d'origine algorithmique indique comment un media a ete produit; elle ne dit pas si
@@ -69,6 +71,22 @@ image a ete generee par IA.
 
 La cartographie des fenetres et les controles de stabilite restent accessibles dans
 le dossier technique de l'interface.
+
+## Coherence du contenu OCR
+
+Quand `FROD_OCR_URL` designe un serveur GLM-OCR local, les sorties structurees et
+Markdown alimentent une famille `content_consistency` plafonnee a 30 points. Les
+anomalies correlees sont regroupees entre identifiants, calculs, dates et coherence
+geographique avant le calcul du score.
+
+GLM-OCR ne fournit actuellement pas de confiance par caractere. Frod utilise une
+confiance native si elle est presente; sinon, il mesure l'accord entre les deux
+representations OCR et plafonne la fiabilite a 80 %. Une extraction insuffisante ou
+peu concordante reste visible mais n'ajoute aucun point.
+
+Les fixtures OCR pre-calculees de l'interface permettent de tester ces controles sans
+serveur OCR. Pour executer le worker reel sur une machine adaptee, voir
+`start-ocr-server.sh`.
 
 ## Retouches locales
 
@@ -110,6 +128,9 @@ src/fraude_detector/
 ├── community_forensics.py # adaptateur optionnel, chargement explicite
 ├── gapl.py                 # adaptateur GAPL local
 ├── gapl_windows.py         # grille, indice global et contribution au score
+├── financial_identifiers.py # Luhn, IBAN et BIC internationaux
+├── ocr_consistency.py      # fiabilite OCR et contribution contenu
+├── ocr_rendering.py        # visualisation des zones reconnues
 ├── trufor.py               # execution isolee et artefacts TruFor
 ├── trufor_worker.py        # worker court pour liberer la memoire du modele
 ├── pdf_revisions.py       # validation des revisions conservees
@@ -121,6 +142,7 @@ src/fraude_detector/
     ├── page_composition.py
     ├── raster_anomaly.py
     ├── image_provenance.py
+    ├── ocr.py
     └── ai_generated_image.py
 ```
 
@@ -180,13 +202,15 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
   IA recente, une petite zone ou une image fortement recomprimee ;
 - la licence amont de TruFor limite son utilisation aux finalites informatives et
   non lucratives ;
-- le routage actuel est geometrique, sans OCR ni classifieur de contenu : il peut
-  exclure une vraie photo pleine page ou accepter une facture partielle comme photo ;
+- le routage des images vers GAPL reste geometrique : il peut exclure une vraie
+  photo pleine page ou accepter une facture partielle comme photo ;
 - les masques alpha PDF separes ne sont pas recomposes dans le decodage natif ;
 - l'inventaire IA est borne aux 100 premieres images et le rapport passe en `partial`
   si cette limite est atteinte ;
 - C2PA et les metadonnees peuvent etre supprimes lors de l'integration dans un PDF ;
 - une metadonnee non signee peut etre ajoutee ou falsifiee ;
-- la valeur metier d'un montant, d'une date ou d'une identite n'est pas verifiee ;
+- les controles OCR generiques ne connaissent pas toutes les regles metier propres
+  a chaque assureur, pays ou type de document ;
+- une inversion OCR peut invalider un checksum ou creer une contradiction apparente ;
 - une calibration serieuse exige un corpus anonymise de vrais documents legitimes et
   modifies, avec mesure du taux de faux positifs.

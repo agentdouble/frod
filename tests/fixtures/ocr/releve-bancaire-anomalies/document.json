@@ -1,0 +1,600 @@
+[
+  [
+    {
+      "bbox_2d": [
+        163,
+        0,
+        851,
+        16
+      ],
+      "content": "## POST GOLD VISA CREDIT CARD ACCOUNT 4111-1111-1111-1111",
+      "index": 0,
+      "label": "text",
+      "native_label": "paragraph_title",
+      "polygon": [
+        [
+          163,
+          0
+        ],
+        [
+          163,
+          15
+        ],
+        [
+          849,
+          15
+        ],
+        [
+          849,
+          0
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        34,
+        485,
+        50
+      ],
+      "content": "## TRANSACTION SUMMARY OF CREDIT CARD ACCOUNT",
+      "index": 1,
+      "label": "text",
+      "native_label": "paragraph_title",
+      "polygon": [
+        [
+          29,
+          34
+        ],
+        [
+          29,
+          48
+        ],
+        [
+          484,
+          48
+        ],
+        [
+          484,
+          34
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        28,
+        59,
+        421,
+        75
+      ],
+      "content": "CREDIT CARD NO : 4111-1111-1111-1111",
+      "index": 2,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          28,
+          59
+        ],
+        [
+          28,
+          74
+        ],
+        [
+          419,
+          74
+        ],
+        [
+          419,
+          59
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        144,
+        467,
+        164
+      ],
+      "content": "CUSTOMER NAME : CLIENT DEMO",
+      "index": 3,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          29,
+          150
+        ],
+        [
+          29,
+          162
+        ],
+        [
+          302,
+          162
+        ],
+        [
+          466,
+          158
+        ],
+        [
+          466,
+          144
+        ],
+        [
+          190,
+          144
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        532,
+        149,
+        867,
+        165
+      ],
+      "content": "ACCOUNT BRANCH . POST PARKTOWN",
+      "index": 4,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          532,
+          149
+        ],
+        [
+          532,
+          164
+        ],
+        [
+          866,
+          164
+        ],
+        [
+          866,
+          149
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        28,
+        175,
+        416,
+        227
+      ],
+      "content": "COMMUNICATION : APPARTEMENT DEMO\n\nADDRESS : 10 Rue Exemple\n\nL-2714 Luxembourg\n\nLuxembourg",
+      "index": 5,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          28,
+          175
+        ],
+        [
+          28,
+          225
+        ],
+        [
+          414,
+          225
+        ],
+        [
+          414,
+          175
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        195,
+        895,
+        233
+      ],
+      "content": "BRANCH ADDRESS .38; Place de la Gare,\n\nL-1610 Luxembourg City,\n\nF-RR 59127",
+      "index": 6,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          533,
+          195
+        ],
+        [
+          533,
+          232
+        ],
+        [
+          894,
+          232
+        ],
+        [
+          894,
+          195
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        265,
+        897,
+        282
+      ],
+      "content": "SWIFT BIL2000488",
+      "index": 7,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          533,
+          265
+        ],
+        [
+          533,
+          281
+        ],
+        [
+          786,
+          281
+        ],
+        [
+          895,
+          278
+        ],
+        [
+          895,
+          265
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        28,
+        288,
+        484,
+        308
+      ],
+      "content": "EMAIL ID :    client@example.test",
+      "index": 8,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          28,
+          294
+        ],
+        [
+          28,
+          307
+        ],
+        [
+          242,
+          307
+        ],
+        [
+          482,
+          307
+        ],
+        [
+          482,
+          288
+        ],
+        [
+          104,
+          288
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        291,
+        892,
+        307
+      ],
+      "content": "MICR : 500000000",
+      "index": 9,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          533,
+          291
+        ],
+        [
+          533,
+          306
+        ],
+        [
+          890,
+          306
+        ],
+        [
+          890,
+          291
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        316,
+        894,
+        331
+      ],
+      "content": "ACCOUNT OPENING DATE : 2011-10-11",
+      "index": 10,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          533,
+          316
+        ],
+        [
+          533,
+          330
+        ],
+        [
+          892,
+          330
+        ],
+        [
+          892,
+          316
+        ],
+        [
+          694,
+          316
+        ],
+        [
+          687,
+          316
+        ],
+        [
+          667,
+          316
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        338,
+        375,
+        355
+      ],
+      "content": "CKYC ID : 1294000000000",
+      "index": 11,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          29,
+          338
+        ],
+        [
+          29,
+          353
+        ],
+        [
+          373,
+          353
+        ],
+        [
+          373,
+          338
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        338,
+        869,
+        355
+      ],
+      "content": "ACCOUNT STATUS : ACTIVE",
+      "index": 12,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          533,
+          338
+        ],
+        [
+          533,
+          353
+        ],
+        [
+          867,
+          353
+        ],
+        [
+          867,
+          338
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        360,
+        366,
+        376
+      ],
+      "content": "CREDIT LIMIT PRE DEFINED",
+      "index": 13,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          29,
+          360
+        ],
+        [
+          29,
+          374
+        ],
+        [
+          365,
+          374
+        ],
+        [
+          365,
+          360
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        532,
+        362,
+        945,
+        378
+      ],
+      "content": "ACCOUNT TYPE : Individual Account",
+      "index": 14,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          538,
+          366
+        ],
+        [
+          538,
+          377
+        ],
+        [
+          859,
+          377
+        ],
+        [
+          943,
+          373
+        ],
+        [
+          943,
+          362
+        ],
+        [
+          712,
+          362
+        ],
+        [
+          652,
+          362
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        533,
+        386,
+        846,
+        402
+      ],
+      "content": "CURRENCY : EUR",
+      "index": 15,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          844,
+          386
+        ],
+        [
+          700,
+          386
+        ],
+        [
+          533,
+          391
+        ],
+        [
+          533,
+          401
+        ],
+        [
+          844,
+          401
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        421,
+        961,
+        471
+      ],
+      "content": "<table><thead><tr><th>Opening Balance</th><th>Total Debit</th><th>Total Credit</th><th>Pending Balance</th></tr></thead><tbody><tr><td>5.01</td><td>1,306,275.94</td><td>1,306,376.93</td><td>106.00</td></tr></tbody></table>",
+      "index": 16,
+      "label": "table",
+      "native_label": "table",
+      "polygon": [
+        [
+          29,
+          421
+        ],
+        [
+          29,
+          470
+        ],
+        [
+          960,
+          470
+        ],
+        [
+          960,
+          421
+        ],
+        [
+          591,
+          421
+        ],
+        [
+          585,
+          421
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        29,
+        492,
+        963,
+        913
+      ],
+      "content": "<table><thead><tr><th>Transaction Date</th><th>Value Date</th><th>Particulars</th><th>Cheque No.</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead><tbody><tr><td></td><td></td><td>Opening Balance</td><td></td><td></td><td></td><td>5.01</td></tr><tr><td>16-Dec-2025</td><td>16-Dec-2025</td><td>AMAZON.COM</td><td></td><td>1802.00 (USD)</td><td></td><td>4,35,397.85</td></tr><tr><td>21-Dec-2025</td><td>21-Dec-2025</td><td>Addas</td><td></td><td>299.00 (USD)</td><td></td><td>4,32,981.67</td></tr><tr><td>24-Dec-2025</td><td>24-Dec-2025</td><td>Levis</td><td></td><td>165.00 (USD)</td><td></td><td>0.00</td></tr><tr><td>24-Dec-2025</td><td>24-Dec-2025</td><td>Zara</td><td></td><td>120.00 (USD)</td><td></td><td>97.29</td></tr><tr><td>18-Feb-2026</td><td>18-Feb-2026</td><td>DALIAN AIRLINES</td><td></td><td>11,011.00 (THB)</td><td></td><td>4,35,490.17</td></tr><tr><td>16-Feb-2026</td><td>18-Feb-2026</td><td>CLEARTRIP.COM</td><td></td><td>100.00 (USD)</td><td></td><td>44,826.29</td></tr><tr><td>18-Feb-2026</td><td>18-Feb-2026</td><td>CLEARTRIP.COM</td><td></td><td>84.00 (USD)</td><td></td><td>43,868.29</td></tr><tr><td>05-Mar-2026</td><td>05-Mar-2026</td><td>UPI/MOB/450301943111/NA</td><td></td><td>25,000.00</td><td></td><td>18,868.29</td></tr><tr><td>05-Mar-2026</td><td>05-Mar-2026</td><td>UPI/MOB/450301945900/NA</td><td></td><td>1.00</td><td></td><td>18,868.29</td></tr><tr><td>17-Mar-2026</td><td>17-Mar-2026</td><td>TOPS DAILY</td><td></td><td>25,888.00 (THB)</td><td></td><td>18,544.08</td></tr><tr><td>19-Mar-2026</td><td>19-Mar-2026</td><td>THAIDION AIRLINES</td><td></td><td></td><td>200.00 (USD)</td><td>17,718.25</td></tr></tbody></table>",
+      "index": 17,
+      "label": "table",
+      "native_label": "table",
+      "polygon": [
+        [
+          29,
+          498
+        ],
+        [
+          29,
+          912
+        ],
+        [
+          961,
+          912
+        ],
+        [
+          957,
+          492
+        ]
+      ]
+    }
+  ]
+]

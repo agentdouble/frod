@@ -165,3 +165,18 @@ class LaboratoryReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class OcrReport:
+    """Structured, non-scoring output returned by the optional OCR service."""
+
+    success: bool
+    error_message: str | None
+    markdown: str
+    json_result: Any
+    artifacts: tuple[str, ...] = ()
+    layout_images: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

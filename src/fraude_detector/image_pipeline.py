@@ -21,6 +21,7 @@ from fraude_detector.ai_images import (
     one_evaluation_per_family,
 )
 from fraude_detector.config import AnalysisConfig
+from fraude_detector.detectors.ocr import OcrDetector
 from fraude_detector.errors import AnalysisError
 from fraude_detector.gapl import GaplError
 from fraude_detector.gapl_windows import (
@@ -42,6 +43,7 @@ from fraude_detector.models import (
     Finding,
     ImageAnalysisReport,
     ImageInfo,
+    OcrReport,
 )
 from fraude_detector.scoring import assess_risk
 
@@ -110,18 +112,30 @@ class ImageAnalysisPipeline:
             ),
             artifacts=(provenance_artifact,),
         )
-        report_progress(0.18, "Analyse des pixels")
+        ocr_report: OcrReport | None = None
+        ocr_detector: OcrDetector | None = None
+        if self.config.ocr_enabled:
+            report_progress(0.18, "Reconnaissance du contenu")
+            ocr_detector = OcrDetector(self.config)
+            ocr_report = ocr_detector.detect(source, destination)
+
+        report_progress(0.22, "Analyse des pixels")
         ai_detector = self._analyze_pixels(
             raw_image,
             destination,
             progress_callback=lambda value, label: report_progress(
-                0.18 + 0.72 * value,
+                0.22 + 0.68 * value,
                 label,
             ),
         )
         report_progress(0.92, "Calcul du score")
-        findings = (*provenance_findings, *ai_detector.findings)
         forensics = tuple(dict.fromkeys((*provenance_detector.artifacts, *ai_detector.artifacts)))
+        detectors = [provenance_detector, ai_detector]
+        if ocr_detector is not None and ocr_report is not None:
+            detectors.append(ocr_detector.result(ocr_report))
+        findings = tuple(
+            finding for detector_result in detectors for finding in detector_result.findings
+        )
         report = ImageAnalysisReport(
             schema_version="1.0",
             analyzed_at=datetime.now(UTC).isoformat(),
@@ -135,14 +149,22 @@ class ImageAnalysisPipeline:
                 mode=pillow.mode or "unknown",
             ),
             assessment=assess_risk(findings),
-            detectors=(provenance_detector, ai_detector),
+            detectors=tuple(detectors),
             findings=findings,
-            artifacts={"forensics": forensics},
+            artifacts={
+                "forensics": forensics,
+                "ocr_json": _ocr_artifacts(ocr_report, ".json"),
+                "ocr_markdown": _ocr_artifacts(ocr_report, ".md"),
+                "ocr_layout": ocr_report.layout_images if ocr_report else (),
+            },
             limitations=(
                 "Le score priorise une revue; il ne prouve ni fraude ni authenticite.",
                 "Une provenance C2PA decrit une origine technique, pas une intention frauduleuse.",
                 "Les metadonnees non signees peuvent etre supprimees ou falsifiees.",
                 "Les modeles passifs sont sensibles au domaine et aux recompressions.",
+                "GLM-OCR ne fournit pas actuellement de confiance par caractere. "
+                "Les controles de contenu utilisent une fiabilite de representation "
+                "plafonnee et peuvent etre neutralises si l'extraction est insuffisante.",
             ),
         )
         (destination / "report.json").write_text(
@@ -562,3 +584,9 @@ def _c2pa_payload(summary: C2paSummary) -> dict[str, object]:
         },
         "error": summary.error,
     }
+
+
+def _ocr_artifacts(report: OcrReport | None, suffix: str) -> tuple[str, ...]:
+    if report is None or not report.success:
+        return ()
+    return tuple(path for path in report.artifacts if Path(path).suffix.casefold() == suffix)

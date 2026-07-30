@@ -24,15 +24,22 @@ from fraude_detector.gapl import (
     create_gapl_adapter,
 )
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
-from fraude_detector.laboratory import analyze_image_laboratory, analyze_pdf_laboratory
+from fraude_detector.laboratory import (
+    analyze_image_laboratory,
+    analyze_ocr_laboratory,
+    analyze_pdf_laboratory,
+)
 from fraude_detector.models import (
     AnalysisReport,
+    DetectorResult,
     Finding,
     ImageAnalysisReport,
     LaboratoryCheck,
     LaboratoryObservation,
     LaboratoryReport,
+    OcrReport,
 )
+from fraude_detector.ocr_consistency import build_ocr_content_result
 from fraude_detector.pipeline import AnalysisPipeline
 from fraude_detector.trufor import TRUFOR_DEFAULT_CHECKPOINT, TRUFOR_MAX_PIXELS
 
@@ -42,12 +49,29 @@ RUN_DIR = WORK_DIR / "runs"
 GAPL_WEIGHTS = Path(os.environ.get("FROD_GAPL_WEIGHTS", str(GAPL_DEFAULT_CHECKPOINT)))
 TRUFOR_WEIGHTS = Path(os.environ.get("FROD_TRUFOR_WEIGHTS", str(TRUFOR_DEFAULT_CHECKPOINT)))
 TRUFOR_PIXEL_BUDGET = int(os.environ.get("FROD_TRUFOR_MAX_PIXELS", str(TRUFOR_MAX_PIXELS)))
-ANALYSIS_POLICY_VERSION = "gapl-p25-90-v2-trufor-lab-v1"
+OCR_URL = os.environ.get("FROD_OCR_URL", "").strip()
+ANALYSIS_POLICY_VERSION = f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v1-{bool(OCR_URL)}"
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
     "Ajout legitime": Path("tests/fixtures/assurance-ajout-legitime.pdf"),
     "Montant modifie": Path("tests/fixtures/assurance-fraude.pdf"),
+}
+OCR_DEMO_DOCUMENTS = {
+    "OCR - Facture de soins": Path("tests/fixtures/ocr/facture-soins"),
+    "OCR - Declaration coherente": Path("tests/fixtures/ocr/declaration-coherente"),
+    "OCR - Contrat bruite": Path("tests/fixtures/ocr/contrat-bruite"),
+    "OCR - Releve bancaire a anomalies": Path("tests/fixtures/ocr/releve-bancaire-anomalies"),
+    "OCR - Texte insuffisant": Path("tests/fixtures/ocr/texte-insuffisant"),
+}
+LOCAL_OCR_DEMO_DOCUMENTS = {
+    "OCR original local - Facture de soins": WORK_DIR / "ocr-fixtures/original/facture-soins",
+    "OCR original local - Declaration coherente": WORK_DIR
+    / "ocr-fixtures/original/declaration-coherente",
+    "OCR original local - Contrat bruite": WORK_DIR / "ocr-fixtures/original/contrat-bruite",
+    "OCR original local - Releve bancaire a anomalies": WORK_DIR
+    / "ocr-fixtures/original/releve-bancaire-anomalies",
+    "OCR original local - Texte insuffisant": WORK_DIR / "ocr-fixtures/original/texte-insuffisant",
 }
 
 LEVEL_STYLE = {
@@ -77,6 +101,7 @@ LEVEL_STYLE = {
 CATEGORY_LABELS = {
     "analysis_quality": "Qualite analyse",
     "annotations": "Annotations",
+    "content_consistency": "Coherence du contenu",
     "document_integrity": "Integrite document",
     "metadata": "Metadonnees",
     "page_composition": "Composition page",
@@ -90,6 +115,7 @@ CATEGORY_LABELS = {
 DETECTOR_LABELS = {
     "ai_generated_image": "Generation par IA",
     "image_provenance": "Provenance image",
+    "ocr_content": "Coherence du contenu",
     "page_composition": "Composition",
     "pdf_structure": "Structure PDF",
     "raster_anomaly": "ELA JPEG",
@@ -107,6 +133,12 @@ STATUS_LABELS = {
 class InputDocument:
     name: str
     data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class OcrDemoDocument:
+    name: str
+    fixture_dir: Path
 
 
 def main() -> None:
@@ -138,6 +170,9 @@ def main() -> None:
         with results:
             _render_empty_state()
         return
+    if isinstance(uploaded_file, OcrDemoDocument):
+        _handle_ocr_demo(uploaded_file, controls, results)
+        return
 
     file_bytes = uploaded_file.data
     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -159,7 +194,7 @@ def main() -> None:
             progress = st.empty()
             _render_analysis_progress(progress, 0.0, "Preparation de l'analyse")
             try:
-                report, laboratory, output_dir, input_type = _run_analysis(
+                report, laboratory, output_dir = _run_analysis(
                     file_name=uploaded_file.name,
                     file_bytes=file_bytes,
                     file_hash=file_hash,
@@ -185,13 +220,11 @@ def main() -> None:
             "report": report,
             "laboratory": laboratory,
             "output_dir": output_dir,
-            "input_type": input_type,
         }
     elif cached is not None and cached.get("key") == current_key:
         report = cached["report"]
         laboratory = cached.get("laboratory")
         output_dir = cached["output_dir"]
-        input_type = cached["input_type"]
     else:
         st.session_state.pop("analysis", None)
         with results:
@@ -199,10 +232,10 @@ def main() -> None:
         return
 
     with results:
-        _render_report(report, laboratory, output_dir, input_type)
+        _render_report(report, laboratory, output_dir)
 
 
-def _render_input_panel() -> InputDocument | None:
+def _render_input_panel() -> InputDocument | OcrDemoDocument | None:
     st.markdown('<div class="panel-title">Document</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
         "PDF ou image",
@@ -212,32 +245,114 @@ def _render_input_panel() -> InputDocument | None:
     if uploaded_file is not None:
         document = InputDocument(name=uploaded_file.name, data=uploaded_file.getvalue())
     else:
+        available_ocr_demos = {
+            **OCR_DEMO_DOCUMENTS,
+            **{
+                name: path
+                for name, path in LOCAL_OCR_DEMO_DOCUMENTS.items()
+                if (path / "document.json").is_file() and (path / "document.md").is_file()
+            },
+        }
         with st.expander("Documents de demonstration", expanded=False):
             demo_name = st.selectbox(
                 "Exemple",
-                ("Aucun", *DEMO_DOCUMENTS),
+                ("Aucun", *DEMO_DOCUMENTS, *available_ocr_demos),
                 label_visibility="collapsed",
             )
         if demo_name == "Aucun":
             document = None
-        else:
+        elif demo_name in DEMO_DOCUMENTS:
             demo_path = DEMO_DOCUMENTS[demo_name]
             if not demo_path.is_file():
                 st.error("Le document de demonstration est indisponible.")
                 document = None
             else:
                 document = InputDocument(name=demo_path.name, data=demo_path.read_bytes())
+        else:
+            fixture_dir = available_ocr_demos[demo_name]
+            if not (fixture_dir / "document.json").is_file():
+                st.error("Les donnees OCR de demonstration sont indisponibles.")
+                document = None
+            else:
+                document = OcrDemoDocument(name=demo_name, fixture_dir=fixture_dir)
 
-    st.markdown('<div class="panel-title minor">Options</div>', unsafe_allow_html=True)
-    st.slider("Pages analysees", min_value=1, max_value=50, value=25, key="max_pages")
-    st.select_slider("DPI rendu PDF", options=[72, 108, 144, 180, 216], value=144, key="dpi")
+    if not isinstance(document, OcrDemoDocument):
+        st.markdown('<div class="panel-title minor">Options</div>', unsafe_allow_html=True)
+        st.slider("Pages analysees", min_value=1, max_value=50, value=25, key="max_pages")
+        st.select_slider(
+            "DPI rendu PDF",
+            options=[72, 108, 144, 180, 216],
+            value=144,
+            key="dpi",
+        )
     return document
+
+
+def _handle_ocr_demo(document: OcrDemoDocument, controls: Any, results: Any) -> None:
+    json_path = document.fixture_dir / "document.json"
+    markdown_path = document.fixture_dir / "document.md"
+    json_bytes = json_path.read_bytes()
+    markdown = markdown_path.read_text(encoding="utf-8")
+    fixture_hash = hashlib.sha256(json_bytes + markdown.encode("utf-8")).hexdigest()
+    current_key = ("ocr-demo-v2", document.name, fixture_hash)
+
+    with controls:
+        analyze = st.button("Analyser les donnees OCR", type="primary", width="stretch")
+
+    cached = st.session_state.get("analysis")
+    if analyze:
+        try:
+            payload = json.loads(json_bytes)
+        except json.JSONDecodeError as error:
+            with results:
+                st.error(f"Fixture OCR invalide : {error}")
+            return
+        laboratory = LaboratoryReport(
+            schema_version="0.1-experimental",
+            checks=analyze_ocr_laboratory(payload),
+        )
+        ocr_detector = build_ocr_content_result(
+            OcrReport(
+                success=True,
+                error_message=None,
+                markdown=markdown,
+                json_result=payload,
+            )
+        )
+        st.session_state["analysis"] = {
+            "key": current_key,
+            "ocr_payload": payload,
+            "ocr_markdown": markdown,
+            "laboratory": laboratory,
+            "ocr_detector": ocr_detector,
+        }
+    elif cached is not None and cached.get("key") == current_key:
+        payload = cached["ocr_payload"]
+        markdown = cached["ocr_markdown"]
+        laboratory = cached["laboratory"]
+        ocr_detector = cached["ocr_detector"]
+    else:
+        st.session_state.pop("analysis", None)
+        with results:
+            _render_ready_state(document.name)
+        return
+
+    with results:
+        _render_ocr_demo_report(
+            name=document.name,
+            markdown=markdown,
+            payload=payload,
+            laboratory=laboratory,
+            ocr_detector=ocr_detector,
+        )
 
 
 def _config_from_state() -> AnalysisConfig:
     return AnalysisConfig(
         render_dpi=int(st.session_state.get("dpi", 144)),
         max_pages=int(st.session_state.get("max_pages", 25)),
+        ocr_enabled=bool(OCR_URL),
+        ocr_url=OCR_URL or "http://127.0.0.1:8007",
     )
 
 
@@ -252,7 +367,6 @@ def _run_analysis(
     AnalysisReport | ImageAnalysisReport,
     LaboratoryReport | None,
     Path,
-    str,
 ]:
     def report_progress(value: float, text: str) -> None:
         if progress_callback is not None:
@@ -303,7 +417,8 @@ def _run_analysis(
                 text,
             ),
         )
-        return report, laboratory, output_dir, "PDF"
+        laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
+        return report, laboratory, output_dir
 
     def pipeline_progress(value: float, text: str) -> None:
         report_progress(0.12 + 0.60 * value, text)
@@ -327,7 +442,29 @@ def _run_analysis(
             text,
         ),
     )
-    return report, laboratory, output_dir, "Image"
+    laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
+    return report, laboratory, output_dir
+
+
+def _with_ocr_laboratory(
+    report: AnalysisReport | ImageAnalysisReport,
+    laboratory: LaboratoryReport,
+    output_dir: Path,
+) -> LaboratoryReport:
+    json_paths = _existing_artifacts(
+        output_dir,
+        report.artifacts.get("ocr_json", ()),
+    )
+    if not json_paths:
+        return laboratory
+    try:
+        payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return laboratory
+    return LaboratoryReport(
+        schema_version=laboratory.schema_version,
+        checks=(*laboratory.checks, *analyze_ocr_laboratory(payload)),
+    )
 
 
 def _render_empty_state() -> None:
@@ -358,7 +495,6 @@ def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
     output_dir: Path,
-    input_type: str,
 ) -> None:
     findings = sorted(
         report.findings,
@@ -368,13 +504,112 @@ def _render_report(
     scored = [finding for finding in findings if finding.risk_points > 0]
     diagnostics = [finding for finding in findings if finding.risk_points == 0]
 
-    _render_score_header(report, input_type, len(scored))
-    _render_detector_grid(report)
-    _render_category_strips(scored)
-    _render_findings(scored, diagnostics)
-    _render_visual_artifacts(report, output_dir)
-    _render_laboratory(laboratory, output_dir)
-    _render_json(report, output_dir)
+    analysis_tab, ocr_tab, laboratory_tab = st.tabs(
+        ["Analyse", "OCR", "Laboratoire"],
+    )
+    with analysis_tab:
+        _render_score_header(report)
+        _render_detector_grid(report)
+        _render_category_strips(scored)
+        _render_findings(scored, diagnostics)
+        _render_visual_artifacts(report, output_dir)
+        _render_json(report, output_dir)
+
+    with ocr_tab:
+        _render_ocr_results(report, output_dir)
+
+    with laboratory_tab:
+        _render_laboratory(laboratory, output_dir)
+
+
+def _render_ocr_demo_report(
+    *,
+    name: str,
+    markdown: str,
+    payload: Any,
+    laboratory: LaboratoryReport,
+    ocr_detector: DetectorResult,
+) -> None:
+    analysis_tab, ocr_tab, laboratory_tab = st.tabs(
+        ["Analyse", "OCR", "Laboratoire"],
+    )
+    with analysis_tab:
+        finding = ocr_detector.findings[0] if ocr_detector.findings else None
+        points = finding.risk_points if finding is not None else 0.0
+        reliability = finding.confidence if finding is not None else None
+        level = "Revue manuelle" if points >= 30 else "Controle complementaire"
+        reliability_text = f"{reliability:.0%}" if reliability is not None else "-"
+        st.markdown(
+            f"""
+            <section class="ocr-demo-state">
+              <strong>{_html(name)}</strong>
+              <span>{points:g}/30 points contenu - {level} - OCR {reliability_text}</span>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        _render_detector_card(ocr_detector)
+        if finding is not None:
+            _render_findings(
+                [finding] if finding.risk_points > 0 else [],
+                [finding] if finding.risk_points == 0 else [],
+            )
+    with ocr_tab:
+        _render_ocr_payload(markdown, payload)
+    with laboratory_tab:
+        _render_laboratory(laboratory, Path("."))
+
+
+def _render_ocr_results(
+    report: AnalysisReport | ImageAnalysisReport,
+    output_dir: Path,
+) -> None:
+    markdown_paths = _existing_artifacts(
+        output_dir,
+        report.artifacts.get("ocr_markdown", ()),
+    )
+    if not markdown_paths:
+        st.info("Aucun contenu OCR disponible pour cette analyse.")
+        return
+
+    markdown = markdown_paths[0].read_text(encoding="utf-8")
+    layout_images = _existing_artifacts(
+        output_dir,
+        report.artifacts.get("ocr_layout", ()),
+    )
+    json_paths = _existing_artifacts(
+        output_dir,
+        report.artifacts.get("ocr_json", ()),
+    )
+    payload: Any = None
+    if json_paths:
+        try:
+            payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = None
+    _render_ocr_payload(markdown, payload, layout_images)
+
+
+def _render_ocr_payload(
+    markdown: str,
+    payload: Any,
+    layout_images: list[Path] | tuple[Path, ...] = (),
+) -> None:
+    st.markdown('<h2 class="section-title">Texte reconnu</h2>', unsafe_allow_html=True)
+    st.markdown(markdown)
+
+    if layout_images:
+        st.markdown('<h2 class="section-title">Zones reconnues</h2>', unsafe_allow_html=True)
+        for page_index, path in enumerate(layout_images, start=1):
+            st.image(
+                str(path),
+                caption=f"Page {page_index}",
+                width="stretch",
+            )
+
+    if payload is not None:
+        with st.popover("Donnees structurees"):
+            st.json(payload, expanded=False)
 
 
 LAB_STATE_LABELS = {
@@ -399,21 +634,29 @@ def _render_laboratory(
     output_dir: Path,
 ) -> None:
     if laboratory is None:
+        st.info("Aucun controle experimental disponible.")
         return
 
     st.markdown('<h2 class="section-title">Laboratoire</h2>', unsafe_allow_html=True)
-    if not st.toggle("Afficher les controles experimentaux", value=False):
-        return
-
-    st.markdown(
-        """
-        <div class="lab-intro">
-          Ces controles sont experimentaux et ne modifient pas le score Frod.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    ocr_checks = tuple(check for check in laboratory.checks if check.code.startswith("ocr_"))
+    document_checks = tuple(
+        check for check in laboratory.checks if not check.code.startswith("ocr_")
     )
-    for check in laboratory.checks:
+
+    if ocr_checks:
+        st.markdown(
+            '<h3 class="laboratory-group-title">Analyse OCR solo</h3>',
+            unsafe_allow_html=True,
+        )
+        for check in ocr_checks:
+            _render_laboratory_check(check, output_dir)
+
+    if document_checks:
+        st.markdown(
+            '<h3 class="laboratory-group-title">Controles documentaires</h3>',
+            unsafe_allow_html=True,
+        )
+    for check in document_checks:
         _render_laboratory_check(check, output_dir)
 
 
@@ -534,8 +777,6 @@ def _load_gapl_adapter(weights_path: str, device: str) -> Any:
 
 def _render_score_header(
     report: AnalysisReport | ImageAnalysisReport,
-    input_type: str,
-    scored_count: int,
 ) -> None:
     assessment = report.assessment
     style = LEVEL_STYLE[assessment.level]
@@ -561,6 +802,18 @@ def _render_score_header(
         (finding.risk_points for finding in gapl_findings),
         default=0.0,
     )
+    content_findings = [finding for finding in report.findings if finding.detector == "ocr_content"]
+    content_points = max(
+        (finding.risk_points for finding in content_findings),
+        default=0.0,
+    )
+    content_reliability = max(
+        (finding.confidence for finding in content_findings),
+        default=None,
+    )
+    content_reliability_text = (
+        f"{content_reliability:.0%}" if content_reliability is not None else "-"
+    )
     st.markdown(
         f"""
         <section class="score-hero {style["tone"]}">
@@ -578,8 +831,8 @@ def _render_score_header(
             <div><strong>{_html(style["label"])}</strong><span>Niveau</span></div>
             <div class="ai-metric"><strong>{gapl_index_text}</strong><span>Indice IA</span></div>
             <div><strong>{gapl_points:g}</strong><span>Points IA</span></div>
-            <div><strong>{scored_count}</strong><span>Indices retenus</span></div>
-            <div><strong>{_html(input_type)}</strong><span>Type</span></div>
+            <div><strong>{content_points:g}</strong><span>Points contenu</span></div>
+            <div><strong>{content_reliability_text}</strong><span>Fiabilite OCR</span></div>
             <div><strong>{_html(page_line)}</strong><span>Perimetre</span></div>
           </div>
         </section>
@@ -609,11 +862,13 @@ def _render_detector_card(detector: Any) -> None:
         for finding in detector.findings
         if finding.code == "AI_GAPL_GLOBAL_TRACE" and "global_index" in finding.evidence
     ]
-    detail = (
-        f"Indice IA maximal : {max(gapl_indices):.0%}"
-        if gapl_indices
-        else f"{len(scored)} indice(s), {len(diagnostics)} diagnostic(s)"
-    )
+    if gapl_indices:
+        detail = f"Indice IA maximal : {max(gapl_indices):.0%}"
+    elif detector.name == "ocr_content" and detector.findings:
+        reliability = max(item.confidence for item in detector.findings)
+        detail = f"Fiabilite OCR : {reliability:.0%}"
+    else:
+        detail = f"{len(scored)} indice(s), {len(diagnostics)} diagnostic(s)"
     st.markdown(
         f"""
         <div class="detector-card {tone}">
@@ -692,11 +947,12 @@ def _finding_card(finding: Finding, *, diagnostic: bool = False) -> None:
         if finding.bbox is not None:
             location += " - zone localisee"
     gapl_index = finding.evidence.get("global_index")
-    confidence_label = (
-        f"Indice IA : {float(gapl_index):.0%}"
-        if gapl_index is not None
-        else f"Confiance : {finding.confidence:.0%}"
-    )
+    if gapl_index is not None:
+        confidence_label = f"Indice IA : {float(gapl_index):.0%}"
+    elif finding.detector == "ocr_content":
+        confidence_label = f"Fiabilite OCR : {finding.confidence:.0%}"
+    else:
+        confidence_label = f"Confiance : {finding.confidence:.0%}"
     st.markdown(
         f"""
         <article class="finding-card {tone}">
@@ -976,6 +1232,24 @@ def _inject_styles() -> None:
           max-width: 680px;
           margin: 0;
         }
+        .ocr-demo-state {
+          min-height: 180px;
+          display: grid;
+          align-content: center;
+          gap: .35rem;
+          border: 1px solid var(--line);
+          border-left: 7px solid #38bdf8;
+          border-radius: 8px;
+          background: #132635;
+          padding: 1.25rem;
+          margin-top: 1rem;
+        }
+        .ocr-demo-state strong {
+          font-size: 1.15rem;
+        }
+        .ocr-demo-state span {
+          color: var(--muted);
+        }
         .score-hero {
           display: grid;
           grid-template-columns: auto minmax(260px, 1fr) minmax(220px, .55fr);
@@ -1055,6 +1329,29 @@ def _inject_styles() -> None:
           font-size: 1.22rem;
           margin: 1.55rem 0 .75rem;
           letter-spacing: 0;
+        }
+        .laboratory-group-title {
+          color: #f4ede4;
+          font-size: 1rem;
+          margin: 1.35rem 0 .25rem;
+          padding-bottom: .55rem;
+          border-bottom: 1px solid var(--line);
+          letter-spacing: 0;
+        }
+        div[data-baseweb="tab-list"] {
+          gap: .35rem;
+          border-bottom: 1px solid var(--line);
+          margin-bottom: .6rem;
+        }
+        button[data-baseweb="tab"] {
+          min-height: 3rem;
+          padding: 0 1rem;
+          color: var(--muted);
+          font-weight: 800;
+        }
+        button[data-baseweb="tab"][aria-selected="true"] {
+          color: #f4ede4;
+          border-bottom-color: #2dd4bf;
         }
         .detector-grid {
           display: grid;

@@ -32,6 +32,9 @@ class AnalysisConfig:
     ai_model_score_threshold: float = 0.80
     ai_min_consensus_families: int = 2
     ai_stability_max_delta: float = 0.15
+    ocr_enabled: bool = False
+    ocr_url: str = "http://127.0.0.1:8007"
+    ocr_timeout_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -66,3 +69,7 @@ class AnalysisConfig:
             raise ValueError("ai_min_consensus_families must be at least 2")
         if not 0 <= self.ai_stability_max_delta <= 1:
             raise ValueError("ai_stability_max_delta must be between 0 and 1")
+        if self.ocr_enabled and not self.ocr_url.strip():
+            raise ValueError("ocr_url must not be empty when OCR is enabled")
+        if self.ocr_timeout_seconds < 1:
+            raise ValueError("ocr_timeout_seconds must be at least 1")

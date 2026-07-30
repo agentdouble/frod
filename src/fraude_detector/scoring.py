@@ -8,6 +8,7 @@ from fraude_detector.models import Finding, RiskAssessment
 
 FAMILY_CAPS: dict[str, float] = {
     "annotations": 10.0,
+    "content_consistency": 30.0,
     "document_integrity": 20.0,
     "metadata": 15.0,
     "page_composition": 45.0,
