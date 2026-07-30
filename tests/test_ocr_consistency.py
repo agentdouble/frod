@@ -159,6 +159,32 @@ def test_card_conflict_and_luhn_failure_share_one_point_group() -> None:
     }
 
 
+def test_two_distinct_valid_cards_do_not_create_a_finding() -> None:
+    payload = [
+        [
+            {
+                "label": "text",
+                "content": "Primary credit card number: 4111 1111 1111 1111",
+            },
+            {
+                "label": "text",
+                "content": "Secondary credit card number: 5555 5555 5555 4444",
+            },
+        ]
+    ]
+    markdown = "\n".join(item["content"] for item in payload[0])
+
+    result = build_ocr_content_result(
+        OcrReport(
+            success=True,
+            error_message=None,
+            markdown=markdown,
+            json_result=payload,
+        )
+    )
+    assert result.findings == ()
+
+
 def _fixture_report(*, markdown: str | None = None) -> OcrReport:
     payload = json.loads((FIXTURE / "document.json").read_text(encoding="utf-8"))
     return OcrReport(

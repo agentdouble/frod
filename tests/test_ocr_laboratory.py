@@ -39,6 +39,7 @@ def test_bank_statement_checks_identifiers_summary_and_ledger() -> None:
                     <th>Credit</th><th>Balance</th>
                   </tr>
                   <tr><td></td><td></td><td></td><td>100.00</td></tr>
+                  <tr><td>15-Feb-2026</td><td></td><td></td><td>100.00</td></tr>
                   <tr><td>18-Feb-2026</td><td>20.00 (USD)</td><td></td><td>81.00</td></tr>
                   <tr><td>16-Feb-2026</td><td>1.00</td><td></td><td>81.00</td></tr>
                 </table>
@@ -80,8 +81,8 @@ def test_bank_statement_checks_identifiers_summary_and_ledger() -> None:
         "OCR_LEDGER_MISMATCH",
     ]
     ledger = financial.observations[1]
-    assert ledger.evidence["balance_mismatch_rows"] == [3]
-    assert ledger.evidence["chronology_inversion_rows"] == [3]
+    assert ledger.evidence["balance_mismatch_rows"] == [4]
+    assert ledger.evidence["chronology_inversion_rows"] == [4]
     assert ledger.evidence["foreign_currency_rows_skipped"] == 1
 
 
@@ -178,6 +179,122 @@ def test_iban_checks_country_specific_structure_not_only_mod_97() -> None:
     assert identifiers.state == "attention"
     invalid = next(item for item in identifiers.observations if item.code == "OCR_IBAN_INVALID")
     assert "invalid_country_structure" in invalid.evidence["invalid_reasons"]
+
+
+def test_identifier_labels_are_general_and_do_not_consume_the_next_field() -> None:
+    payload = [
+        [
+            _region("text", "Numéro de carte : 4111 1111 1111 1111"),
+            _region(
+                "text",
+                "IBAN number: GB82 WEST 1234 5698 7654 32 BIC: HDFCINBB",
+            ),
+            _region("text", "CKYC Number: 12345678901234"),
+            _region("text", "CKYC ID: O12345678901234"),
+            _region("text", "MICR Code: 123456789"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    assert {item.code for item in identifiers.observations} == {
+        "OCR_CARD_LUHN_VALID",
+        "OCR_IBAN_VALID",
+        "OCR_BIC_VALID",
+        "OCR_CKYC_VALID",
+        "OCR_MICR_VALID",
+    }
+    iban = next(item for item in identifiers.observations if item.code == "OCR_IBAN_VALID")
+    assert iban.evidence["length"] == 22
+    assert sum(item.code == "OCR_CKYC_VALID" for item in identifiers.observations) == 2
+
+
+def test_micr_without_country_context_is_observed_but_not_declared_invalid() -> None:
+    payload = [
+        [
+            _region("text", "US check information"),
+            _region("text", "MICR number: 123456789012"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    assert identifiers.observations[0].code == "OCR_MICR_OBSERVED"
+    assert identifiers.observations[0].evidence["jurisdiction"] is None
+
+
+def test_unlabeled_long_numbers_are_not_guessed_as_bank_identifiers() -> None:
+    payload = [
+        [
+            _region("text", "Document reference 4111111111111111"),
+            _region("text", "Internal processing number 12345678901234"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "not_applicable"
+    assert identifiers.observations == ()
+
+
+def test_descending_statement_dates_are_not_a_chronology_anomaly() -> None:
+    payload = [
+        [
+            _region("text", "Currency: EUR"),
+            _region(
+                "table",
+                """
+                <table>
+                  <tr>
+                    <th>Booking date</th><th>Withdrawal</th>
+                    <th>Deposit</th><th>Current balance</th>
+                  </tr>
+                  <tr><td></td><td></td><td></td><td>100.00</td></tr>
+                  <tr><td>2026-03-03</td><td>10.00</td><td></td><td>90.00</td></tr>
+                  <tr><td>2026-03-02</td><td>5.00</td><td></td><td>85.00</td></tr>
+                  <tr><td>2026-03-01</td><td></td><td>2.00</td><td>87.00</td></tr>
+                </table>
+                """,
+            ),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    financial = next(check for check in checks if check.code == "ocr_financial_consistency")
+
+    assert financial.state == "clear"
+    assert financial.observations[0].code == "OCR_LEDGER_VALID"
+    assert financial.observations[0].evidence["chronology_inversion_rows"] == []
+
+
+def test_french_statement_summary_aliases_are_supported() -> None:
+    payload = [
+        [
+            _region(
+                "table",
+                """
+                <table>
+                  <tr>
+                    <th>Solde d'ouverture</th><th>Débit total</th>
+                    <th>Crédit total</th><th>Solde de clôture</th>
+                  </tr>
+                  <tr><td>100,00</td><td>30,00</td><td>5,00</td><td>75,00</td></tr>
+                </table>
+                """,
+            ),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    financial = next(check for check in checks if check.code == "ocr_financial_consistency")
+
+    assert financial.state == "clear"
+    assert financial.observations[0].code == "OCR_STATEMENT_SUMMARY_VALID"
 
 
 def _region(label: str, content: str) -> dict[str, object]:

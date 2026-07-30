@@ -18,15 +18,41 @@ from fraude_detector.financial_identifiers import (
 )
 from fraude_detector.models import LaboratoryCheck, LaboratoryObservation
 
-_CARD_CONTEXT = re.compile(r"\b(?:credit\s+card|card\s+no|carte)\b", re.IGNORECASE)
-_CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[\s-]?){12,18}\d(?!\d)")
-_BIC = re.compile(r"\b(?:BIC|SWIFT)\b\s*[:.]?\s*([A-Z0-9]{6,14})", re.IGNORECASE)
-_IBAN = re.compile(
-    r"\bIBAN\b\s*[:.]?\s*([A-Z]{2}\d{2}(?:[\s-]?[A-Z0-9]){11,30})",
+_CARD_CONTEXT = re.compile(
+    r"\b(?:"
+    r"(?:credit|debit|payment)\s+card(?:\s+(?:account|no|number))?"
+    r"|card\s+(?:account|no|number)"
+    r"|(?:num[eé]ro|n[°o])\s+(?:de\s+)?carte"
+    r"|carte\s+(?:bancaire|de\s+credit)"
+    r"|kartennummer"
+    r")\b",
     re.IGNORECASE,
 )
-_CKYC = re.compile(r"\bCKYC(?:\s+ID)?\b\s*[:.]?\s*([SL]?\d{10,16})", re.IGNORECASE)
-_MICR = re.compile(r"\bMICR(?:\s+CODE)?\b\s*[:.]?\s*(\d{6,12})", re.IGNORECASE)
+_CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[\s-]?){12,18}\d(?!\d)")
+_BIC = re.compile(
+    r"\b(?:"
+    r"(?:BIC|SWIFT)(?:\s*[/|-]\s*(?:BIC|SWIFT))?(?:\s+(?:CODE|NO|NUMBER))?"
+    r"|CODE\s+(?:BIC|SWIFT)"
+    r")\b\s*[:.]?\s*"
+    r"((?:[A-Z0-9]{4}\s+[A-Z0-9]{2}\s+[A-Z0-9]{2}(?:\s+[A-Z0-9]{3})?"
+    r"|[A-Z0-9]{6,14}))",
+    re.IGNORECASE,
+)
+_IBAN = re.compile(
+    r"\bIBAN(?:\s+(?:NO|NUMBER|NUM[EÉ]RO))?\b\s*[:.]?\s*"
+    r"([A-Z]{2}\d{2}(?:[\s-]?[A-Z0-9]){11,30}?)"
+    r"(?=\s+(?:BIC|SWIFT|ACCOUNT|BANK|BRANCH|CURRENCY|BENEFICIARY|NAME|ADDRESS)\b"
+    r"|[;\n<]|$)",
+    re.IGNORECASE,
+)
+_CKYC = re.compile(
+    r"\bCKYC(?:\s+(?:ID|NO|NUMBER))?\b\s*[:.]?\s*([SLO]?\d{10,16})",
+    re.IGNORECASE,
+)
+_MICR = re.compile(
+    r"\bMICR(?:\s+(?:CODE|NO|NUMBER))?\b\s*[:.]?\s*(\d{6,18})",
+    re.IGNORECASE,
+)
 _CURRENCY = re.compile(r"\b(EUR|USD|GBP|CHF|THB)\b", re.IGNORECASE)
 _DATE_PATTERNS = (
     (re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"), "%Y-%m-%d"),
@@ -163,31 +189,49 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
 
     card_occurrences: dict[str, set[int]] = {}
     for region in regions:
-        if not _CARD_CONTEXT.search(region.content):
-            continue
-        for match in _CARD_NUMBER.finditer(region.content):
+        for context in _CARD_CONTEXT.finditer(region.content):
+            nearby_text = region.content[context.end() : context.end() + 80]
+            match = _CARD_NUMBER.search(nearby_text)
+            if match is None:
+                continue
             digits = re.sub(r"\D", "", match.group())
-            if 13 <= len(digits) <= 19:
-                card_occurrences.setdefault(digits, set()).add(region.page)
+            card_occurrences.setdefault(digits, set()).add(region.page)
 
     if len(card_occurrences) > 1:
-        anomaly_count += 1
         masked_values = tuple(_mask_card(value) for value in card_occurrences)
         difference = _single_character_difference(tuple(card_occurrences))
+        likely_conflict = difference == 1
+        anomaly_count += int(likely_conflict)
         observations.append(
             LaboratoryObservation(
-                code="OCR_CARD_VALUES_CONFLICT",
-                title="Numeros de carte contradictoires",
-                summary=(
-                    f"Le document contient {len(card_occurrences)} numeros differents "
-                    f"({', '.join(value[-4:] for value in card_occurrences)})."
+                code=(
+                    "OCR_CARD_VALUES_CONFLICT" if likely_conflict else "OCR_CARD_MULTIPLE_VALUES"
                 ),
-                state="attention",
-                strength="moderate",
+                title=(
+                    "Numeros de carte presque identiques"
+                    if likely_conflict
+                    else "Plusieurs numeros de carte"
+                ),
+                summary=(
+                    "Deux numeros de meme longueur ne different que d'un caractere."
+                    if likely_conflict
+                    else (
+                        f"Le document contient {len(card_occurrences)} numeros distincts "
+                        f"({', '.join(value[-4:] for value in card_occurrences)})."
+                    )
+                ),
+                state="attention" if likely_conflict else "clear",
+                strength="moderate" if likely_conflict else "informational",
                 explanation=(
-                    "Un numero attendu comme stable varie dans le meme document. "
-                    "Il faut confronter les deux zones a l'image, car une erreur OCR "
-                    "peut aussi expliquer l'ecart."
+                    (
+                        "Une variation d'un seul caractere peut correspondre a une retouche "
+                        "ou a une erreur OCR; les deux zones doivent etre confrontees a l'image."
+                    )
+                    if likely_conflict
+                    else (
+                        "Plusieurs cartes peuvent legitimement figurer dans un meme document. "
+                        "Cette observation reste donc sans effet sur le score."
+                    )
                 ),
                 page=min(min(pages) for pages in card_occurrences.values()),
                 evidence={
@@ -251,45 +295,52 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
         anomaly_count += int(not validation.valid)
         observations.append(_iban_observation(validation, min(pages)))
 
-    indian_identifiers: list[str] = []
+    ckyc_occurrences: list[tuple[str, int]] = []
+    micr_occurrences: list[tuple[str, int]] = []
     for region in regions:
         for match in _CKYC.finditer(region.content):
-            checked += 1
             candidate = match.group(1).upper()
-            digits = candidate[1:] if candidate[:1] in {"S", "L"} else candidate
-            valid = len(digits) == 14
-            anomaly_count += int(not valid)
-            indian_identifiers.append("CKYC")
-            observations.append(
-                LaboratoryObservation(
-                    code="OCR_CKYC_VALID" if valid else "OCR_CKYC_INVALID",
-                    title="Identifiant CKYC",
-                    summary=(
-                        "L'identifiant CKYC respecte le format indien a 14 chiffres."
-                        if valid
-                        else (f"L'identifiant CKYC contient {len(digits)} chiffres au lieu de 14.")
-                    ),
-                    state="clear" if valid else "attention",
-                    strength="informational" if valid else "moderate",
-                    explanation=(
-                        "CKYC est un identifiant du registre KYC central indien. "
-                        "Le format ne confirme pas l'existence de l'enregistrement."
-                    ),
-                    page=region.page,
-                    evidence={
-                        "masked_value": _mask_identifier(candidate),
-                        "digit_count": len(digits),
-                        "jurisdiction": "IN",
-                    },
-                )
-            )
+            ckyc_occurrences.append((candidate, region.page))
 
         for match in _MICR.finditer(region.content):
-            checked += 1
             candidate = match.group(1)
+            micr_occurrences.append((candidate, region.page))
+
+    for candidate, page in ckyc_occurrences:
+        checked += 1
+        digits = candidate[1:] if candidate[:1] in {"S", "L", "O"} else candidate
+        valid = len(digits) == 14
+        anomaly_count += int(not valid)
+        observations.append(
+            LaboratoryObservation(
+                code="OCR_CKYC_VALID" if valid else "OCR_CKYC_INVALID",
+                title="Identifiant CKYC",
+                summary=(
+                    "L'identifiant CKYC respecte le format indien a 14 chiffres."
+                    if valid
+                    else (f"L'identifiant CKYC contient {len(digits)} chiffres au lieu de 14.")
+                ),
+                state="clear" if valid else "attention",
+                strength="informational" if valid else "moderate",
+                explanation=(
+                    "CKYC est un identifiant du registre KYC central indien. "
+                    "Le format ne confirme pas l'existence de l'enregistrement."
+                ),
+                page=page,
+                evidence={
+                    "masked_value": _mask_identifier(candidate),
+                    "digit_count": len(digits),
+                    "jurisdiction": "IN",
+                },
+            )
+        )
+
+    indian_micr_context = bool(ckyc_occurrences)
+    for candidate, page in micr_occurrences:
+        checked += 1
+        if indian_micr_context:
             valid = len(candidate) == 9
             anomaly_count += int(not valid)
-            indian_identifiers.append("MICR")
             observations.append(
                 LaboratoryObservation(
                     code="OCR_MICR_VALID" if valid else "OCR_MICR_INVALID",
@@ -302,14 +353,35 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                     state="clear" if valid else "attention",
                     strength="informational" if valid else "moderate",
                     explanation=(
-                        "Dans ce contexte, MICR identifie une ville, une banque et une "
-                        "agence du systeme bancaire indien."
+                        "La presence de CKYC fournit ici le contexte indien necessaire "
+                        "pour interpreter le champ MICR."
                     ),
-                    page=region.page,
+                    page=page,
                     evidence={
                         "masked_value": _mask_identifier(candidate),
                         "digit_count": len(candidate),
                         "jurisdiction": "IN",
+                    },
+                )
+            )
+        else:
+            observations.append(
+                LaboratoryObservation(
+                    code="OCR_MICR_OBSERVED",
+                    title="Champ MICR",
+                    summary=f"Un champ MICR de {len(candidate)} chiffres a ete reconnu.",
+                    state="clear",
+                    strength="informational",
+                    explanation=(
+                        "MICR est utilise dans plusieurs systemes bancaires. Sans autre "
+                        "contexte national, sa longueur n'est pas qualifiee comme valide "
+                        "ou invalide."
+                    ),
+                    page=page,
+                    evidence={
+                        "masked_value": _mask_identifier(candidate),
+                        "digit_count": len(candidate),
+                        "jurisdiction": None,
                     },
                 )
             )
@@ -318,10 +390,12 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
         regions,
         bic_occurrences,
     )
-    if banking_country and banking_country != "IN" and indian_identifiers:
+    if banking_country and banking_country != "IN" and ckyc_occurrences:
         anomaly_count += 1
-        identifier_types = set(indian_identifiers)
-        corroborated = {"CKYC", "MICR"}.issubset(identifier_types)
+        identifier_types = {"CKYC"}
+        if micr_occurrences:
+            identifier_types.add("MICR")
+        corroborated = bool(micr_occurrences)
         country_label = (
             "luxembourgeois" if banking_country == "LU" else f"rattache au pays {banking_country}"
         )
@@ -658,10 +732,41 @@ def _statement_summary_observation(table: _Table) -> LaboratoryObservation | Non
     if len(table.rows) < 2:
         return None
     headers = tuple(_normalize_label(cell) for cell in table.rows[0])
-    opening = _column(headers, "opening balance", "solde initial")
-    debit = _column(headers, "total debit", "total des debits")
-    credit = _column(headers, "total credit", "total des credits")
-    closing = _column(headers, "pending balance", "closing balance", "solde final")
+    opening = _column(
+        headers,
+        "opening balance",
+        "beginning balance",
+        "previous balance",
+        "balance brought forward",
+        "solde initial",
+        "solde d ouverture",
+        "ancien solde",
+    )
+    debit = _column(
+        headers,
+        "total debit",
+        "debit total",
+        "total withdrawals",
+        "total des debits",
+    )
+    credit = _column(
+        headers,
+        "total credit",
+        "credit total",
+        "total deposits",
+        "total des credits",
+    )
+    closing = _column(
+        headers,
+        "pending balance",
+        "closing balance",
+        "ending balance",
+        "current balance",
+        "new balance",
+        "solde final",
+        "solde de cloture",
+        "nouveau solde",
+    )
     if None in {opening, debit, credit, closing}:
         return None
     row = table.rows[1]
@@ -706,14 +811,24 @@ def _ledger_observation(
     if len(table.rows) < 2:
         return None
     headers = tuple(_normalize_label(cell) for cell in table.rows[0])
-    transaction_date = _column(headers, "transaction date", "date transaction")
-    debit = _column(headers, "debit")
-    credit = _column(headers, "credit")
-    balance = _column(headers, "balance", "solde")
+    transaction_date = _column(
+        headers,
+        "transaction date",
+        "posting date",
+        "booking date",
+        "date transaction",
+        "date operation",
+        "date comptable",
+        "buchungsdatum",
+    )
+    debit = _column(headers, "debit", "withdrawal", "retrait", "belastung")
+    credit = _column(headers, "credit", "deposit", "versement", "gutschrift")
+    balance = _column(headers, "balance", "solde", "kontostand")
     if None in {transaction_date, debit, credit, balance}:
         return None
 
     previous_date: date | None = None
+    date_direction: int | None = None
     previous_balance: Decimal | None = None
     inversions: list[int] = []
     mismatches: list[int] = []
@@ -732,8 +847,12 @@ def _ledger_observation(
         raw_date = row[transaction_date].strip()
         parsed_date = _parse_date_text(raw_date)
         if parsed_date is not None:
-            if previous_date is not None and parsed_date < previous_date:
-                inversions.append(row_number)
+            if previous_date is not None and parsed_date != previous_date:
+                direction = 1 if parsed_date > previous_date else -1
+                if date_direction is None:
+                    date_direction = direction
+                elif direction != date_direction:
+                    inversions.append(row_number)
             previous_date = parsed_date
 
         current_balance = _parse_amount(row[balance])
@@ -802,9 +921,34 @@ def _ledger_observation(
 def _invoice_total_observation(table: _Table) -> LaboratoryObservation | None:
     amounts: dict[str, Decimal] = {}
     aliases = {
-        "subtotal": ("subtotal", "total ht", "net total", "nettobetrag"),
-        "tax": ("tva", "vat", "tax", "mwst"),
-        "total": ("total ttc", "grand total", "total due", "gesamtbetrag"),
+        "subtotal": (
+            "subtotal",
+            "sub total",
+            "total ht",
+            "total hors taxe",
+            "net total",
+            "net amount",
+            "nettobetrag",
+        ),
+        "tax": (
+            "tva",
+            "vat",
+            "tax",
+            "tax amount",
+            "montant taxe",
+            "mwst",
+            "mehrwertsteuer",
+        ),
+        "total": (
+            "total ttc",
+            "total toutes taxes comprises",
+            "grand total",
+            "total due",
+            "amount due",
+            "montant a payer",
+            "net a payer",
+            "gesamtbetrag",
+        ),
     }
     for row in table.rows:
         if not row:
