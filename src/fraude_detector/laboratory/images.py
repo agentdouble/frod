@@ -13,6 +13,7 @@ from fraude_detector.models import (
 from fraude_detector.trufor import (
     TRUFOR_DEFAULT_CHECKPOINT,
     TRUFOR_MAX_PIXELS,
+    TRUFOR_TIMEOUT_SECONDS,
     TruForError,
     analyze_trufor_image,
 )
@@ -24,6 +25,7 @@ def analyze_image_laboratory(
     *,
     trufor_weights: str | Path = TRUFOR_DEFAULT_CHECKPOINT,
     trufor_max_pixels: int = TRUFOR_MAX_PIXELS,
+    trufor_timeout_seconds: int = TRUFOR_TIMEOUT_SECONDS,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> LaboratoryReport:
     """Run non-scoring image-only experiments without changing Frod findings."""
@@ -34,6 +36,7 @@ def analyze_image_laboratory(
             output_dir,
             weights_path=trufor_weights,
             max_pixels=trufor_max_pixels,
+            timeout_seconds=trufor_timeout_seconds,
             progress_callback=progress_callback,
         )
     except TruForError as error:

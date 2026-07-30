@@ -198,7 +198,6 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
             card_occurrences.setdefault(digits, set()).add(region.page)
 
     if len(card_occurrences) > 1:
-        masked_values = tuple(_mask_card(value) for value in card_occurrences)
         difference = _single_character_difference(tuple(card_occurrences))
         likely_conflict = difference == 1
         anomaly_count += int(likely_conflict)
@@ -235,7 +234,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                 ),
                 page=min(min(pages) for pages in card_occurrences.values()),
                 evidence={
-                    "masked_values": masked_values,
+                    "values": tuple(card_occurrences),
                     "distinct_values": len(card_occurrences),
                     "differing_characters": difference,
                 },
@@ -263,7 +262,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                 ),
                 page=min(pages),
                 evidence={
-                    "masked_value": f"{'*' * max(0, len(digits) - 4)}{digits[-4:]}",
+                    "value": digits,
                     "length": len(digits),
                     "occurrences": len(pages),
                     "algorithm": "Luhn",
@@ -328,7 +327,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                 ),
                 page=page,
                 evidence={
-                    "masked_value": _mask_identifier(candidate),
+                    "value": candidate,
                     "digit_count": len(digits),
                     "jurisdiction": "IN",
                 },
@@ -358,7 +357,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                     ),
                     page=page,
                     evidence={
-                        "masked_value": _mask_identifier(candidate),
+                        "value": candidate,
                         "digit_count": len(candidate),
                         "jurisdiction": "IN",
                     },
@@ -379,7 +378,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
                     ),
                     page=page,
                     evidence={
-                        "masked_value": _mask_identifier(candidate),
+                        "value": candidate,
                         "digit_count": len(candidate),
                         "jurisdiction": None,
                     },
@@ -498,7 +497,6 @@ def _iban_observation(
     page: int,
 ) -> LaboratoryObservation:
     candidate = validation.normalized
-    masked = f"{candidate[:2]}{'*' * max(0, len(candidate) - 6)}{candidate[-4:]}"
     reason = _validation_reason(validation.reasons)
     return LaboratoryObservation(
         code="OCR_IBAN_VALID" if validation.valid else "OCR_IBAN_INVALID",
@@ -519,7 +517,7 @@ def _iban_observation(
         ),
         page=page,
         evidence={
-            "masked_value": masked,
+            "value": candidate,
             "length": len(candidate),
             "country_code": validation.country_code,
             "invalid_reasons": validation.reasons,
@@ -542,15 +540,6 @@ def _validation_reason(reasons: tuple[str, ...]) -> str:
         "invalid_country_structure": "longueur ou structure nationale non conforme",
     }
     return ", ".join(labels.get(reason, reason) for reason in reasons) or "format invalide"
-
-
-def _mask_card(value: str) -> str:
-    return f"{'*' * max(0, len(value) - 4)}{value[-4:]}"
-
-
-def _mask_identifier(value: str) -> str:
-    visible = 4 if len(value) >= 4 else 1
-    return f"{'*' * max(0, len(value) - visible)}{value[-visible:]}"
 
 
 def _single_character_difference(values: tuple[str, ...]) -> int | None:

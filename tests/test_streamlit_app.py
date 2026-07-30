@@ -12,38 +12,48 @@ def test_demo_waits_for_explicit_analysis(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    app.selectbox[0].select("Montant modifie").run()
+    app.selectbox[0].select("Montant modifié").run()
 
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
     assert [button.label for button in app.button] == ["Analyser le fichier"]
-    assert "Fichier pret pour analyse" in markdown
+    assert "Fichier prêt pour analyse" in markdown
     assert not app.tabs
+    assert not app.slider
+    assert not app.select_slider
 
 
-def test_modified_demo_renders_integrated_report(monkeypatch, tmp_path: Path) -> None:
+def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    app.selectbox[0].select("Montant modifie").run()
+    app.selectbox[0].select("Montant modifié").run()
     app.button[0].click().run(timeout=30)
 
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
-    assert "Indicateurs" in markdown
-    assert "Zones a reviser" in markdown
-    assert "Laboratoire" in markdown
-    assert [tab.label for tab in app.tabs] == ["Analyse", "OCR", "Laboratoire"]
-    assert "Generation par IA" in markdown
+    assert "Synthèse de revue" in markdown
+    assert "category-counters" in markdown
+    assert "Modifications visuelles" in markdown
+    assert "Différences visibles entre les versions du document." in markdown
+    assert "Structure du fichier" in markdown
+    assert "Signatures, structure interne et altérations du fichier." in markdown
+    assert '<div class="score-meta' not in markdown
+    assert ">Frod<" not in markdown
+    assert "category-counter danger" in markdown
+    assert "Comment lire cette vue" in markdown
+    assert not app.tabs
+    assert not app.expander
+    assert "Zones à revoir - page 1" in app.selectbox[1].options
 
-    assert "Signature PDF / PAdES" in markdown
-    assert "Factur-X" in markdown
-    assert "2D-Doc" in markdown
-    assert "Historique complet" in markdown
+    assert "Signature électronique du PDF" in markdown
+    assert "Facture électronique embarquée" in markdown
+    assert "Code de vérification 2D-Doc" in markdown
+    assert "Historique complet des versions" in markdown
 
 
-def test_ocr_results_and_solo_checks_have_dedicated_tabs(
+def test_ocr_results_are_integrated_into_the_review_workspace(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -68,16 +78,17 @@ def test_ocr_results_and_solo_checks_have_dedicated_tabs(
     )
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    app.selectbox[0].select("Montant modifie").run()
+    app.selectbox[0].select("Montant modifié").run()
     app.button[0].click().run(timeout=30)
 
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Analyse", "OCR", "Laboratoire"]
-    assert "Texte reconnu" in markdown
-    assert "Analyse OCR solo" in markdown
-    assert "Exploitabilite OCR" in markdown
-    assert "Coherence des dates" in markdown
+    assert not app.tabs
+    assert not app.expander
+    assert "Zones de texte reconnues - page 1" in app.selectbox[1].options
+    assert "Contrôles effectués" in markdown
+    assert "Qualité du texte reconnu" in markdown
+    assert "Cohérence des dates" in markdown
 
 
 def test_precomputed_ocr_demo_runs_without_source_document(
@@ -89,9 +100,9 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    app.selectbox[0].select("OCR - Releve bancaire a anomalies").run()
+    app.selectbox[0].select("OCR - Relevé bancaire à anomalies").run()
 
-    assert [button.label for button in app.button] == ["Analyser les donnees OCR"]
+    assert [button.label for button in app.button] == ["Analyser les données OCR"]
     assert not app.slider
     assert not app.select_slider
 
@@ -99,15 +110,18 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     markdown = "\n".join(element.value for element in app.markdown)
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Analyse", "OCR", "Laboratoire"]
-    assert "30/30 points contenu" in markdown
-    assert "Coherence du contenu" in markdown
-    assert "Analyse OCR solo" in markdown
-    assert "Identifiants structures" in markdown
-    assert "Coherence des montants" in markdown
+    assert not app.tabs
+    assert not app.expander
+    assert "<span>30</span><small>/30</small>" in markdown
+    assert "Cohérence du contenu" in markdown
+    assert "Identifiants reconnus" in markdown
+    assert "Validité des identifiants" in markdown
+    assert "Cohérence des montants" in markdown
     assert "anomalie(s)" in markdown
     assert "BIC / SWIFT" in markdown
     assert "Referentiels bancaires de pays differents" in markdown
+    assert "4111 1111 1111 1111" in markdown
+    assert "********" not in markdown
 
 
 def test_local_original_ocr_demo_is_discovered_when_present(
@@ -126,6 +140,22 @@ def test_local_original_ocr_demo_is_discovered_when_present(
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
 
     assert "OCR original local - Releve bancaire a anomalies" in app.selectbox[0].options
+
+
+def test_business_ui_contains_no_json_renderer() -> None:
+    source = Path("app/streamlit_app.py").read_text(encoding="utf-8")
+    document_view = source[
+        source.index("def _render_document_view") : source.index("def _render_review_summary")
+    ]
+
+    assert "st.json" not in source
+    assert "st.tabs" not in source
+    assert "st.expander" not in source
+    assert (
+        document_view.index('st.selectbox("Vue affichée"')
+        < document_view.index("view-guidance")
+        < document_view.index("st.image")
+    )
 
 
 class _Response:

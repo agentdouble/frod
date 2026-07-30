@@ -67,6 +67,19 @@ def test_bank_statement_checks_identifiers_summary_and_ledger() -> None:
     conflict = identifiers.observations[0]
     assert conflict.code == "OCR_CARD_VALUES_CONFLICT"
     assert conflict.evidence["differing_characters"] == 1
+    assert set(conflict.evidence["values"]) == {
+        "4111111111111111",
+        "4111111111111121",
+    }
+    cards = [
+        item
+        for item in identifiers.observations
+        if item.code in {"OCR_CARD_LUHN_VALID", "OCR_CARD_LUHN_INVALID"}
+    ]
+    assert {item.evidence["value"] for item in cards} == {
+        "4111111111111111",
+        "4111111111111121",
+    }
     bic = next(item for item in identifiers.observations if item.code == "OCR_BIC_INVALID")
     assert set(bic.evidence["invalid_reasons"]) == {
         "invalid_length",
@@ -208,6 +221,8 @@ def test_identifier_labels_are_general_and_do_not_consume_the_next_field() -> No
     }
     iban = next(item for item in identifiers.observations if item.code == "OCR_IBAN_VALID")
     assert iban.evidence["length"] == 22
+    assert iban.evidence["value"] == "GB82WEST12345698765432"
+    assert all("value" in item.evidence for item in identifiers.observations)
     assert sum(item.code == "OCR_CKYC_VALID" for item in identifiers.observations) == 2
 
 

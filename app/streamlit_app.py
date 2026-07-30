@@ -1,16 +1,16 @@
-"""Local Streamlit review console for Frod analysis reports."""
+"""Local Streamlit interface for documentary fraud analysis reports."""
 
 from __future__ import annotations
 
 import gc
 import hashlib
+import html as html_lib
 import json
 import os
 import re
 import shutil
-from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,6 @@ import streamlit as st
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
 from fraude_detector.gapl import (
-    GAPL_DEFAULT_CHECKPOINT,
     best_available_device,
     create_gapl_adapter,
 )
@@ -34,34 +33,37 @@ from fraude_detector.models import (
     DetectorResult,
     Finding,
     ImageAnalysisReport,
-    LaboratoryCheck,
-    LaboratoryObservation,
     LaboratoryReport,
     OcrReport,
 )
 from fraude_detector.ocr_consistency import build_ocr_content_result
 from fraude_detector.pipeline import AnalysisPipeline
-from fraude_detector.trufor import TRUFOR_DEFAULT_CHECKPOINT, TRUFOR_MAX_PIXELS
+from fraude_detector.run_config import load_run_config
+from fraude_detector.scoring import FAMILY_CAPS
 
-WORK_DIR = Path(os.environ.get("FROD_WORK_DIR", ".frod"))
+CONFIG_PATH = Path(os.environ.get("FROD_CONFIG", "config.yaml"))
+PROJECT_CONFIG = load_run_config(CONFIG_PATH)
+WORK_DIR = PROJECT_CONFIG.application.work_dir
 UPLOAD_DIR = WORK_DIR / "uploads"
 RUN_DIR = WORK_DIR / "runs"
-GAPL_WEIGHTS = Path(os.environ.get("FROD_GAPL_WEIGHTS", str(GAPL_DEFAULT_CHECKPOINT)))
-TRUFOR_WEIGHTS = Path(os.environ.get("FROD_TRUFOR_WEIGHTS", str(TRUFOR_DEFAULT_CHECKPOINT)))
-TRUFOR_PIXEL_BUDGET = int(os.environ.get("FROD_TRUFOR_MAX_PIXELS", str(TRUFOR_MAX_PIXELS)))
-OCR_URL = os.environ.get("FROD_OCR_URL", "").strip()
-ANALYSIS_POLICY_VERSION = f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v1-{bool(OCR_URL)}"
+GAPL_WEIGHTS = PROJECT_CONFIG.gapl.weights_path
+TRUFOR_WEIGHTS = PROJECT_CONFIG.trufor.weights_path
+TRUFOR_PIXEL_BUDGET = PROJECT_CONFIG.trufor.max_pixels
+CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
+ANALYSIS_POLICY_VERSION = (
+    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v2-full-identifiers-{CONFIG_FINGERPRINT}"
+)
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
-    "Ajout legitime": Path("tests/fixtures/assurance-ajout-legitime.pdf"),
-    "Montant modifie": Path("tests/fixtures/assurance-fraude.pdf"),
+    "Ajout légitime": Path("tests/fixtures/assurance-ajout-legitime.pdf"),
+    "Montant modifié": Path("tests/fixtures/assurance-fraude.pdf"),
 }
 OCR_DEMO_DOCUMENTS = {
     "OCR - Facture de soins": Path("tests/fixtures/ocr/facture-soins"),
-    "OCR - Declaration coherente": Path("tests/fixtures/ocr/declaration-coherente"),
-    "OCR - Contrat bruite": Path("tests/fixtures/ocr/contrat-bruite"),
-    "OCR - Releve bancaire a anomalies": Path("tests/fixtures/ocr/releve-bancaire-anomalies"),
+    "OCR - Déclaration cohérente": Path("tests/fixtures/ocr/declaration-coherente"),
+    "OCR - Contrat bruité": Path("tests/fixtures/ocr/contrat-bruite"),
+    "OCR - Relevé bancaire à anomalies": Path("tests/fixtures/ocr/releve-bancaire-anomalies"),
     "OCR - Texte insuffisant": Path("tests/fixtures/ocr/texte-insuffisant"),
 }
 LOCAL_OCR_DEMO_DOCUMENTS = {
@@ -90,7 +92,7 @@ LEVEL_STYLE = {
         "border": "#f59e0b",
     },
     "high": {
-        "label": "Eleve",
+        "label": "Élevé",
         "tone": "high",
         "color": "#fb7185",
         "background": "#3c0912",
@@ -99,33 +101,44 @@ LEVEL_STYLE = {
 }
 
 CATEGORY_LABELS = {
-    "analysis_quality": "Qualite analyse",
-    "annotations": "Annotations",
-    "content_consistency": "Coherence du contenu",
-    "document_integrity": "Integrite document",
-    "metadata": "Metadonnees",
-    "page_composition": "Composition page",
-    "provenance_integrity": "Provenance",
-    "raster_forensics": "Forensic image",
-    "revision_history": "Historique PDF",
-    "revision_visual": "Diff revisions",
-    "synthetic_media": "Media synthetique",
+    "analysis_quality": "Qualité de l'analyse",
+    "annotations": "Annotations PDF",
+    "content_consistency": "Cohérence du contenu",
+    "document_integrity": "Structure du fichier",
+    "metadata": "Métadonnées du document",
+    "page_composition": "Composition de la page",
+    "provenance_integrity": "Preuves d'origine",
+    "raster_forensics": "Retouches de l'image",
+    "revision_history": "Historique des versions",
+    "revision_visual": "Modifications visuelles",
+    "synthetic_media": "Génération par IA",
 }
 
-DETECTOR_LABELS = {
-    "ai_generated_image": "Generation par IA",
-    "image_provenance": "Provenance image",
-    "ocr_content": "Coherence du contenu",
-    "page_composition": "Composition",
-    "pdf_structure": "Structure PDF",
-    "raster_anomaly": "ELA JPEG",
-    "revision_diff": "Diff revisions",
+CATEGORY_DESCRIPTIONS = {
+    "analysis_quality": "Qualité et couverture des opérations d'analyse.",
+    "annotations": "Commentaires, formulaires et éléments ajoutés au PDF.",
+    "content_consistency": "Cohérence des dates, montants et identifiants reconnus.",
+    "document_integrity": "Signatures, structure interne et altérations du fichier.",
+    "metadata": "Logiciels, dates et propriétés enregistrés dans le document.",
+    "page_composition": "Images, textes ou objets superposés à la page.",
+    "provenance_integrity": "Origine déclarée, certificats et traces d'authenticité.",
+    "raster_forensics": "Compression et variations visuelles pouvant signaler une retouche.",
+    "revision_history": "Réenregistrements et versions conservées dans le fichier.",
+    "revision_visual": "Différences visibles entre les versions du document.",
+    "synthetic_media": "Ressemblance visuelle avec des images générées par IA.",
 }
 
-STATUS_LABELS = {
-    "completed": "Analyse terminee",
-    "not_applicable": "Non applicable",
-    "partial": "Analyse partielle",
+CATEGORY_ACCENTS = {
+    "annotations": "#4cc9d8",
+    "content_consistency": "#35d07f",
+    "document_integrity": "#70a7ff",
+    "metadata": "#b89cff",
+    "page_composition": "#f4b942",
+    "provenance_integrity": "#55d6be",
+    "raster_forensics": "#ff8a6b",
+    "revision_history": "#8d9eff",
+    "revision_visual": "#ff6b8a",
+    "synthetic_media": "#d58cff",
 }
 
 
@@ -143,7 +156,7 @@ class OcrDemoDocument:
 
 def main() -> None:
     st.set_page_config(
-        page_title="Detection de fraude",
+        page_title="Analyse de fraude documentaire",
         page_icon=None,
         layout="wide",
         initial_sidebar_state="collapsed",
@@ -152,95 +165,90 @@ def main() -> None:
 
     st.markdown(
         """
-        <section class="topbar">
-          <div>
-            <p class="eyebrow">Assurance</p>
-            <h1>Detection de fraude documentaire</h1>
-          </div>
+        <section class="brandbar">
+          <h1>Analyse de fraude documentaire</h1>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
-    controls, results = st.columns([0.34, 0.66], gap="large")
-    with controls:
-        uploaded_file = _render_input_panel()
+    uploaded_file = _render_input_panel()
 
     if uploaded_file is None:
-        with results:
-            _render_empty_state()
+        _render_empty_state()
         return
     if isinstance(uploaded_file, OcrDemoDocument):
-        _handle_ocr_demo(uploaded_file, controls, results)
+        _handle_ocr_demo(uploaded_file)
         return
 
     file_bytes = uploaded_file.data
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     config = _config_from_state()
 
-    with controls:
+    action_space, action = st.columns([0.78, 0.22], gap="medium")
+    with action_space:
+        st.markdown(
+            f'<div class="selected-file">{_html(uploaded_file.name)}</div>',
+            unsafe_allow_html=True,
+        )
+    with action:
         analyze = st.button("Analyser le fichier", type="primary", width="stretch")
+    progress = st.empty()
 
     current_key = (
         ANALYSIS_POLICY_VERSION,
         file_hash,
         uploaded_file.name,
-        config.render_dpi,
-        config.max_pages,
     )
     cached = st.session_state.get("analysis")
     if analyze:
-        with results:
-            progress = st.empty()
-            _render_analysis_progress(progress, 0.0, "Preparation de l'analyse")
-            try:
-                report, laboratory, output_dir = _run_analysis(
-                    file_name=uploaded_file.name,
-                    file_bytes=file_bytes,
-                    file_hash=file_hash,
-                    config=config,
-                    progress_callback=lambda value, text: _render_analysis_progress(
-                        progress,
-                        value,
-                        text,
-                    ),
-                )
-                _render_analysis_progress(progress, 1.0, "Analyse terminee")
-            except AnalysisError as error:
-                progress.empty()
-                st.error(f"Erreur [{error.code}] : {error}")
-                return
-            except Exception as error:
-                progress.empty()
-                st.error(f"Erreur inattendue : {type(error).__name__}: {str(error)[:240]}")
-                return
+        _render_analysis_progress(progress, 0.0, "Préparation de l'analyse")
+        try:
+            report, laboratory, output_dir, source_path = _run_analysis(
+                file_name=uploaded_file.name,
+                file_bytes=file_bytes,
+                file_hash=file_hash,
+                config=config,
+                progress_callback=lambda value, text: _render_analysis_progress(
+                    progress,
+                    value,
+                    text,
+                ),
+            )
+            _render_analysis_progress(progress, 1.0, "Analyse terminée")
+        except AnalysisError as error:
             progress.empty()
+            st.error(f"Erreur [{error.code}] : {error}")
+            return
+        except Exception as error:
+            progress.empty()
+            st.error(f"Erreur inattendue : {type(error).__name__}: {str(error)[:240]}")
+            return
+        progress.empty()
         st.session_state["analysis"] = {
             "key": current_key,
             "report": report,
             "laboratory": laboratory,
             "output_dir": output_dir,
+            "source_path": source_path,
         }
     elif cached is not None and cached.get("key") == current_key:
         report = cached["report"]
         laboratory = cached.get("laboratory")
         output_dir = cached["output_dir"]
+        source_path = cached["source_path"]
     else:
         st.session_state.pop("analysis", None)
-        with results:
-            _render_ready_state(uploaded_file.name)
+        _render_ready_state(uploaded_file.name)
         return
 
-    with results:
-        _render_report(report, laboratory, output_dir)
+    _render_report(report, laboratory, output_dir, source_path)
 
 
 def _render_input_panel() -> InputDocument | OcrDemoDocument | None:
-    st.markdown('<div class="panel-title">Document</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader(
-        "PDF ou image",
+        "Déposer un document",
         type=["pdf", "png", "jpg", "jpeg", "webp", "tif", "tiff", "gif", "bmp"],
-        label_visibility="collapsed",
     )
     if uploaded_file is not None:
         document = InputDocument(name=uploaded_file.name, data=uploaded_file.getvalue())
@@ -253,12 +261,10 @@ def _render_input_panel() -> InputDocument | OcrDemoDocument | None:
                 if (path / "document.json").is_file() and (path / "document.md").is_file()
             },
         }
-        with st.expander("Documents de demonstration", expanded=False):
-            demo_name = st.selectbox(
-                "Exemple",
-                ("Aucun", *DEMO_DOCUMENTS, *available_ocr_demos),
-                label_visibility="collapsed",
-            )
+        demo_name = st.selectbox(
+            "Document de démonstration",
+            ("Aucun", *DEMO_DOCUMENTS, *available_ocr_demos),
+        )
         if demo_name == "Aucun":
             document = None
         elif demo_name in DEMO_DOCUMENTS:
@@ -276,19 +282,10 @@ def _render_input_panel() -> InputDocument | OcrDemoDocument | None:
             else:
                 document = OcrDemoDocument(name=demo_name, fixture_dir=fixture_dir)
 
-    if not isinstance(document, OcrDemoDocument):
-        st.markdown('<div class="panel-title minor">Options</div>', unsafe_allow_html=True)
-        st.slider("Pages analysees", min_value=1, max_value=50, value=25, key="max_pages")
-        st.select_slider(
-            "DPI rendu PDF",
-            options=[72, 108, 144, 180, 216],
-            value=144,
-            key="dpi",
-        )
     return document
 
 
-def _handle_ocr_demo(document: OcrDemoDocument, controls: Any, results: Any) -> None:
+def _handle_ocr_demo(document: OcrDemoDocument) -> None:
     json_path = document.fixture_dir / "document.json"
     markdown_path = document.fixture_dir / "document.md"
     json_bytes = json_path.read_bytes()
@@ -296,16 +293,21 @@ def _handle_ocr_demo(document: OcrDemoDocument, controls: Any, results: Any) -> 
     fixture_hash = hashlib.sha256(json_bytes + markdown.encode("utf-8")).hexdigest()
     current_key = ("ocr-demo-v2", document.name, fixture_hash)
 
-    with controls:
-        analyze = st.button("Analyser les donnees OCR", type="primary", width="stretch")
+    action_space, action = st.columns([0.78, 0.22], gap="medium")
+    with action_space:
+        st.markdown(
+            f'<div class="selected-file">{_html(document.name)}</div>',
+            unsafe_allow_html=True,
+        )
+    with action:
+        analyze = st.button("Analyser les données OCR", type="primary", width="stretch")
 
     cached = st.session_state.get("analysis")
     if analyze:
         try:
             payload = json.loads(json_bytes)
         except json.JSONDecodeError as error:
-            with results:
-                st.error(f"Fixture OCR invalide : {error}")
+            st.error(f"Fixture OCR invalide : {error}")
             return
         laboratory = LaboratoryReport(
             schema_version="0.1-experimental",
@@ -333,27 +335,19 @@ def _handle_ocr_demo(document: OcrDemoDocument, controls: Any, results: Any) -> 
         ocr_detector = cached["ocr_detector"]
     else:
         st.session_state.pop("analysis", None)
-        with results:
-            _render_ready_state(document.name)
+        _render_ready_state(document.name)
         return
 
-    with results:
-        _render_ocr_demo_report(
-            name=document.name,
-            markdown=markdown,
-            payload=payload,
-            laboratory=laboratory,
-            ocr_detector=ocr_detector,
-        )
+    _render_ocr_demo_report(
+        name=document.name,
+        markdown=markdown,
+        laboratory=laboratory,
+        ocr_detector=ocr_detector,
+    )
 
 
 def _config_from_state() -> AnalysisConfig:
-    return AnalysisConfig(
-        render_dpi=int(st.session_state.get("dpi", 144)),
-        max_pages=int(st.session_state.get("max_pages", 25)),
-        ocr_enabled=bool(OCR_URL),
-        ocr_url=OCR_URL or "http://127.0.0.1:8007",
-    )
+    return PROJECT_CONFIG.analysis
 
 
 def _run_analysis(
@@ -366,6 +360,7 @@ def _run_analysis(
 ) -> tuple[
     AnalysisReport | ImageAnalysisReport,
     LaboratoryReport | None,
+    Path,
     Path,
 ]:
     def report_progress(value: float, text: str) -> None:
@@ -386,11 +381,16 @@ def _run_analysis(
 
     adapters = ()
     gapl_adapter = None
-    if GAPL_WEIGHTS.is_file():
-        report_progress(0.06, "Chargement du modele GAPL")
+    if PROJECT_CONFIG.gapl.enabled and GAPL_WEIGHTS.is_file():
+        report_progress(0.06, "Chargement de l'analyse des images générées par IA")
+        device = (
+            best_available_device()
+            if PROJECT_CONFIG.gapl.device == "auto"
+            else PROJECT_CONFIG.gapl.device
+        )
         gapl_adapter = _load_gapl_adapter(
             str(GAPL_WEIGHTS.resolve()),
-            best_available_device(),
+            device,
         )
         adapters = (gapl_adapter,)
 
@@ -408,17 +408,21 @@ def _run_analysis(
             progress_callback=pipeline_progress,
         )
 
-        laboratory = analyze_pdf_laboratory(
-            source,
-            output_dir,
-            config=config,
-            progress_callback=lambda value, text: report_progress(
-                0.74 + 0.26 * value,
-                text,
-            ),
+        laboratory = (
+            analyze_pdf_laboratory(
+                source,
+                output_dir,
+                config=config,
+                progress_callback=lambda value, text: report_progress(
+                    0.74 + 0.26 * value,
+                    text,
+                ),
+            )
+            if PROJECT_CONFIG.laboratory.pdf_enabled
+            else _empty_laboratory_report()
         )
         laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
-        return report, laboratory, output_dir
+        return report, laboratory, output_dir, source
 
     def pipeline_progress(value: float, text: str) -> None:
         report_progress(0.12 + 0.60 * value, text)
@@ -432,18 +436,27 @@ def _run_analysis(
         progress_callback=pipeline_progress,
     )
     _release_transient_memory()
-    laboratory = analyze_image_laboratory(
-        source,
-        output_dir,
-        trufor_weights=TRUFOR_WEIGHTS,
-        trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
-        progress_callback=lambda value, text: report_progress(
-            0.72 + 0.28 * value,
-            text,
-        ),
+    laboratory = (
+        analyze_image_laboratory(
+            source,
+            output_dir,
+            trufor_weights=TRUFOR_WEIGHTS,
+            trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
+            trufor_timeout_seconds=PROJECT_CONFIG.trufor.timeout_seconds,
+            progress_callback=lambda value, text: report_progress(
+                0.72 + 0.28 * value,
+                text,
+            ),
+        )
+        if PROJECT_CONFIG.laboratory.image_enabled and PROJECT_CONFIG.trufor.enabled
+        else _empty_laboratory_report()
     )
     laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
-    return report, laboratory, output_dir
+    return report, laboratory, output_dir, source
+
+
+def _empty_laboratory_report() -> LaboratoryReport:
+    return LaboratoryReport(schema_version="1.0", checks=())
 
 
 def _with_ocr_laboratory(
@@ -484,7 +497,7 @@ def _render_ready_state(filename: str) -> None:
         f"""
         <div class="empty-state ready">
           <h2>{_html(filename)}</h2>
-          <p>Fichier pret pour analyse.</p>
+          <p>Fichier prêt pour analyse.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -495,6 +508,7 @@ def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
     output_dir: Path,
+    source_path: Path,
 ) -> None:
     findings = sorted(
         report.findings,
@@ -503,252 +517,390 @@ def _render_report(
     )
     scored = [finding for finding in findings if finding.risk_points > 0]
     diagnostics = [finding for finding in findings if finding.risk_points == 0]
+    layout_images = _read_ocr_layout_images(report, output_dir)
 
-    analysis_tab, ocr_tab, laboratory_tab = st.tabs(
-        ["Analyse", "OCR", "Laboratoire"],
-    )
-    with analysis_tab:
-        _render_score_header(report)
-        _render_detector_grid(report)
-        _render_category_strips(scored)
-        _render_findings(scored, diagnostics)
-        _render_visual_artifacts(report, output_dir)
-        _render_json(report, output_dir)
+    _render_score_header(report)
+    _render_category_counters(report.findings)
 
-    with ocr_tab:
-        _render_ocr_results(report, output_dir)
-
-    with laboratory_tab:
-        _render_laboratory(laboratory, output_dir)
+    preview, review = st.columns([0.54, 0.46], gap="large")
+    with preview:
+        _render_document_view(
+            report=report,
+            laboratory=laboratory,
+            output_dir=output_dir,
+            source_path=source_path,
+            layout_images=layout_images,
+        )
+    with review:
+        _render_review_summary(scored, diagnostics, laboratory)
 
 
 def _render_ocr_demo_report(
     *,
     name: str,
     markdown: str,
-    payload: Any,
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
 ) -> None:
-    analysis_tab, ocr_tab, laboratory_tab = st.tabs(
-        ["Analyse", "OCR", "Laboratoire"],
+    finding = ocr_detector.findings[0] if ocr_detector.findings else None
+    points = finding.risk_points if finding is not None else 0.0
+    tone = "review" if points >= 30 else "low"
+    color = LEVEL_STYLE[tone]["color"]
+    angle = min(100, points / 30 * 100) * 3.6
+    st.markdown(
+        f"""
+        <section class="score-hero {tone}">
+          <div class="score-ring" style="--score-angle:{angle}deg;--score-color:{color};">
+            <span>{points:g}</span><small>/30</small>
+          </div>
+          <div class="score-copy">
+            <p class="eyebrow">Cohérence du contenu</p>
+            <h2>{_html(name)}</h2>
+            <p>Contrôle des identifiants, dates et calculs reconnus dans le document.</p>
+          </div>
+        </section>
+        """,
+        unsafe_allow_html=True,
     )
-    with analysis_tab:
-        finding = ocr_detector.findings[0] if ocr_detector.findings else None
-        points = finding.risk_points if finding is not None else 0.0
-        reliability = finding.confidence if finding is not None else None
-        level = "Revue manuelle" if points >= 30 else "Controle complementaire"
-        reliability_text = f"{reliability:.0%}" if reliability is not None else "-"
-        st.markdown(
-            f"""
-            <section class="ocr-demo-state">
-              <strong>{_html(name)}</strong>
-              <span>{points:g}/30 points contenu - {level} - OCR {reliability_text}</span>
-            </section>
-            """,
-            unsafe_allow_html=True,
-        )
-        _render_detector_card(ocr_detector)
-        if finding is not None:
-            _render_findings(
-                [finding] if finding.risk_points > 0 else [],
-                [finding] if finding.risk_points == 0 else [],
-            )
-    with ocr_tab:
-        _render_ocr_payload(markdown, payload)
-    with laboratory_tab:
-        _render_laboratory(laboratory, Path("."))
+    preview, review = st.columns([0.54, 0.46], gap="large")
+    with preview:
+        st.markdown('<h2 class="workspace-title">Document reconnu</h2>', unsafe_allow_html=True)
+        _render_recognized_text(markdown, compact=True)
+    with review:
+        scored = [finding] if finding is not None and finding.risk_points > 0 else []
+        diagnostics = [finding] if finding is not None and finding.risk_points == 0 else []
+        _render_review_summary(scored, diagnostics, laboratory)
 
 
-def _render_ocr_results(
+def _read_ocr_layout_images(
     report: AnalysisReport | ImageAnalysisReport,
     output_dir: Path,
-) -> None:
-    markdown_paths = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("ocr_markdown", ()),
-    )
-    if not markdown_paths:
-        st.info("Aucun contenu OCR disponible pour cette analyse.")
-        return
-
-    markdown = markdown_paths[0].read_text(encoding="utf-8")
-    layout_images = _existing_artifacts(
+) -> list[Path]:
+    return _existing_artifacts(
         output_dir,
         report.artifacts.get("ocr_layout", ()),
     )
-    json_paths = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("ocr_json", ()),
-    )
-    payload: Any = None
-    if json_paths:
-        try:
-            payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = None
-    _render_ocr_payload(markdown, payload, layout_images)
-
-
-def _render_ocr_payload(
-    markdown: str,
-    payload: Any,
-    layout_images: list[Path] | tuple[Path, ...] = (),
-) -> None:
-    st.markdown('<h2 class="section-title">Texte reconnu</h2>', unsafe_allow_html=True)
-    st.markdown(markdown)
-
-    if layout_images:
-        st.markdown('<h2 class="section-title">Zones reconnues</h2>', unsafe_allow_html=True)
-        for page_index, path in enumerate(layout_images, start=1):
-            st.image(
-                str(path),
-                caption=f"Page {page_index}",
-                width="stretch",
-            )
-
-    if payload is not None:
-        with st.popover("Donnees structurees"):
-            st.json(payload, expanded=False)
 
 
 LAB_STATE_LABELS = {
     "clear": "Conforme",
-    "attention": "A examiner",
-    "detected": "Element detecte",
-    "indeterminate": "Indetermine",
+    "attention": "À examiner",
+    "detected": "Élément détecté",
+    "indeterminate": "Indéterminé",
     "not_applicable": "Non applicable",
-    "error": "Controle interrompu",
+    "error": "Contrôle interrompu",
 }
 
 LAB_STRENGTH_LABELS = {
     "strong": "Indice fort",
-    "moderate": "Indice modere",
+    "moderate": "Indice modéré",
     "weak": "Indice faible",
     "informational": "Information",
 }
 
 
-def _render_laboratory(
+def _render_category_counters(findings: tuple[Finding, ...]) -> None:
+    cards = []
+    for category, cap in FAMILY_CAPS.items():
+        points = _family_score(category, findings)
+        percentage = min(100, points / cap * 100) if cap else 0
+        tone = _tone_for_ratio(percentage)
+        state = "À examiner" if points > 0 else "Aucun signal"
+        accent = CATEGORY_ACCENTS.get(category, "#8b8791")
+        cards.append(
+            f"""
+            <article class="category-counter {tone}" style="--category-accent:{accent}">
+              <div class="mini-ring" style="--meter-angle:{percentage * 3.6}deg">
+                <strong>{points:g}</strong><span>/{cap:g}</span>
+              </div>
+              <div class="category-copy">
+                <strong>{_html(CATEGORY_LABELS.get(category, category))}</strong>
+                <span class="category-state">{state}</span>
+                <p>{_html(CATEGORY_DESCRIPTIONS.get(category, ""))}</p>
+              </div>
+            </article>
+            """
+        )
+    st.markdown(
+        '<section class="category-counters">'
+        + "".join(card.strip() for card in cards)
+        + "</section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _family_score(category: str, findings: tuple[Finding, ...]) -> float:
+    by_code: dict[str, float] = {}
+    for finding in findings:
+        if finding.category != category or finding.risk_points <= 0:
+            continue
+        by_code[finding.code] = max(by_code.get(finding.code, 0.0), finding.risk_points)
+    if not by_code:
+        return 0.0
+    ordered = sorted(by_code.values(), reverse=True)
+    raw_score = ordered[0] + 0.2 * sum(ordered[1:])
+    return round(min(FAMILY_CAPS[category], raw_score), 1)
+
+
+def _tone_for_ratio(percentage: float) -> str:
+    if percentage >= 75:
+        return "danger"
+    if percentage >= 40:
+        return "warning"
+    if percentage > 0:
+        return "notice-tone"
+    return "clear"
+
+
+def _render_document_view(
+    *,
+    report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
     output_dir: Path,
+    source_path: Path,
+    layout_images: list[Path],
 ) -> None:
-    if laboratory is None:
-        st.info("Aucun controle experimental disponible.")
+    st.markdown('<h2 class="workspace-title">Document</h2>', unsafe_allow_html=True)
+    choices: dict[str, tuple[Path, str]] = {}
+    if isinstance(report, ImageAnalysisReport) and source_path.is_file():
+        choices["Document original"] = (
+            source_path,
+            "Vue de référence du fichier transmis, sans annotation ajoutée par l'analyse.",
+        )
+
+    page_images = _existing_artifacts(output_dir, report.artifacts.get("page_renders", ()))
+    for index, path in enumerate(page_images, start=1):
+        choices[f"Document - page {index}"] = (
+            path,
+            "Vue de référence de la page telle qu'elle a été analysée.",
+        )
+
+    review_images = _existing_artifacts(output_dir, report.artifacts.get("review_overlays", ()))
+    for index, path in enumerate(review_images, start=1):
+        choices[f"Zones à revoir - page {index}"] = (
+            path,
+            "Les cadres localisent les éléments associés aux signaux de la synthèse. "
+            "Ils indiquent où regarder, mais ne constituent pas une preuve de fraude.",
+        )
+
+    for index, path in enumerate(layout_images, start=1):
+        choices[f"Zones de texte reconnues - page {index}"] = (
+            path,
+            "Les cadres montrent les zones utilisées pour reconnaître le texte. "
+            "Une mauvaise lecture reste possible, notamment sur les petits caractères.",
+        )
+
+    forensic_images = [
+        path
+        for path in _existing_artifacts(output_dir, report.artifacts.get("forensics", ()))
+        if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}
+    ]
+    for path in forensic_images:
+        choices[_friendly_artifact_caption(path)] = (
+            path,
+            _artifact_view_explanation(path),
+        )
+
+    if laboratory is not None:
+        for check in laboratory.checks:
+            for observation in check.observations:
+                for path in _existing_artifacts(
+                    output_dir / "laboratory",
+                    observation.artifacts,
+                ):
+                    if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}:
+                        if _is_secondary_localization_artifact(path):
+                            continue
+                        choices[_laboratory_artifact_caption(path)] = (
+                            path,
+                            _artifact_view_explanation(path),
+                        )
+
+    if not choices:
+        st.info("Aucun apercu visuel disponible.")
         return
 
-    st.markdown('<h2 class="section-title">Laboratoire</h2>', unsafe_allow_html=True)
-    ocr_checks = tuple(check for check in laboratory.checks if check.code.startswith("ocr_"))
-    document_checks = tuple(
-        check for check in laboratory.checks if not check.code.startswith("ocr_")
+    labels = tuple(choices)
+    selected = (
+        st.selectbox("Vue affichée", labels, label_visibility="collapsed")
+        if len(labels) > 1
+        else labels[0]
     )
-
-    if ocr_checks:
-        st.markdown(
-            '<h3 class="laboratory-group-title">Analyse OCR solo</h3>',
-            unsafe_allow_html=True,
-        )
-        for check in ocr_checks:
-            _render_laboratory_check(check, output_dir)
-
-    if document_checks:
-        st.markdown(
-            '<h3 class="laboratory-group-title">Controles documentaires</h3>',
-            unsafe_allow_html=True,
-        )
-    for check in document_checks:
-        _render_laboratory_check(check, output_dir)
-
-
-def _render_laboratory_check(check: LaboratoryCheck, output_dir: Path) -> None:
-    state_label = LAB_STATE_LABELS[check.state]
+    selected_path, explanation = choices[selected]
     st.markdown(
         f"""
-        <section class="lab-check {check.state}">
-          <div class="lab-check-head">
-            <h3>{_html(check.title)}</h3>
-            <span>{_html(state_label)}</span>
-          </div>
-          <p class="lab-purpose">{_html(check.purpose)}</p>
-          <strong class="lab-summary">{_html(check.summary)}</strong>
-        </section>
+        <div class="view-guidance">
+          <strong>Comment lire cette vue</strong>
+          <p>{_html(explanation)}</p>
+        </div>
         """,
         unsafe_allow_html=True,
     )
-
-    for observation in check.observations:
-        _render_laboratory_observation(observation, output_dir)
-
-    if check.limitations:
-        with st.popover(f"Limites - {check.title}"):
-            for limitation in check.limitations:
-                st.markdown(f"- {limitation}")
+    st.image(str(selected_path), caption=selected, width="stretch")
 
 
-def _render_laboratory_observation(
-    observation: LaboratoryObservation,
-    output_dir: Path,
+def _render_review_summary(
+    scored: list[Finding],
+    diagnostics: list[Finding],
+    laboratory: LaboratoryReport | None,
 ) -> None:
-    strength = LAB_STRENGTH_LABELS[observation.strength]
-    location = f"Page {observation.page}" if observation.page is not None else "Document"
-    st.markdown(
-        f"""
-        <article class="lab-observation {observation.state}">
-          <div class="lab-observation-head">
-            <div>
-              <span class="lab-strength {observation.strength}">{_html(strength)}</span>
-              <span class="lab-location">{_html(location)}</span>
+    st.markdown('<h2 class="workspace-title">Synthèse de revue</h2>', unsafe_allow_html=True)
+    grouped_scored = _group_findings(scored)
+    if grouped_scored:
+        st.markdown(
+            f"""
+            <div class="review-banner attention">
+              <strong>{len(grouped_scored)} type(s) d'indice à contrôler</strong>
+              <span>Comparer les zones signalées avec le document.</span>
             </div>
-            <strong>{_html(observation.title)}</strong>
-          </div>
-          <p>{_html(observation.summary)}</p>
-          <small>{_html(observation.explanation)}</small>
-        </article>
-        """,
+            """,
+            unsafe_allow_html=True,
+        )
+        for finding, occurrences in grouped_scored:
+            _finding_card(finding, occurrences=occurrences)
+    else:
+        st.markdown(
+            """
+            <div class="review-banner clear">
+              <strong>Aucun signal pris en compte dans le score</strong>
+              <span>Les contrôles réalisés n'ont pas relevé d'anomalie forte.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if diagnostics:
+        st.markdown(
+            f'<div class="diagnostic-count">{len(diagnostics)} observation(s) informative(s)</div>',
+            unsafe_allow_html=True,
+        )
+
+    _render_ocr_field_cards(laboratory)
+    _render_attention_observations(laboratory)
+    _render_control_matrix(laboratory)
+
+
+def _group_findings(findings: list[Finding]) -> list[tuple[Finding, int]]:
+    groups: dict[tuple[str, str, str], list[Finding]] = {}
+    for finding in findings:
+        key = (finding.category, finding.code, finding.title)
+        groups.setdefault(key, []).append(finding)
+    grouped = [
+        (
+            max(items, key=lambda item: (item.risk_points, item.confidence)),
+            len(items),
+        )
+        for items in groups.values()
+    ]
+    return sorted(
+        grouped,
+        key=lambda item: (item[0].risk_points, item[0].confidence),
+        reverse=True,
+    )
+
+
+def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
+    if laboratory is None:
+        return
+    fields = [
+        observation
+        for check in laboratory.checks
+        for observation in check.observations
+        if observation.code.startswith(
+            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
+        )
+    ]
+    if not fields:
+        return
+
+    cards = []
+    for observation in fields:
+        evidence = observation.evidence
+        value = evidence.get("value")
+        if value is None and evidence.get("values"):
+            value = " / ".join(str(item) for item in evidence["values"])
+        value = value or "Valeur complète indisponible"
+        value = _format_identifier_value(observation.code, str(value))
+        state_label = LAB_STATE_LABELS[observation.state]
+        cards.append(
+            f"""
+            <article class="extracted-field {observation.state}">
+              <div><span>{_html(_sentence_case(observation.title))}</span><strong>{_html(value)}</strong></div>
+              <b>{_html(state_label)}</b>
+              <p>{_html(observation.summary)}</p>
+            </article>
+            """
+        )
+    st.markdown('<h3 class="subsection-title">Identifiants reconnus</h3>', unsafe_allow_html=True)
+    st.markdown(
+        '<section class="extracted-fields">'
+        + "".join(card.strip() for card in cards)
+        + "</section>",
         unsafe_allow_html=True,
     )
 
-    details = bool(observation.evidence)
-    artifacts = _existing_artifacts(
-        output_dir / "laboratory",
-        observation.artifacts,
+
+def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
+    if laboratory is None:
+        return
+    observations = [
+        observation
+        for check in laboratory.checks
+        for observation in check.observations
+        if observation.state in {"attention", "detected", "error"}
+        and not observation.code.startswith(
+            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
+        )
+    ]
+    if not observations:
+        return
+    st.markdown('<h3 class="subsection-title">Points de contrôle</h3>', unsafe_allow_html=True)
+    for observation in observations:
+        strength = LAB_STRENGTH_LABELS[observation.strength]
+        location = f"Page {observation.page}" if observation.page is not None else "Document"
+        st.markdown(
+            f"""
+            <article class="business-observation {observation.state}">
+              <div><strong>{_html(_business_observation_title(observation))}</strong><span>{_html(location)}</span></div>
+              <p>{_html(_business_text(observation.summary))}</p>
+              <small>{_html(strength)} - {_html(_business_text(observation.explanation))}</small>
+            </article>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def _render_control_matrix(laboratory: LaboratoryReport | None) -> None:
+    if laboratory is None or not laboratory.checks:
+        return
+    cards = []
+    for check in laboratory.checks:
+        cards.append(
+            f"""
+            <article class="control-status {check.state}">
+              <span>{_html(LAB_STATE_LABELS[check.state])}</span>
+              <strong>{_html(_business_check_title(check.code, check.title))}</strong>
+              <p>{_html(_business_text(check.summary))}</p>
+            </article>
+            """
+        )
+    st.markdown('<h3 class="subsection-title">Contrôles effectués</h3>', unsafe_allow_html=True)
+    st.markdown(
+        '<section class="control-matrix">' + "".join(card.strip() for card in cards) + "</section>",
+        unsafe_allow_html=True,
     )
-    visible_artifacts = []
-    detail_artifacts = artifacts
-    if observation.code == "TRUFOR_LOCAL_MANIPULATION":
-        visible_artifacts = [
-            path
-            for path in artifacts
-            if path.name
-            in {
-                "trufor-localization-map.png",
-                "trufor-reliable-map.png",
-            }
-        ]
-        detail_artifacts = [path for path in artifacts if path not in visible_artifacts]
 
-    if visible_artifacts:
-        columns = st.columns(len(visible_artifacts))
-        for index, path in enumerate(visible_artifacts):
-            with columns[index]:
-                st.image(
-                    str(path),
-                    caption=_laboratory_artifact_caption(path),
-                    width="stretch",
-                )
 
-    if details or detail_artifacts:
-        with st.popover(f"Details - {observation.title}"):
-            if details:
-                st.json(_json_safe(observation.evidence), expanded=False)
-            for path in detail_artifacts:
-                if path.suffix.casefold() not in {".png", ".jpg", ".jpeg", ".webp"}:
-                    continue
-                st.image(
-                    str(path),
-                    caption=_laboratory_artifact_caption(path),
-                    width="stretch",
-                )
+def _render_recognized_text(markdown: str, *, compact: bool = False) -> None:
+    visible = re.sub(r"<[^>]+>", " ", html_lib.unescape(markdown))
+    visible = re.sub(r"(?m)^\s*#{1,6}\s*", "", visible)
+    visible = re.sub(r"[ \t]+", " ", visible)
+    visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+    title = "" if compact else '<h2 class="section-title">Texte reconnu</h2>'
+    st.markdown(
+        f'{title}<div class="recognized-text">{_html(visible)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_analysis_progress(target: Any, value: float, label: str) -> None:
@@ -781,39 +933,6 @@ def _render_score_header(
     assessment = report.assessment
     style = LEVEL_STYLE[assessment.level]
     circumference = max(0, min(100, assessment.score)) * 3.6
-    subject = report.document if isinstance(report, AnalysisReport) else report.image
-    analyzed_pages = getattr(subject, "analyzed_pages", None)
-    page_line = (
-        f"{analyzed_pages}/{subject.page_count} pages"
-        if analyzed_pages is not None
-        else f"{subject.width} x {subject.height}px"
-    )
-    gapl_findings = [
-        finding for finding in report.findings if finding.code == "AI_GAPL_GLOBAL_TRACE"
-    ]
-    gapl_indices = [
-        float(finding.evidence["global_index"])
-        for finding in gapl_findings
-        if "global_index" in finding.evidence
-    ]
-    gapl_index = max(gapl_indices, default=None)
-    gapl_index_text = f"{gapl_index:.0%}" if gapl_index is not None else "-"
-    gapl_points = max(
-        (finding.risk_points for finding in gapl_findings),
-        default=0.0,
-    )
-    content_findings = [finding for finding in report.findings if finding.detector == "ocr_content"]
-    content_points = max(
-        (finding.risk_points for finding in content_findings),
-        default=0.0,
-    )
-    content_reliability = max(
-        (finding.confidence for finding in content_findings),
-        default=None,
-    )
-    content_reliability_text = (
-        f"{content_reliability:.0%}" if content_reliability is not None else "-"
-    )
     st.markdown(
         f"""
         <section class="score-hero {style["tone"]}">
@@ -827,132 +946,34 @@ def _render_score_header(
             <h2>{_html(assessment.label)}</h2>
             <p>{_html(assessment.explanation)}</p>
           </div>
-          <div class="score-meta">
-            <div><strong>{_html(style["label"])}</strong><span>Niveau</span></div>
-            <div class="ai-metric"><strong>{gapl_index_text}</strong><span>Indice IA</span></div>
-            <div><strong>{gapl_points:g}</strong><span>Points IA</span></div>
-            <div><strong>{content_points:g}</strong><span>Points contenu</span></div>
-            <div><strong>{content_reliability_text}</strong><span>Fiabilite OCR</span></div>
-            <div><strong>{_html(page_line)}</strong><span>Perimetre</span></div>
-          </div>
         </section>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _render_detector_grid(report: AnalysisReport | ImageAnalysisReport) -> None:
-    st.markdown('<h2 class="section-title">Indicateurs</h2>', unsafe_allow_html=True)
-    for index in range(0, len(report.detectors), 3):
-        columns = st.columns(3, gap="medium")
-        for column, detector in zip(columns, report.detectors[index : index + 3], strict=False):
-            with column:
-                _render_detector_card(detector)
-
-
-def _render_detector_card(detector: Any) -> None:
-    scored = [finding for finding in detector.findings if finding.risk_points > 0]
-    diagnostics = [finding for finding in detector.findings if finding.risk_points == 0]
-    max_points = max((finding.risk_points for finding in scored), default=0)
-    tone = _tone_for_points(max_points, detector.status)
-    state = "Detecte" if scored else ("Diagnostic" if diagnostics else "Rien detecte")
-    label = DETECTOR_LABELS.get(detector.name, detector.name.replace("_", " ").title())
-    gapl_indices = [
-        float(finding.evidence["global_index"])
-        for finding in detector.findings
-        if finding.code == "AI_GAPL_GLOBAL_TRACE" and "global_index" in finding.evidence
-    ]
-    if gapl_indices:
-        detail = f"Indice IA maximal : {max(gapl_indices):.0%}"
-    elif detector.name == "ocr_content" and detector.findings:
-        reliability = max(item.confidence for item in detector.findings)
-        detail = f"Fiabilite OCR : {reliability:.0%}"
-    else:
-        detail = f"{len(scored)} indice(s), {len(diagnostics)} diagnostic(s)"
-    st.markdown(
-        f"""
-        <div class="detector-card {tone}">
-          <div class="detector-head">
-            <strong>{_html(label)}</strong>
-            <span>{_html(STATUS_LABELS.get(detector.status, detector.status))}</span>
-          </div>
-          <div class="detector-body">
-            <span class="detector-state">{_html(state)}</span>
-            <span class="detector-points">{max_points:g} pts max</span>
-          </div>
-          <p>{_html(detail)}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_category_strips(scored: list[Finding]) -> None:
-    if not scored:
-        st.markdown(
-            """
-            <div class="clean-band">
-              <strong>Aucun signal score detecte.</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        return
-
-    by_category: dict[str, list[Finding]] = defaultdict(list)
-    for finding in scored:
-        by_category[finding.category].append(finding)
-
-    st.markdown('<h2 class="section-title">Familles</h2>', unsafe_allow_html=True)
-    strips = []
-    for category, items in sorted(
-        by_category.items(),
-        key=lambda item: max(finding.risk_points for finding in item[1]),
-        reverse=True,
-    ):
-        max_points = max(finding.risk_points for finding in items)
-        percent = min(100, round(max_points))
-        strips.append(
-            f"""
-            <div class="category-strip {_tone_for_points(max_points, "completed")}">
-              <div>
-                <strong>{_html(CATEGORY_LABELS.get(category, category))}</strong>
-                <span>{len(items)} signal(aux), max {max_points:g} pts</span>
-              </div>
-              <div class="bar"><span style="width:{percent}%"></span></div>
-            </div>
-            """
-        )
-    st.markdown("\n".join(strips), unsafe_allow_html=True)
-
-
-def _render_findings(scored: list[Finding], diagnostics: list[Finding]) -> None:
-    st.markdown('<h2 class="section-title">Indices</h2>', unsafe_allow_html=True)
-    if not scored:
-        st.info("Aucun indice score.")
-    for finding in scored:
-        _finding_card(finding)
-
-    if diagnostics:
-        with st.expander(f"Diagnostics non scores ({len(diagnostics)})", expanded=False):
-            for finding in diagnostics:
-                _finding_card(finding, diagnostic=True)
-
-
-def _finding_card(finding: Finding, *, diagnostic: bool = False) -> None:
+def _finding_card(
+    finding: Finding,
+    *,
+    diagnostic: bool = False,
+    occurrences: int = 1,
+) -> None:
     tone = "neutral" if diagnostic else _tone_for_points(finding.risk_points, "completed")
     location = "Document"
     if finding.page is not None:
         location = f"Page {finding.page}"
         if finding.bbox is not None:
             location += " - zone localisee"
+    if occurrences > 1:
+        location = f"{occurrences} zones détectées"
     gapl_index = finding.evidence.get("global_index")
     if gapl_index is not None:
-        confidence_label = f"Indice IA : {float(gapl_index):.0%}"
+        confidence_label = f"Ressemblance estimée : {float(gapl_index):.0%}"
     elif finding.detector == "ocr_content":
-        confidence_label = f"Fiabilite OCR : {finding.confidence:.0%}"
+        confidence_label = f"Fiabilité de la lecture : {finding.confidence:.0%}"
     else:
         confidence_label = f"Confiance : {finding.confidence:.0%}"
+    title, description = _business_finding_copy(finding)
     st.markdown(
         f"""
         <article class="finding-card {tone}">
@@ -965,106 +986,14 @@ def _finding_card(finding: Finding, *, diagnostic: bool = False) -> None:
               <span>{_html(CATEGORY_LABELS.get(finding.category, finding.category))}</span>
               <span>{_html(location)}</span>
             </div>
-            <h3>{_html(finding.title)}</h3>
-            <p>{_html(finding.description)}</p>
+            <h3>{_html(title)}</h3>
+            <p>{_html(description)}</p>
             <div class="confidence">{_html(confidence_label)}</div>
           </div>
         </article>
         """,
         unsafe_allow_html=True,
     )
-    if finding.evidence:
-        with st.expander(f"Preuves techniques - {finding.code}", expanded=False):
-            st.json(_json_safe(finding.evidence), expanded=False)
-
-
-def _render_visual_artifacts(
-    report: AnalysisReport | ImageAnalysisReport,
-    output_dir: Path,
-) -> None:
-    st.markdown('<h2 class="section-title">Zones a reviser</h2>', unsafe_allow_html=True)
-    artifacts = report.artifacts
-    review_images = _existing_artifacts(output_dir, artifacts.get("review_overlays", ()))
-    forensic_images = [
-        path
-        for path in _existing_artifacts(output_dir, artifacts.get("forensics", ()))
-        if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}
-    ]
-    gapl_images = [path for path in forensic_images if "-windows" in path.name]
-    forensic_images = [path for path in forensic_images if path not in gapl_images]
-    page_images = _existing_artifacts(output_dir, artifacts.get("page_renders", ()))[:3]
-
-    if review_images:
-        st.markdown('<div class="artifact-label">Zones a controler</div>', unsafe_allow_html=True)
-        for index, path in enumerate(review_images, start=1):
-            st.image(
-                str(path),
-                caption=f"Page {index} - zones a reviser",
-                width="stretch",
-            )
-    else:
-        st.markdown(
-            """
-            <div class="clean-band compact">
-              <strong>Aucune zone localisee.</strong>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    if forensic_images:
-        st.markdown(
-            '<div class="artifact-label">Images d\'analyse</div>',
-            unsafe_allow_html=True,
-        )
-        columns = st.columns(2)
-        for index, path in enumerate(forensic_images):
-            with columns[index % 2]:
-                st.image(
-                    str(path),
-                    caption=_friendly_artifact_caption(path),
-                    width="stretch",
-                )
-
-    if gapl_images:
-        with st.expander("Detail de l'analyse IA", expanded=False):
-            for path in gapl_images:
-                st.image(
-                    str(path),
-                    caption="Scores GAPL par zone analysee",
-                    width="stretch",
-                )
-
-    if page_images:
-        with st.expander("Rendus de pages", expanded=False):
-            columns = st.columns(min(3, len(page_images)))
-            for index, path in enumerate(page_images):
-                with columns[index % len(columns)]:
-                    st.image(
-                        str(path),
-                        caption=f"Page {index + 1}",
-                        width="stretch",
-                    )
-
-
-def _render_json(report: AnalysisReport | ImageAnalysisReport, output_dir: Path) -> None:
-    with st.expander("Dossier technique", expanded=False):
-        st.json(report.to_dict(), expanded=False)
-        if report.limitations:
-            st.markdown("#### Limites")
-            for limitation in report.limitations:
-                st.markdown(f"- {limitation}")
-        json_artifacts = [
-            path
-            for path in _existing_artifacts(output_dir, report.artifacts.get("forensics", ()))
-            if path.suffix.casefold() == ".json"
-        ]
-        for path in json_artifacts:
-            with st.expander(_friendly_artifact_caption(path), expanded=False):
-                try:
-                    st.json(json.loads(path.read_text(encoding="utf-8")), expanded=False)
-                except json.JSONDecodeError:
-                    st.code(path.read_text(encoding="utf-8"))
 
 
 def _existing_artifacts(output_dir: Path, relatives: tuple[str, ...]) -> list[Path]:
@@ -1111,40 +1040,183 @@ def _release_transient_memory() -> None:
 
 def _friendly_artifact_caption(path: Path) -> str:
     name = path.name
+    if "gapl" in name or "windows" in name:
+        return "Carte de ressemblance avec une image générée par IA"
     if "revision-diff" in name:
-        return "Difference visuelle entre revisions"
+        return "Différences visuelles entre les versions"
     if "ela" in name:
-        return "Carte d'anomalie JPEG"
+        return "Carte des variations de compression"
     if "provenance" in name:
-        return "Provenance et metadonnees"
+        return "Origine et métadonnées de l'image"
     if "analysis" in name:
-        return "Analyse image avancee"
-    return "Artefact d'analyse"
+        return "Analyse visuelle détaillée"
+    return "Visualisation complémentaire"
 
 
 def _laboratory_artifact_caption(path: Path) -> str:
     if "trufor-localization" in path.name:
-        return "Carte de localisation TruFor"
-    if "trufor-reliable" in path.name:
-        return "Carte ponderee par la fiabilite"
-    if "trufor-confidence" in path.name:
-        return "Fiabilite locale - noir faible, blanc fort"
+        return "Carte des incohérences locales"
     if "revision" in path.name:
-        return "Difference entre revisions"
-    return "Resultat experimental"
+        return "Différences entre les versions"
+    return "Visualisation complémentaire"
 
 
-def _json_safe(value: Any) -> Any:
-    try:
-        json.dumps(value)
-        return value
-    except TypeError:
-        return asdict(value) if hasattr(value, "__dataclass_fields__") else str(value)
+def _is_secondary_localization_artifact(path: Path) -> bool:
+    return any(marker in path.name for marker in ("trufor-reliable", "trufor-confidence"))
+
+
+def _artifact_view_explanation(path: Path) -> str:
+    name = path.name
+    if "trufor-localization" in name:
+        return (
+            "Les couleurs chaudes signalent des incohérences locales plus fortes ; "
+            "le bleu correspond à des zones plus régulières. Un logo, une forte compression "
+            "ou un traitement d'image légitime peut aussi produire une zone colorée : "
+            "cette carte sert à orienter la revue, pas à conclure."
+        )
+    if "gapl" in name or "windows" in name or "heatmap" in name:
+        return (
+            "Chaque zone est comparée aux caractéristiques visuelles apprises sur des images "
+            "générées par IA. Une valeur élevée indique une ressemblance statistique, sans "
+            "prouver que la zone a été générée ou modifiée par IA."
+        )
+    if "revision-diff" in name or "revision" in name:
+        return (
+            "Les zones colorées correspondent aux différences conservées entre deux versions "
+            "du fichier. Certaines peuvent provenir d'un réenregistrement ou d'une opération "
+            "légitime."
+        )
+    if "ela" in name:
+        return (
+            "La carte amplifie les différences de compression JPEG. Une zone contrastée peut "
+            "indiquer une retouche, mais aussi un assemblage, un logo ou des compressions "
+            "successives."
+        )
+    return (
+        "Cette vue complète l'examen visuel du document. Elle doit être interprétée avec les "
+        "autres signaux et le contexte du dossier."
+    )
+
+
+def _business_finding_copy(finding: Finding) -> tuple[str, str]:
+    if finding.code == "AI_GAPL_GLOBAL_TRACE":
+        index = float(finding.evidence.get("global_index", 0.0))
+        if index >= 0.9:
+            title = "Forte ressemblance avec une image générée par IA"
+        elif index >= 0.5:
+            title = "Ressemblance partielle avec une image générée par IA"
+        else:
+            title = "Faible ressemblance avec une image générée par IA"
+        return (
+            title,
+            "Plusieurs zones présentent des caractéristiques souvent observées dans des "
+            "images générées par IA. La compression, le redimensionnement ou certains motifs "
+            "visuels peuvent produire un résultat similaire : ce signal ne prouve pas une fraude.",
+        )
+    if finding.detector == "ocr_content":
+        return (
+            "Cohérence du contenu à vérifier",
+            _business_text(finding.description),
+        )
+    return _sentence_case(finding.title), _business_text(finding.description)
+
+
+def _format_identifier_value(code: str, value: str) -> str:
+    if " / " in value:
+        return " / ".join(_format_identifier_value(code, item) for item in value.split(" / "))
+    compact = re.sub(r"[\s-]", "", value)
+    if code.startswith(("OCR_CARD_", "OCR_IBAN_")) and compact.isalnum():
+        return " ".join(compact[index : index + 4] for index in range(0, len(compact), 4))
+    return value
+
+
+def _business_observation_title(observation: Any) -> str:
+    if str(observation.code).startswith("TRUFOR_"):
+        if observation.code == "TRUFOR_UNAVAILABLE":
+            return "Analyse des retouches locales indisponible"
+        return _sentence_case(observation.title)
+    return _sentence_case(observation.title)
+
+
+def _business_check_title(code: str, title: str) -> str:
+    labels = {
+        "trufor": "Recherche de retouches locales",
+        "pades": "Signature électronique du PDF",
+        "facturx": "Facture électronique embarquée",
+        "two_d_doc": "Code de vérification 2D-Doc",
+        "post_signature": "Modifications après signature",
+        "fonts_hidden_objects": "Polices et éléments masqués",
+        "all_revisions": "Historique complet des versions",
+        "ocr_quality": "Qualité du texte reconnu",
+        "ocr_identifiers": "Validité des identifiants",
+        "ocr_dates": "Cohérence des dates",
+        "ocr_financial_consistency": "Cohérence des montants",
+    }
+    return labels.get(code, _sentence_case(title))
+
+
+def _sentence_case(value: object) -> str:
+    text = _business_text(value).strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _business_text(value: object) -> str:
+    text = str(value)
+    replacements = (
+        ("Indice TruFor", "Indice de retouche locale"),
+        ("Analyse TruFor", "Analyse des retouches locales"),
+        ("TruFor", "le détecteur de retouches locales"),
+        ("GAPL", "le détecteur d'images générées par IA"),
+        ("score Frod", "score global"),
+        ("Score Frod", "Score global"),
+        ("Frod", "l'analyse"),
+        ("Coherence", "Cohérence"),
+        ("coherence", "cohérence"),
+        ("Incoherence", "Incohérence"),
+        ("incoherence", "incohérence"),
+        ("Fiabilite", "Fiabilité"),
+        ("fiabilite", "fiabilité"),
+        (" a verifier", " à vérifier"),
+        (" a ete ", " a été "),
+        ("generee", "générée"),
+        ("generees", "générées"),
+        ("detectee", "détectée"),
+        ("detectees", "détectées"),
+        ("controle", "contrôle"),
+        ("geographique", "géographique"),
+        ("Numero", "Numéro"),
+        ("numero", "numéro"),
+        ("necessaire", "nécessaire"),
+        ("donnees", "données"),
+        ("metier", "métier"),
+        ("perimetre", "périmètre"),
+        ("authenticite", "authenticité"),
+        ("proprietes", "propriétés"),
+        ("elements", "éléments"),
+        ("ajoutes", "ajoutés"),
+        ("enregistres", "enregistrés"),
+        ("revisions", "révisions"),
+        ("revision", "révision"),
+        ("Difference", "Différence"),
+        ("difference", "différence"),
+        ("derniere", "dernière"),
+        ("localisee", "localisée"),
+        ("superposee", "superposée"),
+        ("emetteur", "émetteur"),
+        ("attribue", "attribué"),
+        ("caracteres", "caractères"),
+        ("legitimement", "légitimement"),
+        ("meme", "même"),
+        ("presence", "présence"),
+    )
+    for technical, business in replacements:
+        text = text.replace(technical, business)
+    return text
 
 
 def _html(value: object) -> str:
     return (
-        str(value)
+        _business_text(value)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -1157,523 +1229,582 @@ def _inject_styles() -> None:
         """
         <style>
         :root {
-          --ink: #f7f2ea;
-          --muted: #b8afa3;
-          --line: #3a343c;
-          --panel: #1b1a20;
-          --panel-soft: #242029;
-          --bg: #111013;
+          --ink: #f5f3ef;
+          --muted: #aaa6a0;
+          --line: #36343a;
+          --panel: #1b1a1e;
+          --panel-soft: #242329;
+          --bg: #111114;
+          --green: #35d07f;
+          --amber: #f4b942;
+          --coral: #ff6b6b;
+          --cyan: #4cc9d8;
+          --blue: #70a7ff;
         }
-        header[data-testid="stHeader"] {
+        header[data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"] {
           display: none;
         }
         .stApp {
-          background:
-            linear-gradient(135deg, rgba(45, 212, 191, .16), transparent 28%),
-            linear-gradient(215deg, rgba(244, 63, 94, .12), transparent 32%),
-            linear-gradient(0deg, rgba(251, 191, 36, .07), transparent 44%),
-            var(--bg);
+          background: var(--bg);
           color: var(--ink);
         }
         .block-container {
-          padding-top: 2rem;
-          max-width: 1480px;
+          max-width: 1520px;
+          padding: 1.1rem 1.5rem 2.5rem;
         }
-        .topbar {
+        .brandbar {
           display: flex;
-          justify-content: space-between;
-          gap: 2rem;
-          align-items: end;
+          align-items: center;
           border-bottom: 1px solid var(--line);
-          padding-bottom: 1.1rem;
-          margin-bottom: 1.4rem;
+          padding: 0 0 .8rem;
+          margin-bottom: .9rem;
         }
-        .topbar h1 {
-          font-size: 2.25rem;
-          line-height: 1.05;
+        .brandbar h1 {
+          color: var(--ink);
+          font-size: 1.5rem;
+          line-height: 1;
           margin: 0;
-          letter-spacing: 0;
         }
         .eyebrow {
-          text-transform: uppercase;
-          font-weight: 800;
-          font-size: .78rem;
-          color: #2dd4bf;
-          margin: 0 0 .4rem;
-          letter-spacing: .08em;
-        }
-        .panel-title {
-          font-size: 1rem;
-          font-weight: 850;
-          margin: .2rem 0 .75rem;
-        }
-        .panel-title.minor {
-          margin-top: 1.35rem;
-        }
-        .empty-state {
-          min-height: 430px;
-          display: grid;
-          align-content: center;
-          border: 1px dashed #7dd3fc;
-          background: rgba(27, 26, 32, .82);
-          border-radius: 8px;
-          padding: 3rem;
-        }
-        .empty-state.ready {
-          border-color: #2dd4bf;
-          background: rgba(16, 78, 71, .45);
-        }
-        .empty-state h2 {
-          font-size: 2rem;
-          margin: 0 0 .75rem;
-        }
-        .empty-state p {
-          color: var(--muted);
-          max-width: 680px;
-          margin: 0;
-        }
-        .ocr-demo-state {
-          min-height: 180px;
-          display: grid;
-          align-content: center;
-          gap: .35rem;
-          border: 1px solid var(--line);
-          border-left: 7px solid #38bdf8;
-          border-radius: 8px;
-          background: #132635;
-          padding: 1.25rem;
-          margin-top: 1rem;
-        }
-        .ocr-demo-state strong {
-          font-size: 1.15rem;
-        }
-        .ocr-demo-state span {
-          color: var(--muted);
-        }
-        .score-hero {
-          display: grid;
-          grid-template-columns: auto minmax(260px, 1fr) minmax(220px, .55fr);
-          gap: 1.25rem;
-          align-items: center;
-          background: var(--panel);
-          border-radius: 8px;
-          border: 1px solid var(--line);
-          padding: 1.25rem;
-          box-shadow: 0 18px 50px rgba(0, 0, 0, .24);
-        }
-        .score-hero.low { border-top: 8px solid #16a34a; }
-        .score-hero.review { border-top: 8px solid #d97706; }
-        .score-hero.high { border-top: 8px solid #dc2626; }
-        .score-ring {
-          width: 148px;
-          height: 148px;
-          border-radius: 50%;
-          display: grid;
-          place-content: center;
-          background:
-            radial-gradient(circle at center, #1b1a20 0 58%, transparent 59%),
-            conic-gradient(
-              var(--score-color) 0 var(--score-angle),
-              #3b3741 var(--score-angle) 360deg
-            );
-          border: 1px solid rgba(255, 255, 255, .10);
-        }
-        .score-ring span {
-          font-size: 3rem;
-          font-weight: 900;
-          line-height: .9;
-          color: var(--score-color);
-          text-align: center;
-        }
-        .score-ring small {
-          text-align: center;
-          color: var(--muted);
-          font-weight: 700;
-        }
-        .score-copy h2 {
-          font-size: 1.8rem;
-          line-height: 1.15;
-          margin: 0 0 .55rem;
-        }
-        .score-copy p:not(.eyebrow) {
-          color: var(--muted);
-          margin: 0;
-        }
-        .score-meta {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: .7rem;
-        }
-        .score-meta div {
-          background: var(--panel-soft);
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          padding: .75rem;
-        }
-        .score-meta strong, .score-meta span {
-          display: block;
-        }
-        .score-meta strong {
-          font-size: 1.05rem;
-        }
-        .score-meta .ai-metric strong {
-          color: #67e8f9;
-          font-size: 1.35rem;
-        }
-        .score-meta span {
-          color: var(--muted);
-          font-size: .78rem;
-          margin-top: .2rem;
-        }
-        .section-title {
-          font-size: 1.22rem;
-          margin: 1.55rem 0 .75rem;
-          letter-spacing: 0;
-        }
-        .laboratory-group-title {
-          color: #f4ede4;
-          font-size: 1rem;
-          margin: 1.35rem 0 .25rem;
-          padding-bottom: .55rem;
-          border-bottom: 1px solid var(--line);
-          letter-spacing: 0;
-        }
-        div[data-baseweb="tab-list"] {
-          gap: .35rem;
-          border-bottom: 1px solid var(--line);
-          margin-bottom: .6rem;
-        }
-        button[data-baseweb="tab"] {
-          min-height: 3rem;
-          padding: 0 1rem;
-          color: var(--muted);
-          font-weight: 800;
-        }
-        button[data-baseweb="tab"][aria-selected="true"] {
-          color: #f4ede4;
-          border-bottom-color: #2dd4bf;
-        }
-        .detector-grid {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: .75rem;
-        }
-        .detector-card,
-        .finding-card,
-        .category-strip,
-        .clean-band {
-          border-radius: 8px;
-          border: 1px solid var(--line);
-          background: var(--panel);
-        }
-        .detector-card {
-          padding: .85rem;
-          border-left-width: 7px;
-        }
-        .detector-card.danger { border-left-color: #fb7185; background: #2d171c; }
-        .detector-card.warning { border-left-color: #fbbf24; background: #2b2110; }
-        .detector-card.notice-tone { border-left-color: #38bdf8; background: #132635; }
-        .detector-card.partial { border-left-color: #a78bfa; background: #211a34; }
-        .detector-card.neutral { border-left-color: #64748b; background: #202027; }
-        .detector-head {
-          display: flex;
-          justify-content: space-between;
-          gap: .7rem;
-        }
-        .detector-head strong {
-          font-size: .98rem;
-        }
-        .detector-head span {
-          color: var(--muted);
-          font-size: .78rem;
-          white-space: nowrap;
-        }
-        .detector-body {
-          display: flex;
-          justify-content: space-between;
-          align-items: baseline;
-          margin-top: 1rem;
-        }
-        .detector-state {
-          font-size: 1.1rem;
-          font-weight: 850;
-        }
-        .detector-points {
-          color: var(--muted);
-          font-weight: 750;
-        }
-        .detector-card p {
-          color: var(--muted);
-          margin: .45rem 0 0;
-          font-size: .85rem;
-        }
-        .category-strip {
-          display: grid;
-          grid-template-columns: minmax(210px, .45fr) 1fr;
-          gap: 1rem;
-          align-items: center;
-          padding: .8rem .95rem;
-          margin-bottom: .55rem;
-          border-left-width: 7px;
-        }
-        .category-strip.danger { border-left-color: #fb7185; }
-        .category-strip.warning { border-left-color: #fbbf24; }
-        .category-strip.notice-tone { border-left-color: #38bdf8; }
-        .category-strip strong, .category-strip span {
-          display: block;
-        }
-        .category-strip span {
-          color: var(--muted);
-          font-size: .85rem;
-          margin-top: .15rem;
-        }
-        .bar {
-          height: 13px;
-          border-radius: 999px;
-          background: #3b3741;
-          overflow: hidden;
-        }
-        .bar span {
-          display: block;
-          height: 100%;
-          background: linear-gradient(90deg, #2dd4bf, #fbbf24, #fb7185);
-        }
-        .finding-card {
-          display: grid;
-          grid-template-columns: 82px 1fr;
-          gap: 1rem;
-          padding: 1rem;
-          margin-bottom: .75rem;
-          border-left-width: 7px;
-        }
-        .finding-card.danger { border-left-color: #fb7185; background: #2d171c; }
-        .finding-card.warning { border-left-color: #fbbf24; background: #2b2110; }
-        .finding-card.notice-tone { border-left-color: #38bdf8; background: #132635; }
-        .finding-card.neutral { border-left-color: #64748b; background: #202027; }
-        .finding-score {
-          width: 72px;
-          height: 72px;
-          border-radius: 8px;
-          background: #08070a;
-          color: white;
-          display: grid;
-          place-content: center;
-          text-align: center;
-        }
-        .finding-score strong {
-          font-size: 1.55rem;
-          line-height: .95;
-        }
-        .finding-score span {
+          color: var(--cyan);
           font-size: .72rem;
-          color: #c7beb3;
-        }
-        .finding-kicker {
-          display: flex;
-          flex-wrap: wrap;
-          gap: .45rem;
-          margin-bottom: .45rem;
-        }
-        .finding-kicker span {
-          border: 1px solid #554d58;
-          border-radius: 999px;
-          padding: .16rem .5rem;
-          font-size: .72rem;
-          font-weight: 750;
-          color: #f4ede4;
-          background: rgba(255, 255, 255, .07);
-        }
-        .finding-content h3 {
-          margin: 0 0 .35rem;
-          font-size: 1.15rem;
-        }
-        .finding-content p {
-          margin: 0;
-          color: #d0c8bd;
-        }
-        .confidence {
-          margin-top: .6rem;
-          font-weight: 800;
-          color: #2dd4bf;
-          font-size: .88rem;
-        }
-        .clean-band {
-          display: flex;
-          justify-content: space-between;
-          gap: 1rem;
-          align-items: center;
-          padding: 1rem;
-          background: #0d2f28;
-          border-color: #10b981;
-          color: #d7fff4;
-        }
-        .clean-band.compact {
-          margin-bottom: 1rem;
-        }
-        .artifact-label {
-          font-size: .95rem;
-          font-weight: 850;
-          color: #d9d2c7;
-          margin: .4rem 0 .55rem;
+          letter-spacing: 0;
+          margin: 0 0 .3rem;
         }
         div[data-testid="stFileUploader"] {
-          background: var(--panel);
-          border: 2px dashed #2dd4bf;
+          background: #19191d;
+          border: 2px dashed #595760;
           border-radius: 8px;
-          padding: .65rem;
+          padding: .5rem .75rem;
+        }
+        div[data-testid="stFileUploader"]:hover {
+          border-color: var(--cyan);
+        }
+        div[data-testid="stFileUploader"] label {
+          color: var(--ink);
+          font-weight: 800;
+        }
+        .selected-file {
+          min-height: 3rem;
+          display: flex;
+          align-items: center;
+          color: #d7d4ce;
+          border-bottom: 1px solid var(--line);
+          font-weight: 700;
+          overflow-wrap: anywhere;
         }
         .stButton > button {
-          border-radius: 8px;
-          font-weight: 850;
           min-height: 3rem;
+          border-radius: 6px;
+          font-weight: 850;
+          background: #f5f3ef;
+          color: #17171a;
+          border: 0;
+        }
+        .stButton > button:hover {
+          background: var(--cyan);
+          color: #101316;
         }
         .analysis-progress {
+          margin: .4rem 0 1rem;
           border: 1px solid var(--line);
-          border-radius: 8px;
-          background: #151419;
-          padding: .75rem 1rem;
-          margin: .5rem 0 1rem;
+          border-radius: 6px;
+          background: #19191d;
+          padding: .7rem .9rem;
         }
         .analysis-progress-head {
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 1rem;
-          color: #d9d2c7;
-          font-size: .82rem;
-          margin-bottom: .5rem;
+          color: #d7d4ce;
+          font-size: .78rem;
+          margin-bottom: .45rem;
         }
         .analysis-progress-head strong {
-          color: #f4ede4;
+          color: var(--ink);
         }
         .analysis-progress-track {
-          height: 9px;
-          border-radius: 999px;
-          background: #302e34;
-          overflow: hidden;
+          height: 7px;
+          background: #323137;
         }
         .analysis-progress-track i {
-          display: block;
-          height: 100%;
-          border-radius: inherit;
-          background: #2dd4bf;
-          transition: width .18s ease;
+          background: var(--cyan);
         }
-        .lab-intro {
-          color: #d0c8bd;
-          border-left: 4px solid #38bdf8;
-          background: #132635;
-          padding: .75rem 1rem;
-          margin-bottom: 1rem;
-        }
-        .lab-check {
+        .empty-state {
+          min-height: 110px;
           border: 1px solid var(--line);
-          border-left: 7px solid #64748b;
-          border-radius: 8px;
-          background: var(--panel);
-          padding: 1rem;
-          margin-top: 1.15rem;
+          border-left: 5px solid #595760;
+          background: #18181c;
+          border-radius: 6px;
+          padding: 1.2rem;
+          align-content: center;
         }
-        .lab-check.clear { border-left-color: #10b981; }
-        .lab-check.attention { border-left-color: #fb7185; background: #2d171c; }
-        .lab-check.detected { border-left-color: #38bdf8; background: #132635; }
-        .lab-check.indeterminate { border-left-color: #fbbf24; background: #2b2110; }
-        .lab-check.error { border-left-color: #a78bfa; background: #211a34; }
-        .lab-check-head {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 1rem;
+        .empty-state.ready {
+          border-color: var(--line);
+          border-left-color: var(--cyan);
+          background: #181d20;
         }
-        .lab-check-head h3 {
+        .empty-state h2 {
+          font-size: 1.15rem;
+          margin: 0 0 .3rem;
+        }
+        .empty-state p {
           margin: 0;
-          font-size: 1.14rem;
+          font-size: .86rem;
         }
-        .lab-check-head span {
-          border: 1px solid #5d5662;
-          border-radius: 999px;
-          padding: .2rem .55rem;
-          color: #f4ede4;
-          font-size: .74rem;
-          font-weight: 800;
-          white-space: nowrap;
-        }
-        .lab-purpose {
-          color: var(--muted);
-          margin: .55rem 0 .7rem;
-          font-size: .87rem;
-        }
-        .lab-summary {
-          display: block;
-          color: #f7f2ea;
-        }
-        .lab-observation {
-          border: 1px solid #423d46;
-          border-left: 4px solid #64748b;
-          background: #1d1c22;
-          padding: .85rem 1rem;
-          margin: .5rem 0 0 1rem;
-        }
-        .lab-observation.clear { border-left-color: #10b981; }
-        .lab-observation.attention { border-left-color: #fb7185; }
-        .lab-observation.detected { border-left-color: #38bdf8; }
-        .lab-observation.indeterminate { border-left-color: #fbbf24; }
-        .lab-observation-head {
+        .score-hero {
           display: grid;
-          grid-template-columns: minmax(170px, .34fr) 1fr;
-          gap: .8rem;
+          grid-template-columns: auto minmax(0, 1fr);
+          gap: 1.35rem;
           align-items: center;
+          min-height: 150px;
+          padding: 1rem 1.3rem;
+          margin-top: .9rem;
+          background: #19191d;
+          border: 1px solid var(--line);
+          border-left: 7px solid #595760;
+          border-radius: 8px;
+          box-shadow: none;
         }
-        .lab-observation-head > div {
-          display: flex;
-          gap: .45rem;
-          flex-wrap: wrap;
+        .score-hero.low { border-top: 1px solid var(--line); border-left-color: var(--green); }
+        .score-hero.review { border-top: 1px solid var(--line); border-left-color: var(--amber); }
+        .score-hero.high { border-top: 1px solid var(--line); border-left-color: var(--coral); }
+        .score-ring {
+          width: 118px;
+          height: 118px;
+          background:
+            radial-gradient(circle at center, #19191d 0 58%, transparent 59%),
+            conic-gradient(var(--score-color) 0 var(--score-angle), #35343a var(--score-angle));
         }
-        .lab-strength,
-        .lab-location {
-          border-radius: 999px;
-          padding: .18rem .5rem;
-          font-size: .7rem;
-          font-weight: 800;
+        .score-ring span {
+          font-size: 2.4rem;
         }
-        .lab-strength.strong { background: #5b1320; color: #fecdd3; }
-        .lab-strength.moderate { background: #4a3108; color: #fde68a; }
-        .lab-strength.weak { background: #193247; color: #bae6fd; }
-        .lab-strength.informational { background: #303038; color: #d6d3d1; }
-        .lab-location {
-          border: 1px solid #554d58;
-          color: #d6d3d1;
+        .score-copy h2 {
+          font-size: 1.45rem;
+          margin: 0 0 .35rem;
         }
-        .lab-observation p {
-          margin: .6rem 0 .3rem;
-          color: #f0e9df;
+        .score-copy {
+          max-width: 850px;
         }
-        .lab-observation small {
-          display: block;
-          color: var(--muted);
+        .score-copy p:not(.eyebrow) {
+          font-size: .88rem;
           line-height: 1.45;
         }
-        @media (max-width: 980px) {
-          .topbar,
-          .score-hero,
-          .category-strip {
-            grid-template-columns: 1fr;
-            display: grid;
+        .score-meta {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: .45rem;
+        }
+        .score-meta.compact-meta {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .score-meta div {
+          min-height: 58px;
+          padding: .55rem;
+          background: #222127;
+          border-radius: 6px;
+        }
+        .score-meta strong {
+          font-size: .98rem;
+        }
+        .score-meta .ai-metric strong {
+          color: var(--cyan);
+          font-size: 1.1rem;
+        }
+        .category-counters {
+          display: grid;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          gap: .55rem;
+          margin: .7rem 0 1rem;
+        }
+        .category-counter {
+          display: grid;
+          grid-template-columns: 48px minmax(0, 1fr);
+          align-items: start;
+          gap: .55rem;
+          min-height: 104px;
+          padding: .65rem;
+          border: 1px solid var(--line);
+          border-top: 2px solid var(--category-accent);
+          border-radius: 6px;
+          background: #19191d;
+          overflow: hidden;
+          transition: background-color .16s ease, border-color .16s ease;
+        }
+        .category-counter:hover {
+          background: #1e1e23;
+          border-color: var(--category-accent);
+        }
+        .category-counter.notice-tone,
+        .category-counter.warning,
+        .category-counter.danger {
+          border-left-width: 4px;
+          box-shadow: 0 5px 18px rgba(0, 0, 0, .2);
+        }
+        .category-counter.notice-tone {
+          background: #171d25;
+          border-left-color: var(--blue);
+        }
+        .category-counter.warning {
+          background: #242015;
+          border-left-color: var(--amber);
+        }
+        .category-counter.danger {
+          background: #27181c;
+          border-left-color: var(--coral);
+        }
+        .category-counter > div:last-child strong,
+        .category-counter > div:last-child span {
+          display: block;
+        }
+        .category-counter > div:last-child strong {
+          font-size: .8rem;
+          line-height: 1.25;
+        }
+        .category-counter > div:last-child span {
+          color: var(--muted);
+          font-size: .68rem;
+          margin-top: .16rem;
+        }
+        .category-counter .category-state {
+          color: var(--category-accent);
+          font-weight: 750;
+        }
+        .category-counter.notice-tone .category-state,
+        .category-counter.warning .category-state,
+        .category-counter.danger .category-state {
+          display: inline-flex;
+          width: fit-content;
+          border-radius: 999px;
+          padding: .12rem .38rem;
+          color: #17171a;
+          font-weight: 850;
+        }
+        .category-counter.notice-tone .category-state {
+          background: var(--blue);
+        }
+        .category-counter.warning .category-state {
+          background: var(--amber);
+        }
+        .category-counter.danger .category-state {
+          background: var(--coral);
+        }
+        .category-counter .category-copy p {
+          color: #8f8b85;
+          font-size: .64rem;
+          line-height: 1.35;
+          margin: .3rem 0 0;
+        }
+        .mini-ring {
+          width: 44px;
+          height: 44px;
+          border-radius: 50%;
+          display: grid;
+          place-content: center;
+          text-align: center;
+          background:
+            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
+            conic-gradient(#66636c 0 var(--meter-angle), #343339 var(--meter-angle));
+        }
+        .category-counter.notice-tone .mini-ring {
+          background:
+            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
+            conic-gradient(var(--blue) 0 var(--meter-angle), #343339 var(--meter-angle));
+        }
+        .category-counter.warning .mini-ring {
+          background:
+            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
+            conic-gradient(var(--amber) 0 var(--meter-angle), #343339 var(--meter-angle));
+        }
+        .category-counter.danger .mini-ring {
+          background:
+            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
+            conic-gradient(var(--coral) 0 var(--meter-angle), #343339 var(--meter-angle));
+        }
+        .mini-ring strong {
+          font-size: .78rem;
+          line-height: .8;
+        }
+        .mini-ring span {
+          color: var(--muted);
+          font-size: .52rem;
+        }
+        .workspace-title {
+          font-size: 1.02rem;
+          margin: .15rem 0 .55rem;
+        }
+        .subsection-title {
+          font-size: .88rem;
+          color: #dedbd5;
+          margin: .9rem 0 .45rem;
+          padding-bottom: .32rem;
+          border-bottom: 1px solid var(--line);
+        }
+        [data-testid="stImage"] img {
+          width: 100%;
+          max-height: 760px;
+          object-fit: contain;
+          background: #0b0b0d;
+          border: 1px solid var(--line);
+          border-radius: 4px;
+        }
+        .view-guidance {
+          border: 1px solid #363942;
+          border-left: 4px solid var(--blue);
+          border-radius: 6px;
+          background: #171a20;
+          padding: .7rem .8rem;
+          margin-top: .35rem;
+        }
+        .view-guidance strong {
+          display: block;
+          color: #dbe7ff;
+          font-size: .76rem;
+          margin-bottom: .22rem;
+        }
+        .view-guidance p {
+          color: #aaaeb8;
+          font-size: .72rem;
+          line-height: 1.45;
+          margin: 0;
+        }
+        .review-banner {
+          display: flex;
+          justify-content: space-between;
+          gap: .7rem;
+          align-items: center;
+          padding: .7rem .8rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid #595760;
+          border-radius: 6px;
+          background: #1a191d;
+          margin-bottom: .55rem;
+        }
+        .review-banner.attention { border-left-color: var(--coral); }
+        .review-banner.clear { border-left-color: var(--green); }
+        .review-banner strong {
+          font-size: .9rem;
+        }
+        .review-banner span {
+          color: var(--muted);
+          font-size: .76rem;
+          text-align: right;
+        }
+        .finding-card {
+          display: grid;
+          grid-template-columns: 54px minmax(0, 1fr);
+          gap: .7rem;
+          padding: .7rem;
+          margin-bottom: .5rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--blue);
+          border-radius: 6px;
+          background: #1b1a1e;
+        }
+        .finding-card.danger { border-left-color: var(--coral); background: #25191c; }
+        .finding-card.warning { border-left-color: var(--amber); background: #252117; }
+        .finding-card.notice-tone { border-left-color: var(--blue); background: #181e28; }
+        .finding-score {
+          width: 48px;
+          height: 48px;
+          border-radius: 4px;
+          background: #0e0e11;
+        }
+        .finding-score strong {
+          font-size: 1.15rem;
+        }
+        .finding-score span {
+          font-size: .58rem;
+        }
+        .finding-content h3 {
+          font-size: .94rem;
+          margin: 0 0 .2rem;
+        }
+        .finding-content p {
+          color: #c7c3bd;
+          font-size: .78rem;
+          line-height: 1.4;
+        }
+        .finding-kicker {
+          margin-bottom: .25rem;
+        }
+        .finding-kicker span {
+          border: 0;
+          border-radius: 0;
+          padding: 0;
+          background: transparent;
+          color: var(--muted);
+          font-size: .64rem;
+        }
+        .confidence {
+          margin-top: .3rem;
+          color: var(--cyan);
+          font-size: .72rem;
+        }
+        .diagnostic-count {
+          color: var(--muted);
+          font-size: .72rem;
+          margin: .25rem 0;
+        }
+        .extracted-fields {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: .45rem;
+        }
+        .extracted-field {
+          padding: .6rem;
+          border: 1px solid var(--line);
+          border-top: 4px solid #595760;
+          border-radius: 6px;
+          background: #1a191d;
+          min-width: 0;
+        }
+        .extracted-field.clear { border-top-color: var(--green); }
+        .extracted-field.attention { border-top-color: var(--coral); }
+        .extracted-field > div {
+          min-width: 0;
+        }
+        .extracted-field span,
+        .extracted-field strong {
+          display: block;
+        }
+        .extracted-field span {
+          color: var(--muted);
+          font-size: .65rem;
+        }
+        .extracted-field strong {
+          margin-top: .15rem;
+          font-size: .82rem;
+          overflow-wrap: anywhere;
+        }
+        .extracted-field b {
+          display: inline-block;
+          margin-top: .4rem;
+          color: #e7e3dc;
+          font-size: .65rem;
+        }
+        .extracted-field p {
+          margin: .22rem 0 0;
+          color: #bdb9b2;
+          font-size: .68rem;
+          line-height: 1.35;
+        }
+        .business-observation {
+          padding: .62rem .7rem;
+          margin-bottom: .4rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--coral);
+          border-radius: 6px;
+          background: #24191c;
+        }
+        .business-observation > div {
+          display: flex;
+          justify-content: space-between;
+          gap: .6rem;
+        }
+        .business-observation strong {
+          font-size: .82rem;
+        }
+        .business-observation span,
+        .business-observation small {
+          color: var(--muted);
+          font-size: .65rem;
+        }
+        .business-observation p {
+          margin: .25rem 0;
+          font-size: .75rem;
+        }
+        .control-matrix {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: .4rem;
+        }
+        .control-status {
+          min-height: 78px;
+          padding: .55rem;
+          border: 1px solid var(--line);
+          border-left: 4px solid #595760;
+          border-radius: 5px;
+          background: #19191d;
+        }
+        .control-status.clear { border-left-color: var(--green); }
+        .control-status.attention { border-left-color: var(--coral); }
+        .control-status.detected { border-left-color: var(--blue); }
+        .control-status.indeterminate { border-left-color: var(--amber); }
+        .control-status.error { border-left-color: #b28cff; }
+        .control-status span,
+        .control-status strong {
+          display: block;
+        }
+        .control-status span {
+          color: var(--muted);
+          font-size: .62rem;
+        }
+        .control-status strong {
+          margin-top: .15rem;
+          font-size: .74rem;
+        }
+        .control-status p {
+          margin: .25rem 0 0;
+          color: #bcb8b1;
+          font-size: .64rem;
+          line-height: 1.3;
+        }
+        .recognized-text {
+          white-space: pre-wrap;
+          max-height: 240px;
+          overflow: auto;
+          padding: .75rem;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #18181c;
+          color: #d3cfc8;
+          font: .74rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+        .section-title {
+          font-size: 1rem;
+          margin: 1rem 0 .45rem;
+        }
+        @media (max-width: 1100px) {
+          .category-counters {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
-
-
-
-          .detector-grid {
+          .score-hero {
+            grid-template-columns: auto 1fr;
+          }
+        }
+        @media (max-width: 700px) {
+          .block-container {
+            padding: .8rem .75rem 1.5rem;
+          }
+          .brandbar {
+            align-items: flex-start;
+          }
+          .score-hero {
             grid-template-columns: 1fr;
           }
-          .score-meta {
+          .score-ring {
+            width: 100px;
+            height: 100px;
+          }
+          .score-meta,
+          .score-meta.compact-meta,
+          .extracted-fields,
+          .control-matrix {
+            grid-template-columns: 1fr;
+          }
+          .category-counters {
             grid-template-columns: 1fr 1fr;
           }
-          .lab-observation {
-            margin-left: 0;
+          .review-banner {
+            align-items: flex-start;
+            flex-direction: column;
           }
-          .lab-observation-head {
-            grid-template-columns: 1fr;
+          .review-banner span {
+            text-align: left;
           }
         }
         </style>

@@ -33,6 +33,23 @@ memes options d'analyse. `--without-gapl` permet de le desactiver explicitement.
 Les modeles, fichiers importes et sorties d'analyse restent locaux et ne sont pas
 suivis par Git.
 
+## Configuration
+
+`config.yaml` est la configuration centrale de l'interface, de `start.sh` et de la
+CLI. Il regroupe notamment :
+
+- l'adresse, le port, le répertoire de travail et la limite d'upload ;
+- les limites de rendu et de mémoire pour les PDF et les images ;
+- les seuils de composition, d'ELA et de sélection des photos ;
+- l'activation, l'URL et le délai du serveur OCR local ;
+- l'activation, les poids et les budgets de GAPL et TruFor ;
+- l'activation des contrôles expérimentaux du laboratoire.
+
+Les chemins relatifs sont résolus depuis le dossier du YAML. Les variables
+d'environnement `FROD_*` restent disponibles comme surcharges de déploiement, mais
+une installation locale peut être configurée uniquement en modifiant ce fichier.
+Redémarrer `./start.sh` après une modification.
+
 ## Indices verifies dans le MVP
 
 - historique de mises a jour incrementales encore present dans le PDF ;
@@ -74,8 +91,9 @@ le dossier technique de l'interface.
 
 ## Coherence du contenu OCR
 
-Quand `FROD_OCR_URL` designe un serveur GLM-OCR local, les sorties structurees et
-Markdown alimentent une famille `content_consistency` plafonnee a 30 points. Les
+Quand `ocr.enabled` vaut `true` dans `config.yaml`, `ocr.url` désigne le serveur
+GLM-OCR local. Ses sorties structurées et Markdown alimentent une famille
+`content_consistency` plafonnée à 30 points. Les
 anomalies correlees sont regroupees entre identifiants, calculs, dates et coherence
 geographique avant le calcul du score.
 
