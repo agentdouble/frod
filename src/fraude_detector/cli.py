@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from fraude_detector import __version__
@@ -13,16 +14,15 @@ from fraude_detector.community_forensics import (
     CommunityForensicsError,
     create_community_forensics_adapter,
 )
-from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
 from fraude_detector.gapl import (
-    GAPL_DEFAULT_CHECKPOINT,
     GaplError,
     best_available_device,
     create_gapl_adapter,
 )
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
 from fraude_detector.pipeline import AnalysisPipeline
+from fraude_detector.run_config import GaplConfig, RunConfigError, load_run_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("input_file", type=Path, help="PDF ou image a analyser")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path(os.environ.get("FROD_CONFIG", "config.yaml")),
+        help="Configuration du projet (defaut: config.yaml)",
+    )
     parser.add_argument(
         "--output",
         "-o",
@@ -47,12 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
             "l'historique du shell."
         ),
     )
-    parser.add_argument("--dpi", type=int, default=144, help="DPI de rendu (>= 72)")
+    parser.add_argument("--dpi", type=int, help="Remplacer le DPI defini dans config.yaml")
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=25,
-        help="Nombre maximal de pages analysees visuellement",
+        help="Remplacer le nombre maximal de pages defini dans config.yaml",
     )
     parser.add_argument(
         "--without-gapl",
@@ -103,8 +108,15 @@ def main(argv: list[str] | None = None) -> int:
     input_is_pdf = _is_pdf(args.input_file)
 
     try:
-        ai_adapters = _build_ai_adapters(args)
-        config = AnalysisConfig(render_dpi=args.dpi, max_pages=args.max_pages)
+        project_config = load_run_config(args.config)
+        ai_adapters = _build_ai_adapters(args, project_config.gapl)
+        config = replace(
+            project_config.analysis,
+            render_dpi=(args.dpi if args.dpi is not None else project_config.analysis.render_dpi),
+            max_pages=(
+                args.max_pages if args.max_pages is not None else project_config.analysis.max_pages
+            ),
+        )
         if input_is_pdf:
             report = AnalysisPipeline(
                 config=config,
@@ -126,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         AnalysisError,
         CommunityForensicsError,
         GaplError,
+        RunConfigError,
         RuntimeError,
         ValueError,
     ) as error:
@@ -165,18 +178,23 @@ def _is_pdf(input_path: Path) -> bool:
         return input_path.suffix.casefold() == ".pdf"
 
 
-def _build_ai_adapters(args: argparse.Namespace) -> tuple[AiImageModelAdapter, ...]:
+def _build_ai_adapters(
+    args: argparse.Namespace,
+    gapl_config: GaplConfig | None = None,
+) -> tuple[AiImageModelAdapter, ...]:
     adapters: list[AiImageModelAdapter] = []
-    if not args.without_gapl:
-        gapl_path = args.gapl_model_path or Path(
-            os.environ.get("FROD_GAPL_WEIGHTS", str(GAPL_DEFAULT_CHECKPOINT))
-        )
+    configured_gapl = gapl_config or load_run_config(args.config).gapl
+    if configured_gapl.enabled and not args.without_gapl:
+        gapl_path = args.gapl_model_path or configured_gapl.weights_path
         if not gapl_path.expanduser().is_file():
-            raise GaplError("Le modele GAPL est absent. Executez ./start.sh pour preparer Frod.")
+            raise GaplError("Le modele GAPL est absent. Executez ./start.sh pour le preparer.")
+        device = (
+            best_available_device() if configured_gapl.device == "auto" else configured_gapl.device
+        )
         adapters.append(
             create_gapl_adapter(
                 weights_path=gapl_path,
-                device=best_available_device(),
+                device=device,
             )
         )
 

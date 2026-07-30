@@ -32,6 +32,9 @@ class AnalysisConfig:
     ai_model_score_threshold: float = 0.80
     ai_min_consensus_families: int = 2
     ai_stability_max_delta: float = 0.15
+    ocr_enabled: bool = False
+    ocr_url: str = "http://127.0.0.1:8007"
+    ocr_timeout_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -44,8 +47,22 @@ class AnalysisConfig:
             raise ValueError("max_render_pixels must be at least 1")
         if self.max_embedded_image_pixels < 1:
             raise ValueError("max_embedded_image_pixels must be at least 1")
+        if not 0 < self.full_page_image_coverage <= 1:
+            raise ValueError("full_page_image_coverage must be between 0 and 1")
+        if not 0 <= self.minimum_overlay_coverage <= 1:
+            raise ValueError("minimum_overlay_coverage must be between 0 and 1")
+        if not 0 < self.maximum_overlay_coverage <= 1:
+            raise ValueError("maximum_overlay_coverage must be between 0 and 1")
+        if self.minimum_overlay_coverage > self.maximum_overlay_coverage:
+            raise ValueError("minimum_overlay_coverage must not exceed maximum_overlay_coverage")
         if not 1 <= self.ela_jpeg_quality <= 100:
             raise ValueError("ela_jpeg_quality must be between 1 and 100")
+        if self.ela_block_size < 1:
+            raise ValueError("ela_block_size must be at least 1")
+        if self.ela_robust_z_threshold <= 0:
+            raise ValueError("ela_robust_z_threshold must be positive")
+        if self.ela_max_image_dimension < 64:
+            raise ValueError("ela_max_image_dimension must be at least 64")
         if not 0 < self.ela_max_region_area_fraction <= 1:
             raise ValueError("ela_max_region_area_fraction must be between 0 and 1")
         if self.ai_max_images < 1:
@@ -66,3 +83,7 @@ class AnalysisConfig:
             raise ValueError("ai_min_consensus_families must be at least 2")
         if not 0 <= self.ai_stability_max_delta <= 1:
             raise ValueError("ai_stability_max_delta must be between 0 and 1")
+        if self.ocr_enabled and not self.ocr_url.strip():
+            raise ValueError("ocr_url must not be empty when OCR is enabled")
+        if self.ocr_timeout_seconds < 1:
+            raise ValueError("ocr_timeout_seconds must be at least 1")

@@ -1,2 +1,102 @@
-# Chemin absolu, ou relatif a ce fichier, du PDF ou de l'image a analyser.
-input_path: "tests/fixtures/0ca1ba88-2a9c-49bc-abe2-604986b6b06a.png"
+# Configuration locale de l'application.
+# Les chemins relatifs sont résolus depuis le dossier qui contient ce fichier.
+# Après une modification, redémarrer ./start.sh pour appliquer les nouvelles valeurs.
+
+# Entrée facultative utilisée par le lanceur en ligne de commande config_cli.
+# L'interface Streamlit utilise le document déposé par l'utilisateur.
+input:
+  path: null
+
+application:
+  # Adresse locale d'écoute. Conserver 127.0.0.1 pour ne pas exposer le POC au réseau.
+  host: "127.0.0.1"
+  # Si le port est occupé, start.sh essaie automatiquement les 19 ports suivants.
+  port: 8501
+  # Documents temporaires, rapports et artefacts produits par l'interface.
+  work_dir: ".frod"
+  # Limite du composant de dépôt Streamlit. Doit être >= max_file_size_mb.
+  max_upload_size_mb: 200
+
+analysis:
+  rendering:
+    # Résolution utilisée pour convertir les pages PDF en images.
+    dpi: 144
+
+  limits:
+    # Nombre maximal de pages analysées visuellement dans un PDF.
+    max_pages: 25
+    # Taille maximale acceptée par le pipeline, en mégaoctets.
+    max_file_size_mb: 100
+    # Protection mémoire pour le rendu d'une page PDF.
+    max_render_pixels: 25000000
+    # Protection mémoire pour une image extraite d'un PDF.
+    max_embedded_image_pixels: 50000000
+
+  composition:
+    # Couverture minimale pour considérer une image comme fond principal de page.
+    full_page_image_coverage: 0.65
+    # Une superposition plus petite que cette fraction de page est ignorée.
+    minimum_overlay_coverage: 0.001
+    # Une image couvrant davantage est considérée comme fond, pas comme superposition.
+    maximum_overlay_coverage: 0.50
+
+  ela:
+    # Qualité de la recompression JPEG utilisée par l'analyse ELA.
+    jpeg_quality: 90
+    # Taille des blocs servant à agréger les écarts de compression.
+    block_size: 64
+    # Seuil robuste à partir duquel un bloc devient atypique.
+    robust_z_threshold: 3.5
+    # Réduction des grandes images avant ELA pour limiter la mémoire.
+    max_image_dimension: 2400
+    # Une zone plus grande que cette fraction est trop globale pour être localisée.
+    max_region_area_fraction: 0.25
+
+  ai_images:
+    # Nombre maximal de photos réellement envoyées aux modèles d'image.
+    max_images: 20
+    # Nombre maximal d'images inventoriées avant de déclarer l'analyse partielle.
+    max_inventory_images: 100
+    # Filtres évitant d'envoyer icônes, logos et très petites images aux modèles.
+    min_photo_page_coverage: 0.02
+    min_photo_side: 256
+    min_photo_pixels: 262144
+    # Dimension maximale avant l'analyse multi-zone.
+    max_image_dimension: 1536
+    # Seuil des anciens adaptateurs passifs autres que GAPL.
+    model_score_threshold: 0.80
+    # Nombre minimal de familles techniques concordantes pour ces adaptateurs.
+    min_consensus_families: 2
+    # Écart maximal toléré entre transformations d'une même image.
+    stability_max_delta: 0.15
+
+ocr:
+  # Active ou désactive totalement l'appel au serveur OCR local.
+  enabled: false
+  # URL du serveur GLM-OCR. Aucune donnée n'est envoyée si enabled vaut false.
+  url: "http://127.0.0.1:8007"
+  # Durée maximale d'une requête OCR avant abandon, en secondes.
+  timeout_seconds: 300
+
+models:
+  gapl:
+    # Détection locale de caractéristiques compatibles avec une image générée par IA.
+    enabled: true
+    weights_path: "models/gapl/checkpoint.pt"
+    # auto choisit CUDA, MPS ou CPU selon la machine. Valeurs: auto, cpu, cuda, mps.
+    device: "auto"
+
+  trufor:
+    # Recherche expérimentale d'incohérences et de retouches locales sur les images.
+    enabled: true
+    weights_path: "models/trufor/trufor.pth.tar"
+    # Budget de pixels analysés. Une valeur élevée augmente fortement la mémoire.
+    max_pixels: 400000
+    # Durée maximale du processus isolé TruFor, en secondes.
+    timeout_seconds: 900
+
+laboratory:
+  # Contrôles PDF expérimentaux: signatures, Factur-X, 2D-Doc, révisions et objets.
+  pdf_enabled: true
+  # Contrôles expérimentaux réservés aux images, notamment TruFor.
+  image_enabled: true

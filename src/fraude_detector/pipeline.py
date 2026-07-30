@@ -19,6 +19,7 @@ from fraude_detector.config import AnalysisConfig
 from fraude_detector.detectors import (
     AiGeneratedImageDetector,
     ImageProvenanceDetector,
+    OcrDetector,
     PageCompositionDetector,
     PdfStructureDetector,
     RasterAnomalyDetector,
@@ -30,6 +31,7 @@ from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
     DocumentInfo,
+    OcrReport,
 )
 from fraude_detector.pdf_revisions import find_valid_revision_end_offsets
 from fraude_detector.rendering import create_review_overlays, render_input_pages
@@ -102,11 +104,23 @@ class AnalysisPipeline:
 
             rendered_pages = render_input_pages(context)
             report_progress(0.20, "Pages preparees")
+            ocr_report: OcrReport | None = None
+            ocr_detector: OcrDetector | None = None
+            if self.config.ocr_enabled:
+                report_progress(0.21, "Reconnaissance du contenu")
+                ocr_detector = OcrDetector(self.config)
+                ocr_report = ocr_detector.detect(
+                    source,
+                    destination,
+                    rendered_pages=rendered_pages,
+                )
+
             detector_results_list: list[DetectorResult] = []
             detector_count = max(1, len(self.detectors))
+            detector_start = 0.25 if self.config.ocr_enabled else 0.20
             for index, detector in enumerate(self.detectors):
-                start = 0.20 + 0.65 * index / detector_count
-                width = 0.65 / detector_count
+                start = detector_start + (0.85 - detector_start) * index / detector_count
+                width = (0.85 - detector_start) / detector_count
                 detector_context = replace(
                     context,
                     progress_callback=lambda value, label, start=start, width=width: (
@@ -115,6 +129,8 @@ class AnalysisPipeline:
                 )
                 report_progress(start, f"Analyse : {detector.name}")
                 detector_results_list.append(self._run_detector(detector, detector_context))
+            if ocr_detector is not None and ocr_report is not None:
+                detector_results_list.append(ocr_detector.result(ocr_report))
             detector_results = tuple(detector_results_list)
             report_progress(0.86, "Calcul du score")
             findings = tuple(
@@ -133,6 +149,7 @@ class AnalysisPipeline:
                 dict.fromkeys(
                     artifact
                     for detector_result in detector_results
+                    if detector_result.name != OcrDetector.name
                     for artifact in detector_result.artifacts
                 )
             )
@@ -159,6 +176,9 @@ class AnalysisPipeline:
                     "page_renders": rendered_pages,
                     "review_overlays": review_overlays,
                     "forensics": forensics,
+                    "ocr_json": _ocr_artifacts(ocr_report, ".json"),
+                    "ocr_markdown": _ocr_artifacts(ocr_report, ".md"),
+                    "ocr_layout": ocr_report.layout_images if ocr_report else (),
                 },
                 limitations=(
                     "Le score est une priorite de revue, pas une probabilite "
@@ -172,6 +192,9 @@ class AnalysisPipeline:
                     "une declaration C2PA decrit l'origine, pas une intention frauduleuse.",
                     "Les modeles passifs d'images IA sont sensibles au domaine, aux nouveaux "
                     "generateurs et aux recompressions; seul un consensus stable est score.",
+                    "GLM-OCR ne fournit pas actuellement de confiance par caractere. "
+                    "Les controles de contenu utilisent une fiabilite de representation "
+                    "plafonnee et peuvent etre neutralises si l'extraction est insuffisante.",
                     "Le routage image du MVP est geometrique: une photo pleine page peut etre "
                     "exclue et un document partiel peut rester candidat au modele passif.",
                     "Les masques alpha PDF separes ne sont pas recomposes lors du decodage "
@@ -246,3 +269,9 @@ class AnalysisPipeline:
             + "\n",
             encoding="utf-8",
         )
+
+
+def _ocr_artifacts(report: OcrReport | None, suffix: str) -> tuple[str, ...]:
+    if report is None or not report.success:
+        return ()
+    return tuple(path for path in report.artifacts if Path(path).suffix.casefold() == suffix)

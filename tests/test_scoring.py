@@ -18,6 +18,7 @@ def test_one_family_never_reaches_high() -> None:
     assessment = assess_risk(tuple(finding("revision_visual", 60) for _ in range(5)))
     assert assessment.score == 60
     assert assessment.level == "review"
+    assert assessment.label == "Revue manuelle nécessaire"
 
 
 def test_repeated_regions_with_same_code_do_not_inflate_score() -> None:
@@ -37,12 +38,14 @@ def test_independent_strong_families_can_reach_high() -> None:
     )
     assert assessment.score >= 70
     assert assessment.level == "high"
+    assert assessment.label == "Indices forts de modification"
 
 
 def test_no_signal_is_low_but_not_authenticity_claim() -> None:
     assessment = assess_risk(())
     assert assessment.level == "low"
-    assert "authenticite" in assessment.explanation
+    assert assessment.label == "Aucun signal fort détecté"
+    assert "authenticité" in assessment.explanation
 
 
 def test_synthetic_media_family_is_capped_and_cannot_reach_high_alone() -> None:

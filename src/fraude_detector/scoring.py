@@ -8,6 +8,7 @@ from fraude_detector.models import Finding, RiskAssessment
 
 FAMILY_CAPS: dict[str, float] = {
     "annotations": 10.0,
+    "content_consistency": 30.0,
     "document_integrity": 20.0,
     "metadata": 15.0,
     "page_composition": 45.0,
@@ -53,24 +54,24 @@ def assess_risk(findings: tuple[Finding, ...]) -> RiskAssessment:
 
     if score >= 70:
         level = "high"
-        label = "indices forts de modification"
+        label = "Indices forts de modification"
         explanation = (
-            "Plusieurs familles de signaux independantes se corroborent. "
+            "Plusieurs familles de signaux indépendantes se corroborent. "
             "Une revue humaine reste obligatoire avant toute conclusion de fraude."
         )
     elif score >= 30:
         level = "review"
-        label = "revue manuelle necessaire"
+        label = "Revue manuelle nécessaire"
         explanation = (
-            "Au moins un signal technique merite un controle humain et un "
-            "rapprochement avec les donnees metier."
+            "Au moins un signal technique mérite un contrôle humain et un "
+            "rapprochement avec les données métier."
         )
     else:
         level = "low"
-        label = "aucun signal fort detecte"
+        label = "Aucun signal fort détecté"
         explanation = (
-            "Le pipeline n'a pas trouve de signal fort dans son perimetre. "
-            "Cela ne prouve ni l'authenticite ni l'absence de modification."
+            "L'analyse n'a pas trouvé de signal fort dans son périmètre. "
+            "Cela ne prouve ni l'authenticité ni l'absence de modification."
         )
 
     return RiskAssessment(

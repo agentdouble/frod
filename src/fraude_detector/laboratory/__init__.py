@@ -14,6 +14,7 @@ from fraude_detector.detectors.base import AnalysisContext
 from fraude_detector.laboratory.facturx import analyze_facturx
 from fraude_detector.laboratory.images import analyze_image_laboratory
 from fraude_detector.laboratory.objects import analyze_fonts_and_hidden_objects
+from fraude_detector.laboratory.ocr import analyze_ocr_laboratory
 from fraude_detector.laboratory.revisions import analyze_all_revisions
 from fraude_detector.laboratory.signatures import analyze_pdf_signatures
 from fraude_detector.laboratory.two_d_doc import analyze_two_d_doc
@@ -143,4 +144,8 @@ def _error_check(code: str, error: Exception) -> LaboratoryCheck:
     )
 
 
-__all__ = ["analyze_image_laboratory", "analyze_pdf_laboratory"]
+__all__ = [
+    "analyze_image_laboratory",
+    "analyze_ocr_laboratory",
+    "analyze_pdf_laboratory",
+]

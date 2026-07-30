@@ -1,0 +1,38 @@
+[
+  [
+    {
+      "bbox_2d": [
+        0,
+        0,
+        1000,
+        1000
+      ],
+      "content": "TOWEVER, NO ONE'S USED THIS VEHICLE. THE RIGHT TO USE IT IS YOURS.",
+      "index": 0,
+      "label": "image",
+      "native_label": "image",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          999
+        ],
+        [
+          970,
+          999
+        ],
+        [
+          1000,
+          949
+        ],
+        [
+          1000,
+          0
+        ]
+      ]
+    }
+  ]
+]

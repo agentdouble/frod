@@ -1,0 +1,550 @@
+[
+  [
+    {
+      "bbox_2d": [
+        86,
+        65,
+        604,
+        94
+      ],
+      "content": "## DECLARATION DE SINISTRE",
+      "index": 0,
+      "label": "text",
+      "native_label": "paragraph_title",
+      "polygon": [
+        [
+          86,
+          65
+        ],
+        [
+          86,
+          94
+        ],
+        [
+          603,
+          94
+        ],
+        [
+          603,
+          65
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        87,
+        104,
+        727,
+        125
+      ],
+      "content": "Document synthetique de validation - aucune donnee reelle",
+      "index": 1,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          87,
+          104
+        ],
+        [
+          87,
+          125
+        ],
+        [
+          726,
+          125
+        ],
+        [
+          726,
+          104
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        82,
+        196,
+        165,
+        215
+      ],
+      "content": "Assure",
+      "index": 2,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          82,
+          196
+        ],
+        [
+          82,
+          205
+        ],
+        [
+          82,
+          210
+        ],
+        [
+          82,
+          214
+        ],
+        [
+          164,
+          214
+        ],
+        [
+          164,
+          196
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        537,
+        196,
+        624,
+        215
+      ],
+      "content": "Dossier",
+      "index": 3,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          537,
+          196
+        ],
+        [
+          537,
+          200
+        ],
+        [
+          537,
+          210
+        ],
+        [
+          537,
+          214
+        ],
+        [
+          623,
+          214
+        ],
+        [
+          623,
+          196
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        81,
+        224,
+        302,
+        249
+      ],
+      "content": "Camille Exemple",
+      "index": 4,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          81,
+          224
+        ],
+        [
+          81,
+          248
+        ],
+        [
+          301,
+          248
+        ],
+        [
+          301,
+          224
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        537,
+        224,
+        742,
+        248
+      ],
+      "content": "TEST-2026-001",
+      "index": 5,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          537,
+          224
+        ],
+        [
+          537,
+          228
+        ],
+        [
+          542,
+          247
+        ],
+        [
+          741,
+          247
+        ],
+        [
+          741,
+          224
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        97,
+        354,
+        686,
+        383
+      ],
+      "content": "Montant des dommages : 9 500 EUR",
+      "index": 6,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          97,
+          354
+        ],
+        [
+          97,
+          383
+        ],
+        [
+          686,
+          383
+        ],
+        [
+          686,
+          354
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        807,
+        372,
+        885,
+        392
+      ],
+      "content": "VALIDE",
+      "index": 7,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          807,
+          372
+        ],
+        [
+          807,
+          391
+        ],
+        [
+          885,
+          391
+        ],
+        [
+          885,
+          372
+        ],
+        [
+          854,
+          372
+        ],
+        [
+          848,
+          372
+        ],
+        [
+          844,
+          372
+        ],
+        [
+          838,
+          372
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        88,
+        483,
+        261,
+        504
+      ],
+      "content": "Date du sinistre",
+      "index": 8,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          88,
+          483
+        ],
+        [
+          88,
+          504
+        ],
+        [
+          261,
+          504
+        ],
+        [
+          261,
+          483
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        90,
+        511,
+        247,
+        536
+      ],
+      "content": "18/07/2026",
+      "index": 9,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          90,
+          511
+        ],
+        [
+          90,
+          535
+        ],
+        [
+          246,
+          535
+        ],
+        [
+          246,
+          511
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        87,
+        572,
+        292,
+        593
+      ],
+      "content": "Type de dommage",
+      "index": 10,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          87,
+          572
+        ],
+        [
+          87,
+          593
+        ],
+        [
+          292,
+          593
+        ],
+        [
+          292,
+          572
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        87,
+        600,
+        293,
+        625
+      ],
+      "content": "Degat des eaux",
+      "index": 11,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          87,
+          600
+        ],
+        [
+          87,
+          625
+        ],
+        [
+          293,
+          625
+        ],
+        [
+          293,
+          600
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        87,
+        660,
+        288,
+        681
+      ],
+      "content": "Reference contrat",
+      "index": 12,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          87,
+          660
+        ],
+        [
+          87,
+          681
+        ],
+        [
+          287,
+          681
+        ],
+        [
+          287,
+          660
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        87,
+        689,
+        285,
+        712
+      ],
+      "content": "HAB-TEST-042",
+      "index": 13,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          87,
+          689
+        ],
+        [
+          87,
+          711
+        ],
+        [
+          284,
+          711
+        ],
+        [
+          284,
+          689
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        94,
+        828,
+        233,
+        849
+      ],
+      "content": "Observation",
+      "index": 14,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          94,
+          828
+        ],
+        [
+          94,
+          849
+        ],
+        [
+          232,
+          849
+        ],
+        [
+          232,
+          828
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        94,
+        859,
+        593,
+        880
+      ],
+      "content": "Fixture creee uniquement pour tester la pipeline Frod.",
+      "index": 15,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          94,
+          859
+        ],
+        [
+          94,
+          880
+        ],
+        [
+          593,
+          880
+        ],
+        [
+          593,
+          859
+        ]
+      ]
+    },
+    {
+      "bbox_2d": [
+        688,
+        931,
+        784,
+        948
+      ],
+      "content": "PAGE 1/1",
+      "index": 16,
+      "label": "text",
+      "native_label": "text",
+      "polygon": [
+        [
+          688,
+          931
+        ],
+        [
+          688,
+          948
+        ],
+        [
+          784,
+          948
+        ],
+        [
+          784,
+          931
+        ]
+      ]
+    }
+  ]
+]

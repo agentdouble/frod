@@ -32,7 +32,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Erreur [invalid_config]: {error}", file=sys.stderr)
         return 2
 
-    return analysis_main([str(config.input_path)])
+    if config.input_path is None:
+        print(
+            "Erreur [invalid_config]: Definissez input.path dans la configuration.",
+            file=sys.stderr,
+        )
+        return 2
+    return analysis_main(
+        [
+            str(config.input_path),
+            "--config",
+            str(config.source),
+        ]
+    )
 
 
 if __name__ == "__main__":
