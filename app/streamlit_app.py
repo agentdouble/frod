@@ -39,7 +39,7 @@ from fraude_detector.models import (
 from fraude_detector.ocr_consistency import build_ocr_content_result
 from fraude_detector.pipeline import AnalysisPipeline
 from fraude_detector.run_config import load_run_config
-from fraude_detector.scoring import FAMILY_CAPS
+from fraude_detector.scoring import FAMILY_CAPS, assess_risk
 
 CONFIG_PATH = Path(os.environ.get("FROD_CONFIG", "config.yaml"))
 PROJECT_CONFIG = load_run_config(CONFIG_PATH)
@@ -53,6 +53,7 @@ CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdig
 ANALYSIS_POLICY_VERSION = (
     f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v2-full-identifiers-{CONFIG_FINGERPRINT}"
 )
+INDICATOR_STEP_SECONDS = 0.45
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
@@ -128,17 +129,17 @@ CATEGORY_DESCRIPTIONS = {
     "synthetic_media": "Ressemblance visuelle avec des images générées par IA.",
 }
 
-CATEGORY_ACCENTS = {
-    "annotations": "#4cc9d8",
-    "content_consistency": "#35d07f",
-    "document_integrity": "#70a7ff",
-    "metadata": "#b89cff",
-    "page_composition": "#f4b942",
-    "provenance_integrity": "#55d6be",
-    "raster_forensics": "#ff8a6b",
-    "revision_history": "#8d9eff",
-    "revision_visual": "#ff6b8a",
-    "synthetic_media": "#d58cff",
+CATEGORY_DETECTORS = {
+    "annotations": frozenset({"page_composition"}),
+    "content_consistency": frozenset({"ocr_content"}),
+    "document_integrity": frozenset({"pdf_structure"}),
+    "metadata": frozenset({"pdf_structure"}),
+    "page_composition": frozenset({"page_composition"}),
+    "provenance_integrity": frozenset({"image_provenance"}),
+    "raster_forensics": frozenset({"raster_anomaly"}),
+    "revision_history": frozenset({"pdf_structure"}),
+    "revision_visual": frozenset({"revision_diff"}),
+    "synthetic_media": frozenset({"image_provenance", "ai_generated_image"}),
 }
 
 
@@ -154,45 +155,45 @@ class OcrDemoDocument:
     fixture_dir: Path
 
 
+@dataclass(frozen=True, slots=True)
+class RiskIndicator:
+    category: str
+    label: str
+    points: float
+    maximum: float
+    bar_percentage: float
+    tone: str
+    state: str
+
+
 def main() -> None:
     st.set_page_config(
-        page_title="Analyse de fraude documentaire",
+        page_title="FROD",
         page_icon=None,
         layout="wide",
         initial_sidebar_state="collapsed",
     )
     _inject_styles()
-
-    st.markdown(
-        """
-        <section class="brandbar">
-          <h1>Analyse de fraude documentaire</h1>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    uploaded_file = _render_input_panel()
+    workspace_view, header_action = _render_app_header()
+    uploaded_file = _render_input_panel(hidden=workspace_view == "Glossaire")
 
     if uploaded_file is None:
-        _render_empty_state()
+        if workspace_view == "Glossaire":
+            _render_indicator_glossary()
+        else:
+            _render_empty_state()
         return
+
+    _render_header_document_action(header_action)
     if isinstance(uploaded_file, OcrDemoDocument):
-        _handle_ocr_demo(uploaded_file)
+        _handle_ocr_demo(uploaded_file, workspace_view=workspace_view)
+        _render_pending_scroll_reset()
         return
 
     file_bytes = uploaded_file.data
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     config = _config_from_state()
 
-    action_space, action = st.columns([0.78, 0.22], gap="medium")
-    with action_space:
-        st.markdown(
-            f'<div class="selected-file">{_html(uploaded_file.name)}</div>',
-            unsafe_allow_html=True,
-        )
-    with action:
-        analyze = st.button("Analyser le fichier", type="primary", width="stretch")
     progress = st.empty()
 
     current_key = (
@@ -201,7 +202,12 @@ def main() -> None:
         uploaded_file.name,
     )
     cached = st.session_state.get("analysis")
-    if analyze:
+    if cached is not None and cached.get("key") == current_key:
+        report = cached["report"]
+        laboratory = cached.get("laboratory")
+        output_dir = cached["output_dir"]
+        source_path = cached["source_path"]
+    else:
         _render_analysis_progress(progress, 0.0, "Préparation de l'analyse")
         try:
             report, laboratory, output_dir, source_path = _run_analysis(
@@ -232,60 +238,183 @@ def main() -> None:
             "output_dir": output_dir,
             "source_path": source_path,
         }
-    elif cached is not None and cached.get("key") == current_key:
-        report = cached["report"]
-        laboratory = cached.get("laboratory")
-        output_dir = cached["output_dir"]
-        source_path = cached["source_path"]
-    else:
-        st.session_state.pop("analysis", None)
-        _render_ready_state(uploaded_file.name)
-        return
 
-    _render_report(report, laboratory, output_dir, source_path)
-
-
-def _render_input_panel() -> InputDocument | OcrDemoDocument | None:
-    uploaded_file = st.file_uploader(
-        "Déposer un document",
-        type=["pdf", "png", "jpg", "jpeg", "webp", "tif", "tiff", "gif", "bmp"],
+    entering = _render_pdf_loading_if_pending(
+        workspace_view,
+        label="Chargement du PDF" if _is_pdf_bytes(file_bytes) else "Chargement du document",
     )
-    if uploaded_file is not None:
-        document = InputDocument(name=uploaded_file.name, data=uploaded_file.getvalue())
-    else:
-        available_ocr_demos = {
-            **OCR_DEMO_DOCUMENTS,
-            **{
-                name: path
-                for name, path in LOCAL_OCR_DEMO_DOCUMENTS.items()
-                if (path / "document.json").is_file() and (path / "document.md").is_file()
-            },
-        }
-        demo_name = st.selectbox(
-            "Document de démonstration",
-            ("Aucun", *DEMO_DOCUMENTS, *available_ocr_demos),
+    result_key = "analysis_results_entering" if entering else "analysis_results_ready"
+    with st.container(key=result_key):
+        _render_report(
+            report,
+            laboratory,
+            output_dir,
+            source_path,
+            document_name=uploaded_file.name,
+            workspace_view=workspace_view,
         )
-        if demo_name == "Aucun":
-            document = None
-        elif demo_name in DEMO_DOCUMENTS:
-            demo_path = DEMO_DOCUMENTS[demo_name]
-            if not demo_path.is_file():
-                st.error("Le document de demonstration est indisponible.")
-                document = None
-            else:
-                document = InputDocument(name=demo_path.name, data=demo_path.read_bytes())
-        else:
-            fixture_dir = available_ocr_demos[demo_name]
-            if not (fixture_dir / "document.json").is_file():
-                st.error("Les donnees OCR de demonstration sont indisponibles.")
-                document = None
-            else:
-                document = OcrDemoDocument(name=demo_name, fixture_dir=fixture_dir)
+    _render_pending_scroll_reset()
 
+
+def _render_app_header() -> tuple[str, Any]:
+    with st.container(
+        key="app_header",
+        horizontal=True,
+        horizontal_alignment="distribute",
+        vertical_alignment="center",
+        gap="medium",
+    ):
+        st.markdown(
+            '<div class="brandbar"><h1>FROD</h1></div>',
+            unsafe_allow_html=True,
+        )
+        with st.container(
+            key="header_actions",
+            horizontal=True,
+            horizontal_alignment="right",
+            vertical_alignment="center",
+            gap="small",
+            width="content",
+        ):
+            with st.container(key="header_navigation", width="content"):
+                selected = st.segmented_control(
+                    "Navigation principale",
+                    ("Analyse", "Glossaire"),
+                    default="Analyse",
+                    key="workspace_view",
+                    label_visibility="collapsed",
+                )
+            action_slot = st.empty()
+    return selected or "Analyse", action_slot
+
+
+def _render_input_panel(*, hidden: bool = False) -> InputDocument | OcrDemoDocument | None:
+    selected_document = st.session_state.get("selected_document")
+    if isinstance(selected_document, dict):
+        if selected_document.get("kind") == "input":
+            return InputDocument(
+                name=str(selected_document["name"]),
+                data=bytes(selected_document["data"]),
+            )
+        if selected_document.get("kind") == "ocr":
+            return OcrDemoDocument(
+                name=str(selected_document["name"]),
+                fixture_dir=Path(selected_document["fixture_dir"]),
+            )
+    if hidden:
+        return None
+
+    revision = int(st.session_state.get("document_input_revision", 0))
+    input_slot = st.empty()
+    with input_slot.container():
+        uploaded_file = st.file_uploader(
+            "Déposer un document",
+            type=["pdf", "png", "jpg", "jpeg", "webp", "tif", "tiff", "gif", "bmp"],
+            key=f"document_upload_{revision}",
+        )
+        if uploaded_file is not None:
+            document = InputDocument(name=uploaded_file.name, data=uploaded_file.getvalue())
+        else:
+            available_ocr_demos = {
+                **OCR_DEMO_DOCUMENTS,
+                **{
+                    name: path
+                    for name, path in LOCAL_OCR_DEMO_DOCUMENTS.items()
+                    if (path / "document.json").is_file() and (path / "document.md").is_file()
+                },
+            }
+            demo_name = st.selectbox(
+                "Document de démonstration",
+                ("Aucun", *DEMO_DOCUMENTS, *available_ocr_demos),
+                key=f"document_demo_{revision}",
+            )
+            if demo_name == "Aucun":
+                document = None
+            elif demo_name in DEMO_DOCUMENTS:
+                demo_path = DEMO_DOCUMENTS[demo_name]
+                if not demo_path.is_file():
+                    st.error("Le document de demonstration est indisponible.")
+                    document = None
+                else:
+                    document = InputDocument(name=demo_path.name, data=demo_path.read_bytes())
+            else:
+                fixture_dir = available_ocr_demos[demo_name]
+                if not (fixture_dir / "document.json").is_file():
+                    st.error("Les donnees OCR de demonstration sont indisponibles.")
+                    document = None
+                else:
+                    document = OcrDemoDocument(name=demo_name, fixture_dir=fixture_dir)
+
+    if document is not None:
+        st.session_state["selected_document"] = (
+            {"kind": "input", "name": document.name, "data": document.data}
+            if isinstance(document, InputDocument)
+            else {
+                "kind": "ocr",
+                "name": document.name,
+                "fixture_dir": str(document.fixture_dir),
+            }
+        )
+        st.session_state["pending_scroll_reset"] = True
+        st.session_state["pending_pdf_loading"] = True
+        input_slot.empty()
     return document
 
 
-def _handle_ocr_demo(document: OcrDemoDocument) -> None:
+def _render_header_document_action(target: Any) -> None:
+    target.button(
+        "Tester un nouveau document",
+        key=f"header_reset_document_{st.session_state.get('document_input_revision', 0)}",
+        on_click=_reset_document_input,
+    )
+
+
+def _reset_document_input() -> None:
+    revision = int(st.session_state.get("document_input_revision", 0))
+    st.session_state["document_input_revision"] = revision + 1
+    st.session_state.pop("selected_document", None)
+    st.session_state.pop("analysis", None)
+    st.session_state.pop("pending_pdf_loading", None)
+
+
+def _render_pending_scroll_reset() -> None:
+    if not st.session_state.pop("pending_scroll_reset", False):
+        return
+    st.html(
+        """
+        <script>
+          (() => {
+            const main = document.querySelector('[data-testid="stMain"]');
+            const resetScroll = () => main?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+            window.requestAnimationFrame(() => {
+              resetScroll();
+              window.setTimeout(resetScroll, 120);
+              window.setTimeout(resetScroll, 360);
+            });
+          })();
+        </script>
+        """,
+        unsafe_allow_javascript=True,
+    )
+
+
+def _render_pdf_loading_if_pending(workspace_view: str, *, label: str) -> bool:
+    if workspace_view != "Analyse":
+        return False
+    if not st.session_state.pop("pending_pdf_loading", False):
+        return False
+    st.markdown(
+        f"""
+        <div class="pdf-loading-stage" role="status" aria-live="polite" aria-busy="true">
+          <i aria-hidden="true"></i><span>{_html(label)}&hellip;</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return True
+
+
+def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
     json_path = document.fixture_dir / "document.json"
     markdown_path = document.fixture_dir / "document.md"
     json_bytes = json_path.read_bytes()
@@ -293,17 +422,13 @@ def _handle_ocr_demo(document: OcrDemoDocument) -> None:
     fixture_hash = hashlib.sha256(json_bytes + markdown.encode("utf-8")).hexdigest()
     current_key = ("ocr-demo-v2", document.name, fixture_hash)
 
-    action_space, action = st.columns([0.78, 0.22], gap="medium")
-    with action_space:
-        st.markdown(
-            f'<div class="selected-file">{_html(document.name)}</div>',
-            unsafe_allow_html=True,
-        )
-    with action:
-        analyze = st.button("Analyser les données OCR", type="primary", width="stretch")
-
     cached = st.session_state.get("analysis")
-    if analyze:
+    if cached is not None and cached.get("key") == current_key:
+        payload = cached["ocr_payload"]
+        markdown = cached["ocr_markdown"]
+        laboratory = cached["laboratory"]
+        ocr_detector = cached["ocr_detector"]
+    else:
         try:
             payload = json.loads(json_bytes)
         except json.JSONDecodeError as error:
@@ -328,22 +453,20 @@ def _handle_ocr_demo(document: OcrDemoDocument) -> None:
             "laboratory": laboratory,
             "ocr_detector": ocr_detector,
         }
-    elif cached is not None and cached.get("key") == current_key:
-        payload = cached["ocr_payload"]
-        markdown = cached["ocr_markdown"]
-        laboratory = cached["laboratory"]
-        ocr_detector = cached["ocr_detector"]
-    else:
-        st.session_state.pop("analysis", None)
-        _render_ready_state(document.name)
-        return
 
-    _render_ocr_demo_report(
-        name=document.name,
-        markdown=markdown,
-        laboratory=laboratory,
-        ocr_detector=ocr_detector,
+    entering = _render_pdf_loading_if_pending(
+        workspace_view,
+        label="Chargement du document",
     )
+    result_key = "analysis_results_entering" if entering else "analysis_results_ready"
+    with st.container(key=result_key):
+        _render_ocr_demo_report(
+            name=document.name,
+            markdown=markdown,
+            laboratory=laboratory,
+            ocr_detector=ocr_detector,
+            workspace_view=workspace_view,
+        )
 
 
 def _config_from_state() -> AnalysisConfig:
@@ -492,23 +615,14 @@ def _render_empty_state() -> None:
     )
 
 
-def _render_ready_state(filename: str) -> None:
-    st.markdown(
-        f"""
-        <div class="empty-state ready">
-          <h2>{_html(filename)}</h2>
-          <p>Fichier prêt pour analyse.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
     output_dir: Path,
     source_path: Path,
+    *,
+    document_name: str,
+    workspace_view: str,
 ) -> None:
     findings = sorted(
         report.findings,
@@ -519,20 +633,25 @@ def _render_report(
     diagnostics = [finding for finding in findings if finding.risk_points == 0]
     layout_images = _read_ocr_layout_images(report, output_dir)
 
-    _render_score_header(report)
-    _render_category_counters(report.findings)
+    if workspace_view == "Glossaire":
+        _render_indicator_glossary()
+        return
 
-    preview, review = st.columns([0.54, 0.46], gap="large")
-    with preview:
+    document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
+    with document_column:
         _render_document_view(
             report=report,
             laboratory=laboratory,
             output_dir=output_dir,
             source_path=source_path,
             layout_images=layout_images,
+            document_name=document_name,
         )
-    with review:
-        _render_review_summary(scored, diagnostics, laboratory)
+    with indicators_column:
+        _render_score(report)
+        _render_risk_indicators(report.findings, report.detectors)
+
+    _render_review_summary(scored, diagnostics, laboratory)
 
 
 def _render_ocr_demo_report(
@@ -541,35 +660,44 @@ def _render_ocr_demo_report(
     markdown: str,
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
+    workspace_view: str,
 ) -> None:
     finding = ocr_detector.findings[0] if ocr_detector.findings else None
     points = finding.risk_points if finding is not None else 0.0
     tone = "review" if points >= 30 else "low"
     color = LEVEL_STYLE[tone]["color"]
-    angle = min(100, points / 30 * 100) * 3.6
-    st.markdown(
-        f"""
-        <section class="score-hero {tone}">
-          <div class="score-ring" style="--score-angle:{angle}deg;--score-color:{color};">
-            <span>{points:g}</span><small>/30</small>
-          </div>
-          <div class="score-copy">
-            <p class="eyebrow">Cohérence du contenu</p>
-            <h2>{_html(name)}</h2>
-            <p>Contrôle des identifiants, dates et calculs reconnus dans le document.</p>
-          </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
-    preview, review = st.columns([0.54, 0.46], gap="large")
-    with preview:
-        st.markdown('<h2 class="workspace-title">Document reconnu</h2>', unsafe_allow_html=True)
+    if workspace_view == "Glossaire":
+        _render_indicator_glossary(categories=("content_consistency",))
+        return
+
+    document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
+    with document_column:
+        st.markdown(
+            f'<h2 class="workspace-title document-name">{_html(name)}</h2>',
+            unsafe_allow_html=True,
+        )
         _render_recognized_text(markdown, compact=True)
-    with review:
-        scored = [finding] if finding is not None and finding.risk_points > 0 else []
-        diagnostics = [finding] if finding is not None and finding.risk_points == 0 else []
-        _render_review_summary(scored, diagnostics, laboratory)
+    with indicators_column:
+        _render_compact_score(
+            score=points,
+            maximum=30,
+            tone=tone,
+            color=color,
+            label="Score de contrôle",
+            score_steps=_build_score_steps(
+                ocr_detector.findings,
+                categories=("content_consistency",),
+            ),
+        )
+        _render_risk_indicators(
+            ocr_detector.findings,
+            (ocr_detector,),
+            categories=("content_consistency",),
+        )
+
+    scored = [finding] if finding is not None and finding.risk_points > 0 else []
+    diagnostics = [finding] if finding is not None and finding.risk_points == 0 else []
+    _render_review_summary(scored, diagnostics, laboratory)
 
 
 def _read_ocr_layout_images(
@@ -599,34 +727,149 @@ LAB_STRENGTH_LABELS = {
 }
 
 
-def _render_category_counters(findings: tuple[Finding, ...]) -> None:
+def _render_risk_indicators(
+    findings: tuple[Finding, ...],
+    detectors: tuple[DetectorResult, ...],
+    *,
+    categories: tuple[str, ...] | None = None,
+) -> None:
+    indicators = _build_risk_indicators(findings, detectors, categories=categories)
+    rows = []
+    accessible_rows = []
+    for index, indicator in enumerate(indicators, start=1):
+        label = _html(indicator.label)
+        points = f"{indicator.points:g}"
+        maximum = f"{indicator.maximum:g}"
+        icon = _indicator_icon(indicator.tone)
+        delay_seconds = index * INDICATOR_STEP_SECONDS
+        rows.append(
+            f"""
+            <li
+              class="indicator-step {indicator.tone}"
+              data-state="{indicator.tone}"
+              style="--step-delay:calc(var(--result-entry-delay, 0s) + {delay_seconds:.2f}s);
+                --risk-value:{indicator.bar_percentage:.1f}%"
+            >
+              <span class="indicator-index">{index:02d}</span>
+              <div class="indicator-core">
+                <div class="indicator-main">
+                  <h3>{label}</h3>
+                  <span class="indicator-pending"><b></b>En attente</span>
+                  <span class="indicator-final"><b>{icon}</b>{_html(indicator.state)}</span>
+                </div>
+                <div class="indicator-meter"><i></i></div>
+              </div>
+              <strong class="indicator-score">{points}<span>/{maximum}</span></strong>
+            </li>
+            """
+        )
+        accessible_rows.append(
+            f"<li><strong>{label}</strong> — {_html(indicator.state)}, "
+            f"{points} points sur {maximum}.</li>"
+        )
+    st.markdown(
+        """
+        <section class="indicator-sequence" aria-label="Résultats des indicateurs">
+          <ol class="indicator-queue" aria-hidden="true">
+        """
+        + "".join(row.strip() for row in rows)
+        + '</ol><ol class="sr-only">'
+        + "".join(accessible_rows)
+        + "</ol></section>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_indicator_glossary(*, categories: tuple[str, ...] | None = None) -> None:
+    selected_categories = categories or tuple(FAMILY_CAPS)
     cards = []
-    for category, cap in FAMILY_CAPS.items():
-        points = _family_score(category, findings)
-        percentage = min(100, points / cap * 100) if cap else 0
-        tone = _tone_for_ratio(percentage)
-        state = "À examiner" if points > 0 else "Aucun signal"
-        accent = CATEGORY_ACCENTS.get(category, "#8b8791")
+    for category in selected_categories:
         cards.append(
             f"""
-            <article class="category-counter {tone}" style="--category-accent:{accent}">
-              <div class="mini-ring" style="--meter-angle:{percentage * 3.6}deg">
-                <strong>{points:g}</strong><span>/{cap:g}</span>
-              </div>
-              <div class="category-copy">
-                <strong>{_html(CATEGORY_LABELS.get(category, category))}</strong>
-                <span class="category-state">{state}</span>
-                <p>{_html(CATEGORY_DESCRIPTIONS.get(category, ""))}</p>
-              </div>
+            <article class="glossary-card">
+              <span>{_html(CATEGORY_LABELS.get(category, category))}</span>
+              <p>{_html(CATEGORY_DESCRIPTIONS.get(category, ""))}</p>
+              <small>Score maximal : {FAMILY_CAPS[category]:g} points</small>
             </article>
             """
         )
     st.markdown(
-        '<section class="category-counters">'
+        """
+        <section class="indicator-glossary" aria-labelledby="indicator-glossary-title">
+          <p class="eyebrow">Référentiel</p>
+          <h2 id="indicator-glossary-title">Glossaire des indicateurs</h2>
+          <div class="glossary-grid">
+        """
         + "".join(card.strip() for card in cards)
-        + "</section>",
+        + "</div></section>",
         unsafe_allow_html=True,
     )
+
+
+def _build_risk_indicators(
+    findings: tuple[Finding, ...],
+    detectors: tuple[DetectorResult, ...],
+    *,
+    categories: tuple[str, ...] | None = None,
+) -> tuple[RiskIndicator, ...]:
+    indicators = []
+    selected_categories = categories or tuple(FAMILY_CAPS)
+    for category in selected_categories:
+        cap = FAMILY_CAPS[category]
+        points = _family_score(category, findings)
+        percentage = min(100, points / cap * 100) if cap else 0
+        tone, state, bar_percentage = _indicator_presentation(
+            category=category,
+            percentage=percentage,
+            detectors=detectors,
+        )
+        indicators.append(
+            RiskIndicator(
+                category=category,
+                label=CATEGORY_LABELS.get(category, category),
+                points=points,
+                maximum=cap,
+                bar_percentage=bar_percentage,
+                tone=tone,
+                state=state,
+            )
+        )
+    return tuple(indicators)
+
+
+def _indicator_icon(tone: str) -> str:
+    return {
+        "clear": "✓",
+        "notice-tone": "!",
+        "warning": "!",
+        "danger": "!",
+        "partial": "≈",
+        "unavailable": "—",
+    }[tone]
+
+
+def _indicator_presentation(
+    *,
+    category: str,
+    percentage: float,
+    detectors: tuple[DetectorResult, ...],
+) -> tuple[str, str, float]:
+    if percentage > 0:
+        return (
+            _tone_for_ratio(percentage),
+            _risk_state_for_ratio(percentage),
+            percentage,
+        )
+
+    expected_detectors = CATEGORY_DETECTORS.get(category, frozenset())
+    statuses = {detector.status for detector in detectors if detector.name in expected_detectors}
+    if "completed" in statuses:
+        return "clear", "Aucun signal détecté", 100.0
+    if "partial" in statuses:
+        return "partial", "Contrôle partiel", 100.0
+    if statuses:
+        return "unavailable", "Non applicable", 0.0
+    return "unavailable", "Non évalué", 0.0
 
 
 def _family_score(category: str, findings: tuple[Finding, ...]) -> float:
@@ -642,6 +885,24 @@ def _family_score(category: str, findings: tuple[Finding, ...]) -> float:
     return round(min(FAMILY_CAPS[category], raw_score), 1)
 
 
+def _build_score_steps(
+    findings: tuple[Finding, ...],
+    *,
+    categories: tuple[str, ...],
+) -> tuple[int, ...]:
+    """Return the cumulative risk score revealed after each indicator."""
+
+    revealed_categories: set[str] = set()
+    steps = []
+    for category in categories:
+        revealed_categories.add(category)
+        revealed_findings = tuple(
+            finding for finding in findings if finding.category in revealed_categories
+        )
+        steps.append(round(assess_risk(revealed_findings).score))
+    return tuple(steps)
+
+
 def _tone_for_ratio(percentage: float) -> str:
     if percentage >= 75:
         return "danger"
@@ -652,6 +913,16 @@ def _tone_for_ratio(percentage: float) -> str:
     return "clear"
 
 
+def _risk_state_for_ratio(percentage: float) -> str:
+    if percentage >= 75:
+        return "Risque élevé"
+    if percentage >= 40:
+        return "Risque modéré"
+    if percentage > 0:
+        return "Risque faible"
+    return "Aucun signal détecté"
+
+
 def _render_document_view(
     *,
     report: AnalysisReport | ImageAnalysisReport,
@@ -659,36 +930,26 @@ def _render_document_view(
     output_dir: Path,
     source_path: Path,
     layout_images: list[Path],
+    document_name: str,
 ) -> None:
-    st.markdown('<h2 class="workspace-title">Document</h2>', unsafe_allow_html=True)
-    choices: dict[str, tuple[Path, str]] = {}
+    st.markdown(
+        f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
+        unsafe_allow_html=True,
+    )
+    choices: dict[str, Path] = {}
     if isinstance(report, ImageAnalysisReport) and source_path.is_file():
-        choices["Document original"] = (
-            source_path,
-            "Vue de référence du fichier transmis, sans annotation ajoutée par l'analyse.",
-        )
+        choices["Document original"] = source_path
 
     page_images = _existing_artifacts(output_dir, report.artifacts.get("page_renders", ()))
     for index, path in enumerate(page_images, start=1):
-        choices[f"Document - page {index}"] = (
-            path,
-            "Vue de référence de la page telle qu'elle a été analysée.",
-        )
+        choices[f"Document - page {index}"] = path
 
     review_images = _existing_artifacts(output_dir, report.artifacts.get("review_overlays", ()))
     for index, path in enumerate(review_images, start=1):
-        choices[f"Zones à revoir - page {index}"] = (
-            path,
-            "Les cadres localisent les éléments associés aux signaux de la synthèse. "
-            "Ils indiquent où regarder, mais ne constituent pas une preuve de fraude.",
-        )
+        choices[f"Zones à revoir - page {index}"] = path
 
     for index, path in enumerate(layout_images, start=1):
-        choices[f"Zones de texte reconnues - page {index}"] = (
-            path,
-            "Les cadres montrent les zones utilisées pour reconnaître le texte. "
-            "Une mauvaise lecture reste possible, notamment sur les petits caractères.",
-        )
+        choices[f"Zones de texte reconnues - page {index}"] = path
 
     forensic_images = [
         path
@@ -696,10 +957,7 @@ def _render_document_view(
         if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}
     ]
     for path in forensic_images:
-        choices[_friendly_artifact_caption(path)] = (
-            path,
-            _artifact_view_explanation(path),
-        )
+        choices[_friendly_artifact_caption(path)] = path
 
     if laboratory is not None:
         for check in laboratory.checks:
@@ -711,10 +969,7 @@ def _render_document_view(
                     if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}:
                         if _is_secondary_localization_artifact(path):
                             continue
-                        choices[_laboratory_artifact_caption(path)] = (
-                            path,
-                            _artifact_view_explanation(path),
-                        )
+                        choices[_laboratory_artifact_caption(path)] = path
 
     if not choices:
         st.info("Aucun apercu visuel disponible.")
@@ -726,16 +981,7 @@ def _render_document_view(
         if len(labels) > 1
         else labels[0]
     )
-    selected_path, explanation = choices[selected]
-    st.markdown(
-        f"""
-        <div class="view-guidance">
-          <strong>Comment lire cette vue</strong>
-          <p>{_html(explanation)}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    selected_path = choices[selected]
     st.image(str(selected_path), caption=selected, width="stretch")
 
 
@@ -927,25 +1173,56 @@ def _load_gapl_adapter(weights_path: str, device: str) -> Any:
     return create_gapl_adapter(weights_path=weights_path, device=device)
 
 
-def _render_score_header(
+def _render_score(
     report: AnalysisReport | ImageAnalysisReport,
 ) -> None:
     assessment = report.assessment
     style = LEVEL_STYLE[assessment.level]
-    circumference = max(0, min(100, assessment.score)) * 3.6
+    _render_compact_score(
+        score=assessment.score,
+        maximum=100,
+        tone=style["tone"],
+        color=style["color"],
+        label="Score de fraude",
+        score_steps=_build_score_steps(
+            report.findings,
+            categories=tuple(FAMILY_CAPS),
+        ),
+    )
+
+
+def _render_compact_score(
+    *,
+    score: float,
+    maximum: int,
+    tone: str,
+    color: str,
+    label: str,
+    score_steps: tuple[int, ...],
+) -> None:
+    displayed_score = round(score)
+    normalized_steps = tuple(round(step) for step in score_steps) or (displayed_score,)
+    if normalized_steps[-1] != displayed_score:
+        normalized_steps = (*normalized_steps[:-1], displayed_score)
+    duration_seconds = len(normalized_steps) * INDICATOR_STEP_SECONDS
+    animation_name = (
+        "fraud-score-count-"
+        + hashlib.sha256(repr(normalized_steps).encode("utf-8")).hexdigest()[:10]
+    )
+    keyframes = ["0% { --animated-score:0; }"]
+    for index, step in enumerate(normalized_steps, start=1):
+        percentage = index / len(normalized_steps) * 100
+        keyframes.append(f"{percentage:.3f}% {{ --animated-score:{step}; }}")
     st.markdown(
         f"""
-        <section class="score-hero {style["tone"]}">
-          <div class="score-ring" style="--score-angle: {circumference}deg;
-              --score-color: {style["color"]}; --score-bg: {style["background"]};">
-            <span>{assessment.score}</span>
-            <small>/100</small>
-          </div>
-          <div class="score-copy">
-            <p class="eyebrow">Score</p>
-            <h2>{_html(assessment.label)}</h2>
-            <p>{_html(assessment.explanation)}</p>
-          </div>
+        <style>@keyframes {animation_name} {{ {" ".join(keyframes)} }}</style>
+        <section class="fraud-score {tone}" aria-label="{_html(label)} : {score:g} sur {maximum}">
+          <span>{_html(label)}</span>
+          <strong style="--score-color:{color};--score-target:{displayed_score};
+            --score-duration:{duration_seconds:.2f}s;--score-animation:{animation_name}">
+            <span class="fraud-score-number" aria-hidden="true"></span>
+            <span class="sr-only">{score:g}</span><small aria-hidden="true">/{maximum}</small>
+          </strong>
         </section>
         """,
         unsafe_allow_html=True,
@@ -1063,39 +1340,6 @@ def _laboratory_artifact_caption(path: Path) -> str:
 
 def _is_secondary_localization_artifact(path: Path) -> bool:
     return any(marker in path.name for marker in ("trufor-reliable", "trufor-confidence"))
-
-
-def _artifact_view_explanation(path: Path) -> str:
-    name = path.name
-    if "trufor-localization" in name:
-        return (
-            "Les couleurs chaudes signalent des incohérences locales plus fortes ; "
-            "le bleu correspond à des zones plus régulières. Un logo, une forte compression "
-            "ou un traitement d'image légitime peut aussi produire une zone colorée : "
-            "cette carte sert à orienter la revue, pas à conclure."
-        )
-    if "gapl" in name or "windows" in name or "heatmap" in name:
-        return (
-            "Chaque zone est comparée aux caractéristiques visuelles apprises sur des images "
-            "générées par IA. Une valeur élevée indique une ressemblance statistique, sans "
-            "prouver que la zone a été générée ou modifiée par IA."
-        )
-    if "revision-diff" in name or "revision" in name:
-        return (
-            "Les zones colorées correspondent aux différences conservées entre deux versions "
-            "du fichier. Certaines peuvent provenir d'un réenregistrement ou d'une opération "
-            "légitime."
-        )
-    if "ela" in name:
-        return (
-            "La carte amplifie les différences de compression JPEG. Une zone contrastée peut "
-            "indiquer une retouche, mais aussi un assemblage, un logo ou des compressions "
-            "successives."
-        )
-    return (
-        "Cette vue complète l'examen visuel du document. Elle doit être interprétée avec les "
-        "autres signaux et le contexte du dossier."
-    )
 
 
 def _business_finding_copy(finding: Finding) -> tuple[str, str]:
@@ -1241,6 +1485,11 @@ def _inject_styles() -> None:
           --cyan: #4cc9d8;
           --blue: #70a7ff;
         }
+        @property --animated-score {
+          syntax: "<integer>";
+          initial-value: 0;
+          inherits: false;
+        }
         header[data-testid="stHeader"],
         [data-testid="stToolbar"],
         [data-testid="stDecoration"] {
@@ -1254,16 +1503,39 @@ def _inject_styles() -> None:
           max-width: 1520px;
           padding: 1.1rem 1.5rem 2.5rem;
         }
+        .st-key-app_header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          flex-wrap: nowrap;
+          gap: 1rem;
+          border-bottom: 1px solid var(--line);
+          padding: 0 0 .8rem;
+          margin-bottom: -.65rem;
+        }
+        .st-key-header_actions {
+          display: flex;
+          align-items: center;
+          gap: .5rem;
+          width: max-content;
+          margin-left: auto;
+          flex: 0 0 auto;
+        }
+        .st-key-header_navigation {
+          width: max-content;
+          flex: 0 0 auto;
+        }
         .brandbar {
           display: flex;
           align-items: center;
-          border-bottom: 1px solid var(--line);
-          padding: 0 0 .8rem;
-          margin-bottom: .9rem;
+          padding: 0;
+          margin: 0;
         }
         .brandbar h1 {
           color: var(--ink);
           font-size: 1.5rem;
+          font-weight: 950;
+          letter-spacing: .16em;
           line-height: 1;
           margin: 0;
         }
@@ -1286,15 +1558,6 @@ def _inject_styles() -> None:
           color: var(--ink);
           font-weight: 800;
         }
-        .selected-file {
-          min-height: 3rem;
-          display: flex;
-          align-items: center;
-          color: #d7d4ce;
-          border-bottom: 1px solid var(--line);
-          font-weight: 700;
-          overflow-wrap: anywhere;
-        }
         .stButton > button {
           min-height: 3rem;
           border-radius: 6px;
@@ -1306,6 +1569,27 @@ def _inject_styles() -> None:
         .stButton > button:hover {
           background: var(--cyan);
           color: #101316;
+        }
+        [class*="st-key-header_reset_document_"] {
+          flex: 0 0 auto;
+          margin-left: 0;
+        }
+        [class*="st-key-header_reset_document_"] button {
+          min-height: 44px;
+          padding: .45rem 1rem;
+          border: 1px solid #765f35;
+          background: #211d16;
+          color: #f3cf8a;
+          white-space: nowrap;
+        }
+        [class*="st-key-header_reset_document_"] button:hover {
+          border-color: var(--amber);
+          background: #302719;
+          color: #ffe0a3;
+        }
+        [class*="st-key-header_reset_document_"] button:focus-visible {
+          outline: 2px solid var(--amber);
+          outline-offset: 2px;
         }
         .analysis-progress {
           margin: .4rem 0 1rem;
@@ -1339,6 +1623,35 @@ def _inject_styles() -> None:
           border-radius: inherit;
           transition: width .18s ease;
         }
+        .pdf-loading-stage {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: .65rem;
+          min-height: 64px;
+          max-height: 64px;
+          margin: .35rem 0 .55rem;
+          overflow: hidden;
+          color: #d8d5cf;
+          font-size: .78rem;
+          font-weight: 750;
+          animation: pdf-loading-transition .46s cubic-bezier(.22, .75, .2, 1) forwards;
+        }
+        .pdf-loading-stage i {
+          width: 18px;
+          height: 18px;
+          border: 2px solid #3a3a42;
+          border-top-color: var(--cyan);
+          border-radius: 50%;
+          animation: pdf-loading-spin .42s linear infinite;
+        }
+        [class*="st-key-analysis_results_entering"] {
+          --result-entry-delay: .24s;
+          animation: analysis-results-enter .24s ease-out var(--result-entry-delay) both;
+        }
+        [class*="st-key-analysis_results_ready"] {
+          --result-entry-delay: 0s;
+        }
         .empty-state {
           min-height: 110px;
           border: 1px solid var(--line);
@@ -1348,11 +1661,6 @@ def _inject_styles() -> None:
           padding: 1.2rem;
           align-content: center;
         }
-        .empty-state.ready {
-          border-color: var(--line);
-          border-left-color: var(--cyan);
-          background: #181d20;
-        }
         .empty-state h2 {
           font-size: 1.15rem;
           margin: 0 0 .3rem;
@@ -1361,207 +1669,352 @@ def _inject_styles() -> None:
           margin: 0;
           font-size: .86rem;
         }
-        .score-hero {
-          display: grid;
-          grid-template-columns: auto minmax(0, 1fr);
-          gap: 1.35rem;
+        .fraud-score {
+          display: flex;
+          justify-content: space-between;
           align-items: center;
-          min-height: 150px;
-          padding: 1rem 1.3rem;
-          margin-top: .9rem;
+          gap: 1rem;
+          min-height: 58px;
+          padding: .55rem .8rem;
+          margin: .15rem 0 .55rem;
           background: #19191d;
           border: 1px solid var(--line);
-          border-left: 7px solid #595760;
-          border-radius: 8px;
-          box-shadow: none;
+          border-left: 4px solid #595760;
+          border-radius: 6px;
         }
-        .score-hero.low { border-top: 1px solid var(--line); border-left-color: var(--green); }
-        .score-hero.review { border-top: 1px solid var(--line); border-left-color: var(--amber); }
-        .score-hero.high { border-top: 1px solid var(--line); border-left-color: var(--coral); }
-        .score-ring {
-          flex: 0 0 auto;
-          width: 118px;
-          height: 118px;
-          border-radius: 50%;
-          display: grid;
-          place-content: center;
-          text-align: center;
-          background:
-            radial-gradient(circle at center, #19191d 0 58%, transparent 59%),
-            conic-gradient(var(--score-color) 0 var(--score-angle), #35343a var(--score-angle));
+        .fraud-score.low { border-left-color: var(--green); }
+        .fraud-score.review { border-left-color: var(--amber); }
+        .fraud-score.high { border-left-color: var(--coral); }
+        .fraud-score > span {
+          color: #aaa6a0;
+          font-size: .72rem;
+          font-weight: 800;
+          letter-spacing: .02em;
+          text-transform: uppercase;
         }
-        .score-ring span,
-        .score-ring small {
-          display: block;
+        .fraud-score strong {
+          display: inline-flex;
+          align-items: baseline;
+          color: var(--score-color);
+          font-size: 1.85rem;
+          font-weight: 900;
           line-height: 1;
         }
-        .score-ring span {
-          color: var(--score-color);
-          font-size: 3rem;
-          font-weight: 900;
-          line-height: .9;
+        .fraud-score-number {
+          --animated-score: 0;
+          counter-reset: fraud-score var(--animated-score);
+          animation: var(--score-animation) var(--score-duration) steps(1, end)
+            var(--result-entry-delay, 0s) forwards;
         }
-        .score-ring small {
+        .fraud-score-number::after {
+          content: counter(fraud-score);
+        }
+        .fraud-score small {
           color: var(--muted);
-          font-size: .68rem;
+          font-size: .65rem;
           font-weight: 700;
-          margin-top: .22rem;
+          margin-left: .12rem;
         }
-        .score-copy h2 {
-          font-size: 1.45rem;
-          margin: 0 0 .35rem;
+        .st-key-app_header [data-testid="stButtonGroup"] {
+          flex: 0 0 auto;
         }
-        .score-copy {
-          max-width: 850px;
-        }
-        .score-copy p:not(.eyebrow) {
-          font-size: .88rem;
-          line-height: 1.45;
-        }
-        .score-meta {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: .45rem;
-        }
-        .score-meta.compact-meta {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .score-meta div {
-          min-height: 58px;
-          padding: .55rem;
-          background: #222127;
+        .st-key-app_header [data-testid="stButtonGroup"] button {
+          min-height: 44px;
+          padding: .45rem 1rem;
           border-radius: 6px;
+          color: #96939c;
+          font-size: .78rem;
+          font-weight: 800;
         }
-        .score-meta strong {
-          font-size: .98rem;
+        .st-key-app_header [data-testid="stButtonGroup"] button[aria-checked="true"] {
+          color: var(--ink);
+          background: #27272d;
+          box-shadow: inset 0 -2px 0 var(--cyan);
         }
-        .score-meta .ai-metric strong {
-          color: var(--cyan);
-          font-size: 1.1rem;
+        .st-key-app_header [data-testid="stButtonGroup"] button:focus-visible {
+          outline: 2px solid var(--cyan);
+          outline-offset: 2px;
         }
-        .category-counters {
-          display: grid;
-          grid-template-columns: repeat(5, minmax(0, 1fr));
-          gap: .55rem;
+        .sr-only {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        .indicator-sequence {
           margin: .7rem 0 1rem;
+          padding: .9rem;
+          border: 1px solid #313139;
+          border-radius: 9px;
+          background:
+            radial-gradient(circle at 100% 0, rgba(34, 211, 238, .07), transparent 32%),
+            #141419;
         }
-        .category-counter {
+        .indicator-queue {
           display: grid;
-          grid-template-columns: 48px minmax(0, 1fr);
-          align-items: start;
-          gap: .55rem;
-          min-height: 104px;
-          padding: .65rem;
+          gap: .34rem;
+          padding: 0;
+          margin: 0;
+          list-style: none;
+        }
+        .indicator-step {
+          --risk-color: #88858e;
+          --step-bg: #1b1b20;
+          --step-border: #3b3942;
+          display: grid;
+          grid-template-columns: 32px minmax(0, 1fr) 58px;
+          gap: .7rem;
+          align-items: center;
+          min-width: 0;
+          min-height: 54px;
+          padding: .55rem .72rem;
+          border: 1px solid #3b3942;
+          border-radius: 6px;
+          background: #1b1b20;
+          animation: indicator-step-validate .42s ease-out var(--step-delay) both;
+        }
+        .indicator-queue > .indicator-step {
+          margin: 0;
+          padding: .55rem .85rem;
+        }
+        .indicator-step.notice-tone {
+          --risk-color: var(--blue);
+          --step-bg: #171d25;
+          --step-border: #31526d;
+        }
+        .indicator-step.warning {
+          --risk-color: var(--amber);
+          --step-bg: #242015;
+          --step-border: #685727;
+        }
+        .indicator-step.danger {
+          --risk-color: var(--coral);
+          --step-bg: #27181c;
+          --step-border: #733543;
+        }
+        .indicator-step.clear {
+          --risk-color: var(--green);
+          --step-bg: #142019;
+          --step-border: #24543a;
+        }
+        .indicator-step.partial {
+          --risk-color: var(--amber);
+          --step-bg: #211e17;
+          --step-border: #625329;
+        }
+        .indicator-step.unavailable {
+          --risk-color: #88848e;
+          --step-bg: #1b1b20;
+          --step-border: #45434b;
+        }
+        .indicator-index {
+          display: grid;
+          width: 28px;
+          height: 28px;
+          place-content: center;
+          border: 1px solid #47454e;
+          border-radius: 50%;
+          color: #7e7b84;
+          font: 800 .62rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+          animation: indicator-accent-reveal .25s ease-out var(--step-delay) forwards;
+        }
+        .indicator-core {
+          display: grid;
+          gap: .38rem;
+          min-width: 0;
+        }
+        .indicator-main {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) auto;
+          align-items: center;
+          gap: .75rem;
+          min-width: 0;
+        }
+        .indicator-main h3 {
+          min-width: 0;
+          margin: 0;
+          color: #ddd9d3;
+          font-size: .78rem;
+          line-height: 1.2;
+        }
+        .indicator-pending,
+        .indicator-final {
+          grid-area: 1 / 2;
+          display: inline-flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: .32rem;
+          flex: 0 0 auto;
+          font-size: .64rem;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+        .indicator-pending {
+          color: #88858e;
+          animation: indicator-pending-hide .06s linear var(--step-delay) forwards;
+        }
+        .indicator-pending b {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: currentColor;
+          box-shadow: 0 0 0 0 rgba(142, 139, 148, .35);
+          animation: indicator-pending-pulse .8s ease-out infinite;
+        }
+        .indicator-final {
+          color: var(--risk-color);
+          opacity: 0;
+          transform: translateY(4px);
+          animation: indicator-final-reveal .24s ease-out var(--step-delay) forwards;
+        }
+        .indicator-final b {
+          display: grid;
+          width: 18px;
+          height: 18px;
+          place-content: center;
+          border: 1px solid currentColor;
+          border-radius: 50%;
+          font-size: .62rem;
+        }
+        .indicator-meter {
+          height: 4px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: #333238;
+        }
+        .indicator-meter i {
+          display: block;
+          width: var(--risk-value);
+          height: 100%;
+          border-radius: inherit;
+          background: var(--risk-color);
+          transform: scaleX(0);
+          transform-origin: left center;
+          animation: indicator-meter-fill .34s ease-out var(--step-delay) forwards;
+        }
+        .indicator-step.partial .indicator-meter i {
+          background: repeating-linear-gradient(
+            135deg,
+            var(--amber) 0 6px,
+            #7b601d 6px 12px
+          );
+        }
+        .indicator-score {
+          width: 58px;
+          min-width: 0;
+          box-sizing: border-box;
+          justify-self: end;
+          padding-right: .2rem;
+          color: #d8d4ce;
+          font: 850 .75rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+          font-variant-numeric: tabular-nums;
+          text-align: right;
+          opacity: .35;
+          animation: indicator-score-reveal .2s ease-out var(--step-delay) forwards;
+        }
+        .indicator-score span {
+          color: #77747d;
+          font-size: .6rem;
+        }
+        .indicator-glossary {
+          padding: 1rem 0;
+        }
+        .indicator-glossary h2 {
+          margin: 0 0 .8rem;
+          font-size: 1.15rem;
+        }
+        .glossary-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: .5rem;
+        }
+        .glossary-card {
+          min-width: 0;
+          padding: .8rem;
           border: 1px solid var(--line);
-          border-top: 2px solid var(--category-accent);
+          border-left: 3px solid #4a6d78;
           border-radius: 6px;
           background: #19191d;
-          overflow: hidden;
-          transition: background-color .16s ease, border-color .16s ease;
         }
-        .category-counter:hover {
-          background: #1e1e23;
-          border-color: var(--category-accent);
-        }
-        .category-counter.notice-tone,
-        .category-counter.warning,
-        .category-counter.danger {
-          border-left-width: 4px;
-          box-shadow: 0 5px 18px rgba(0, 0, 0, .2);
-        }
-        .category-counter.notice-tone {
-          background: #171d25;
-          border-left-color: var(--blue);
-        }
-        .category-counter.warning {
-          background: #242015;
-          border-left-color: var(--amber);
-        }
-        .category-counter.danger {
-          background: #27181c;
-          border-left-color: var(--coral);
-        }
-        .category-counter > div:last-child strong,
-        .category-counter > div:last-child span {
-          display: block;
-        }
-        .category-counter > div:last-child strong {
+        .glossary-card > span {
+          color: var(--ink);
           font-size: .8rem;
-          line-height: 1.25;
-        }
-        .category-counter > div:last-child span {
-          color: var(--muted);
-          font-size: .68rem;
-          margin-top: .16rem;
-        }
-        .category-counter .category-state {
-          color: var(--category-accent);
-          font-weight: 750;
-        }
-        .category-counter.notice-tone .category-state,
-        .category-counter.warning .category-state,
-        .category-counter.danger .category-state {
-          display: inline-flex;
-          width: fit-content;
-          border-radius: 999px;
-          padding: .12rem .38rem;
-          color: #17171a;
           font-weight: 850;
         }
-        .category-counter.notice-tone .category-state {
-          background: var(--blue);
+        .glossary-card p {
+          margin: .28rem 0 .55rem;
+          color: #aaa69f;
+          font-size: .72rem;
+          line-height: 1.4;
         }
-        .category-counter.warning .category-state {
-          background: var(--amber);
+        .glossary-card small {
+          color: #77747d;
+          font: 700 .62rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
         }
-        .category-counter.danger .category-state {
-          background: var(--coral);
+        @keyframes indicator-step-validate {
+          0% { background: #1b1b20; border-color: #3b3942; box-shadow: none; }
+          45% {
+            border-color: var(--cyan);
+            box-shadow:
+              0 0 0 1px rgba(34, 211, 238, .25),
+              0 0 16px rgba(34, 211, 238, .14);
+          }
+          100% { background: var(--step-bg); border-color: var(--step-border); box-shadow: none; }
         }
-        .category-counter .category-copy p {
-          color: #8f8b85;
-          font-size: .64rem;
-          line-height: 1.35;
-          margin: .3rem 0 0;
+        @keyframes indicator-pending-hide {
+          from { opacity: 1; visibility: visible; }
+          to { opacity: 0; visibility: hidden; }
         }
-        .mini-ring {
-          width: 44px;
-          height: 44px;
-          border-radius: 50%;
-          display: grid;
-          place-content: center;
-          text-align: center;
-          background:
-            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
-            conic-gradient(#66636c 0 var(--meter-angle), #343339 var(--meter-angle));
+        @keyframes indicator-pending-pulse {
+          70% { box-shadow: 0 0 0 5px rgba(142, 139, 148, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(142, 139, 148, 0); }
         }
-        .category-counter.notice-tone .mini-ring {
-          background:
-            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
-            conic-gradient(var(--blue) 0 var(--meter-angle), #343339 var(--meter-angle));
+        @keyframes indicator-final-reveal {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        .category-counter.warning .mini-ring {
-          background:
-            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
-            conic-gradient(var(--amber) 0 var(--meter-angle), #343339 var(--meter-angle));
+        @keyframes indicator-meter-fill {
+          from { transform: scaleX(0); }
+          to { transform: scaleX(1); }
         }
-        .category-counter.danger .mini-ring {
-          background:
-            radial-gradient(circle at center, #19191d 0 59%, transparent 60%),
-            conic-gradient(var(--coral) 0 var(--meter-angle), #343339 var(--meter-angle));
+        @keyframes indicator-accent-reveal {
+          to { color: var(--risk-color); border-color: var(--risk-color); }
         }
-        .mini-ring strong {
-          font-size: .78rem;
-          line-height: .8;
+        @keyframes indicator-score-reveal {
+          to { opacity: 1; }
         }
-        .mini-ring span {
-          color: var(--muted);
-          font-size: .52rem;
+        @keyframes pdf-loading-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes pdf-loading-transition {
+          0% { opacity: 0; transform: translateY(2px); }
+          14%, 48% { opacity: 1; transform: translateY(0); }
+          100% {
+            min-height: 0;
+            max-height: 0;
+            margin: 0;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-2px);
+          }
+        }
+        @keyframes analysis-results-enter {
+          from { opacity: 0; transform: translateY(4px); }
+          to { opacity: 1; transform: translateY(0); }
         }
         div[data-testid="stMarkdownContainer"] h2.workspace-title {
           font-size: 1.02rem;
           line-height: 1.3;
           margin: .15rem 0 .55rem;
           padding: 0;
+        }
+        div[data-testid="stMarkdownContainer"] h2.document-name {
+          overflow-wrap: anywhere;
         }
         div[data-testid="stMarkdownContainer"] h3.subsection-title {
           font-size: .88rem;
@@ -1578,26 +2031,6 @@ def _inject_styles() -> None:
           background: #0b0b0d;
           border: 1px solid var(--line);
           border-radius: 4px;
-        }
-        .view-guidance {
-          border: 1px solid #363942;
-          border-left: 4px solid var(--blue);
-          border-radius: 6px;
-          background: #171a20;
-          padding: .7rem .8rem;
-          margin-top: .35rem;
-        }
-        .view-guidance strong {
-          display: block;
-          color: #dbe7ff;
-          font-size: .76rem;
-          margin-bottom: .22rem;
-        }
-        .view-guidance p {
-          color: #aaaeb8;
-          font-size: .72rem;
-          line-height: 1.45;
-          margin: 0;
         }
         .review-banner {
           display: flex;
@@ -1813,14 +2246,6 @@ def _inject_styles() -> None:
           margin: 1rem 0 .45rem;
           padding: 0;
         }
-        @media (max-width: 1100px) {
-          .category-counters {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-          .score-hero {
-            grid-template-columns: auto 1fr;
-          }
-        }
         @media (max-width: 700px) {
           .block-container {
             padding: .8rem .75rem 1.5rem;
@@ -1828,21 +2253,46 @@ def _inject_styles() -> None:
           .brandbar {
             align-items: flex-start;
           }
-          .score-hero {
-            grid-template-columns: 1fr;
+          .st-key-app_header {
+            flex-wrap: wrap;
+            padding-bottom: .55rem;
+            margin-bottom: 0;
           }
-          .score-ring {
-            width: 100px;
-            height: 100px;
+          .st-key-header_actions {
+            max-width: 100%;
           }
-          .score-meta,
-          .score-meta.compact-meta,
+          .st-key-app_header [data-testid="stButtonGroup"] button {
+            min-height: 40px;
+            padding: .35rem .65rem;
+          }
+          [class*="st-key-header_reset_document_"] {
+            flex: 0 0 auto;
+            display: flex;
+            justify-content: flex-end;
+          }
+          [class*="st-key-header_reset_document_"] .stButton {
+            width: auto;
+          }
+          [class*="st-key-header_reset_document_"] button {
+            min-height: 44px;
+            width: auto;
+          }
           .extracted-fields,
           .control-matrix {
             grid-template-columns: 1fr;
           }
-          .category-counters {
-            grid-template-columns: 1fr 1fr;
+          .indicator-sequence {
+            padding: .75rem;
+          }
+          .indicator-step {
+            gap: .5rem;
+            padding: .55rem .6rem;
+          }
+          .indicator-main h3 {
+            font-size: .74rem;
+          }
+          .glossary-grid {
+            grid-template-columns: 1fr;
           }
           .review-banner {
             align-items: flex-start;
@@ -1850,6 +2300,61 @@ def _inject_styles() -> None:
           }
           .review-banner span {
             text-align: left;
+          }
+        }
+        @media (max-width: 520px) {
+          .indicator-step {
+            grid-template-columns: 28px minmax(0, 1fr) 52px;
+            gap: .4rem;
+          }
+          .indicator-score {
+            width: 52px;
+            padding-right: .1rem;
+          }
+          .indicator-pending,
+          .indicator-final {
+            font-size: .58rem;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .pdf-loading-stage {
+            display: none;
+            animation: none;
+          }
+          [class*="st-key-analysis_results_entering"] {
+            --result-entry-delay: 0s;
+            animation: none;
+          }
+          .fraud-score-number {
+            --animated-score: var(--score-target);
+            animation: none;
+          }
+          .indicator-step {
+            background: var(--step-bg);
+            border-color: var(--step-border);
+            animation: none;
+          }
+          .indicator-pending {
+            display: none;
+            animation: none;
+          }
+          .indicator-final {
+            opacity: 1;
+            transform: none;
+            animation: none;
+          }
+          .indicator-index {
+            color: var(--risk-color);
+            border-color: var(--risk-color);
+            animation: none;
+          }
+          .indicator-meter i {
+            transform: scaleX(1);
+            animation: none;
+          }
+          .indicator-score {
+            opacity: 1;
+            animation: none;
           }
         }
         </style>
