@@ -112,12 +112,12 @@ class RasterAnomalyDetector:
                                 title="Anomalie locale de compression JPEG",
                                 description=(
                                     "Une zone du JPEG embarque reagit differemment a la "
-                                    "recompression. C'est un indice faible a corroborer: "
-                                    "texte, bords et scans successifs peuvent produire le "
-                                    "meme effet."
+                                    "recompression. Les traitements du scanner, le texte et "
+                                    "les bords nets produisent frequemment le meme effet; ce "
+                                    "signal ne peut provoquer seul une revue."
                                 ),
-                                risk_points=round(18.0 + 12.0 * strength, 2),
-                                confidence=round(0.45 + 0.35 * strength, 3),
+                                risk_points=round(4.0 + 6.0 * strength, 2),
+                                confidence=round(0.35 + 0.2 * strength, 3),
                                 page=page_index + 1,
                                 bbox=pdf_box,
                                 evidence={

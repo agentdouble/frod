@@ -257,6 +257,70 @@ def test_unlabeled_long_numbers_are_not_guessed_as_bank_identifiers() -> None:
     assert identifiers.observations == ()
 
 
+def test_iban_stops_at_country_length_before_following_prose() -> None:
+    payload = [
+        [
+            _region("text", "Payment account IBAN: BE71 0961 2345 6769 with KBC EUR"),
+            _region("text", "SWIFT: KREDBEBB additional banking details"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    iban = next(item for item in identifiers.observations if item.code == "OCR_IBAN_VALID")
+    bic = next(item for item in identifiers.observations if item.code == "OCR_BIC_VALID")
+    assert iban.evidence["value"] == "BE71096123456769"
+    assert bic.evidence["value"] == "KREDBEBB"
+
+
+def test_filename_shaped_like_iban_is_ignored_without_label() -> None:
+    payload = [
+        [
+            _region(
+                "text",
+                "LU280019400644750000_20250221_20250320.pdf",
+            )
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "not_applicable"
+
+
+def test_numeric_dates_support_unambiguous_us_format_and_abstain_when_ambiguous() -> None:
+    payload = [
+        [
+            _region("text", "Statement start 1/21/2025"),
+            _region("text", "Period reference 03/04/2025"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "clear"
+    assert {item.code for item in dates.observations} == {
+        "OCR_DATE_AMBIGUOUS",
+        "OCR_DATE_INVENTORY",
+    }
+
+
+def test_future_date_is_informational_without_semantic_role() -> None:
+    payload = [[_region("text", "Expiration date: 12/31/2030")]]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "clear"
+    future = next(item for item in dates.observations if item.code == "OCR_DATE_IN_FUTURE")
+    assert future.state == "detected"
+    assert future.strength == "informational"
+
+
 def test_descending_statement_dates_are_not_a_chronology_anomaly() -> None:
     payload = [
         [

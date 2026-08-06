@@ -57,6 +57,7 @@ analysis:
   ai_images:
     max_images: 10
     max_inventory_images: 50
+    analyze_pdf_images: true
     min_photo_page_coverage: 0.03
     min_photo_side: 300
     min_photo_pixels: 300000
@@ -94,6 +95,7 @@ laboratory:
     assert config.analysis.max_pages == 12
     assert config.analysis.ela_jpeg_quality == 88
     assert config.analysis.ai_max_images == 10
+    assert config.analysis.ai_analyze_pdf_images is True
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://ocr.internal:9000"
     assert config.analysis.ocr_timeout_seconds == 420
@@ -125,6 +127,7 @@ models:
             "FROD_PORT": "8700",
             "FROD_OCR_URL": "http://environment:8100",
             "FROD_GAPL_ENABLED": "false",
+            "FROD_AI_ANALYZE_PDF_IMAGES": "true",
             "FROD_TRUFOR_MAX_PIXELS": "600000",
         },
     )
@@ -133,6 +136,7 @@ models:
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://environment:8100"
     assert config.gapl.enabled is False
+    assert config.analysis.ai_analyze_pdf_images is True
     assert config.trufor.max_pixels == 600000
 
 

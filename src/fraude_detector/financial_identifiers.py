@@ -113,3 +113,23 @@ def validate_iban(value: str) -> IdentifierValidation:
         reasons=tuple(dict.fromkeys(reasons)),
         country_code=country_code,
     )
+
+
+def expected_iban_length(country_code: str) -> int | None:
+    """Return the registry length for one country supported by python-stdnum."""
+
+    normalized = country_code.strip().upper()
+    if not re.fullmatch(r"[A-Z]{2}", normalized):
+        return None
+    try:
+        entries = iban._ibandb.info(normalized)  # noqa: SLF001 - stdnum's bundled registry
+    except Exception:
+        return None
+    for prefix, properties in entries:
+        if prefix != normalized:
+            continue
+        structure = properties.get("bban", "")
+        component_lengths = [int(value) for value in re.findall(r"(\d+)![anc]", structure)]
+        if component_lengths:
+            return 4 + sum(component_lengths)
+    return None

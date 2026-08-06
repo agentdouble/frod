@@ -53,6 +53,9 @@ analysis:
     max_region_area_fraction: 0.25
 
   ai_images:
+    # Par défaut, les modèles IA analysent les images autonomes mais pas celles
+    # embarquées dans un PDF, souvent recompressées ou issues d'un scanner.
+    analyze_pdf_images: false
     # Nombre maximal de photos réellement envoyées aux modèles d'image.
     max_images: 20
     # Nombre maximal d'images inventoriées avant de déclarer l'analyse partielle.

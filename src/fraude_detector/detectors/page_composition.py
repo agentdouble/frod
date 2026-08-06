@@ -43,6 +43,12 @@ class PageCompositionDetector:
                 if background["coverage"] < context.config.full_page_image_coverage:
                     continue
                 scanned_pages += 1
+                page_is_segmented_scan = any(
+                    _looks_like_scanner_segment(image, background)
+                    for image in images
+                    if image is not background
+                )
+                has_retained_update = len(context.revision_end_offsets) > 1
 
                 for overlay in images:
                     if overlay is background:
@@ -55,19 +61,29 @@ class PageCompositionDetector:
                     ):
                         continue
                     image_overlays += 1
+                    scanner_segment = _looks_like_scanner_segment(overlay, background)
+                    scored = has_retained_update and not scanner_segment
                     findings.append(
                         Finding(
                             detector=self.name,
                             code="SCAN_IMAGE_OVERLAY",
                             category="page_composition",
-                            title="Image superposee a un scan",
-                            description=(
-                                "Une petite image est posee au-dessus d'une image couvrant "
-                                "la page. Il peut s'agir d'un collage, mais aussi d'un logo, "
-                                "d'un tampon ou d'une signature legitime."
+                            title=(
+                                "Image ajoutee a une page numerisee"
+                                if scored
+                                else "Couche image integree a une page numerisee"
                             ),
-                            risk_points=35.0,
-                            confidence=0.72,
+                            description=(
+                                "Une image distincte est placee au-dessus du scan et le PDF "
+                                "conserve une mise a jour posterieure. Elle doit etre rapprochee "
+                                "de l'historique visuel."
+                                if scored
+                                else "Le PDF contient plusieurs couches image. Cette structure "
+                                "est courante avec les scanners segmentant logos, texte et fond; "
+                                "elle reste visible sans modifier le score."
+                            ),
+                            risk_points=35.0 if scored else 0.0,
+                            confidence=0.72 if scored else 0.5,
                             page=page_index + 1,
                             bbox=overlay["bbox"],
                             evidence={
@@ -75,6 +91,18 @@ class PageCompositionDetector:
                                 "overlay_coverage": round(coverage, 5),
                                 "overlay_pixels": overlay["pixel_size"],
                                 "filters": overlay["filters"],
+                                "image_metadata": overlay["metadata"],
+                                "scanner_segment": scanner_segment,
+                                "retained_incremental_update": has_retained_update,
+                                "score_reason": (
+                                    "overlay_with_retained_update"
+                                    if scored
+                                    else (
+                                        "scanner_segmentation_pattern"
+                                        if scanner_segment
+                                        else "single_retained_revision"
+                                    )
+                                ),
                             },
                         )
                     )
@@ -85,22 +113,44 @@ class PageCompositionDetector:
                     if coverage > 0.35:
                         continue
                     visible_text_overlays += 1
+                    scored = has_retained_update and not page_is_segmented_scan
                     findings.append(
                         Finding(
                             detector=self.name,
                             code="SCAN_VISIBLE_TEXT_OVERLAY",
                             category="page_composition",
-                            title="Texte visible superpose a un scan",
-                            description=(
-                                "Un objet texte visible est ajoute au-dessus d'une image de "
-                                "scan. Un calque OCR invisible est ignore; un champ rempli "
-                                "ou une annotation legitime restent possibles."
+                            title=(
+                                "Texte ajoute a une page numerisee"
+                                if scored
+                                else "Couche texte visible sur une page numerisee"
                             ),
-                            risk_points=30.0,
-                            confidence=0.75,
+                            description=(
+                                "Le texte visible est distinct du scan et le PDF conserve une "
+                                "mise a jour posterieure. Un formulaire rempli peut toutefois "
+                                "expliquer cette structure."
+                                if scored
+                                else "Le texte visible appartient a la construction du PDF. "
+                                "Un formulaire numerise puis rempli ou un scanner segmente peut "
+                                "produire cette structure sans modification frauduleuse."
+                            ),
+                            risk_points=30.0 if scored else 0.0,
+                            confidence=0.75 if scored else 0.5,
                             page=page_index + 1,
                             bbox=box,
-                            evidence={"overlay_coverage": round(coverage, 5)},
+                            evidence={
+                                "overlay_coverage": round(coverage, 5),
+                                "segmented_scan": page_is_segmented_scan,
+                                "retained_incremental_update": has_retained_update,
+                                "score_reason": (
+                                    "visible_text_with_retained_update"
+                                    if scored
+                                    else (
+                                        "segmented_scan_structure"
+                                        if page_is_segmented_scan
+                                        else "single_retained_revision"
+                                    )
+                                ),
+                            },
                         )
                     )
             finally:
@@ -142,11 +192,52 @@ def _describe_images(
                     "coverage": bbox_coverage(bbox, page_width, page_height),
                     "pixel_size": list(obj.get_px_size()),
                     "filters": list(obj.get_filters()),
+                    "metadata": _image_metadata(obj),
                 }
             )
         except Exception:
             continue
     return descriptions
+
+
+def _image_metadata(image_object: Any) -> dict[str, int | float]:
+    try:
+        metadata = image_object.get_metadata()
+    except Exception:
+        return {}
+    return {
+        "width": int(metadata.width),
+        "height": int(metadata.height),
+        "bits_per_pixel": int(metadata.bits_per_pixel),
+        "colorspace": int(metadata.colorspace),
+        "horizontal_dpi": round(float(metadata.horizontal_dpi), 2),
+        "vertical_dpi": round(float(metadata.vertical_dpi), 2),
+        "marked_content_id": int(metadata.marked_content_id),
+    }
+
+
+def _looks_like_scanner_segment(
+    overlay: dict[str, Any],
+    background: dict[str, Any],
+) -> bool:
+    """Recognise common MRC/bitonal layers without treating DCT as scanner provenance."""
+
+    filters = set(overlay["filters"])
+    if filters & {"JBIG2Decode", "CCITTFaxDecode"}:
+        return True
+
+    metadata = overlay["metadata"]
+    bits_per_pixel = int(metadata.get("bits_per_pixel", 0))
+    if not bits_per_pixel or bits_per_pixel > 8:
+        return False
+    if not filters & {"FlateDecode", "RunLengthDecode"}:
+        return False
+
+    overlay_dpi = float(metadata.get("horizontal_dpi", 0))
+    background_dpi = float(background["metadata"].get("horizontal_dpi", 0))
+    if overlay_dpi <= 0 or background_dpi <= 0:
+        return True
+    return abs(overlay_dpi - background_dpi) / max(overlay_dpi, background_dpi) <= 0.2
 
 
 def _visible_text_boxes(objects: list[Any], page_height: float) -> list[BoundingBox]:

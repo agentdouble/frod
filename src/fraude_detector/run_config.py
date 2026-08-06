@@ -259,6 +259,7 @@ def _load_analysis(
         {
             "max_images",
             "max_inventory_images",
+            "analyze_pdf_images",
             "min_photo_page_coverage",
             "min_photo_side",
             "min_photo_pixels",
@@ -294,6 +295,7 @@ def _load_analysis(
             "ocr.timeout_seconds",
         )
     )
+    ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
     try:
         return AnalysisConfig(
@@ -363,6 +365,15 @@ def _load_analysis(
                 ai_images.get("max_inventory_images", 100),
                 source,
                 "analysis.ai_images.max_inventory_images",
+            ),
+            ai_analyze_pdf_images=(
+                ai_pdf_override
+                if ai_pdf_override is not None
+                else _boolean(
+                    ai_images.get("analyze_pdf_images", False),
+                    source,
+                    "analysis.ai_images.analyze_pdf_images",
+                )
             ),
             ai_min_photo_page_coverage=_number(
                 ai_images.get("min_photo_page_coverage", 0.02),

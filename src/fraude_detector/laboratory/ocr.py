@@ -12,6 +12,7 @@ from typing import Any
 
 from fraude_detector.financial_identifiers import (
     IdentifierValidation,
+    expected_iban_length,
     validate_bic,
     validate_card_number,
     validate_iban,
@@ -29,20 +30,15 @@ _CARD_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[\s-]?){12,18}\d(?!\d)")
-_BIC = re.compile(
+_BIC_LABEL = re.compile(
     r"\b(?:"
     r"(?:BIC|SWIFT)(?:\s*[/|-]\s*(?:BIC|SWIFT))?(?:\s+(?:CODE|NO|NUMBER))?"
     r"|CODE\s+(?:BIC|SWIFT)"
-    r")\b\s*[:.]?\s*"
-    r"((?:[A-Z0-9]{4}\s+[A-Z0-9]{2}\s+[A-Z0-9]{2}(?:\s+[A-Z0-9]{3})?"
-    r"|[A-Z0-9]{6,14}))",
+    r")\b",
     re.IGNORECASE,
 )
-_IBAN = re.compile(
-    r"\bIBAN(?:\s+(?:NO|NUMBER|NUM[EÉ]RO))?\b\s*[:.]?\s*"
-    r"([A-Z]{2}\d{2}(?:[\s-]?[A-Z0-9]){11,30}?)"
-    r"(?=\s+(?:BIC|SWIFT|ACCOUNT|BANK|BRANCH|CURRENCY|BENEFICIARY|NAME|ADDRESS)\b"
-    r"|[;\n<]|$)",
+_IBAN_LABEL = re.compile(
+    r"\bIBAN(?:\s+(?:NO|NUMBER|NUM[EÉ]RO))?\b",
     re.IGNORECASE,
 )
 _CKYC = re.compile(
@@ -56,7 +52,6 @@ _MICR = re.compile(
 _CURRENCY = re.compile(r"\b(EUR|USD|GBP|CHF|THB)\b", re.IGNORECASE)
 _DATE_PATTERNS = (
     (re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"), "%Y-%m-%d"),
-    (re.compile(r"\b(\d{1,2})[/.](\d{1,2})[/.](\d{4})\b"), "%d/%m/%Y"),
     (
         re.compile(
             r"\b(\d{1,2})-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-"
@@ -66,6 +61,7 @@ _DATE_PATTERNS = (
         "%d-%b-%Y",
     ),
 )
+_NUMERIC_DATE = re.compile(r"\b(\d{1,2})([/.-])(\d{1,2})\2(\d{4})\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +76,7 @@ class _ParsedDate:
     page: int
     raw: str
     value: date | None
+    ambiguous: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,12 +271,10 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
     bic_occurrences: dict[str, set[int]] = {}
     iban_occurrences: dict[str, set[int]] = {}
     for region in regions:
-        for match in _BIC.finditer(region.content):
-            candidate = match.group(1).upper()
+        for candidate in _extract_labeled_bics(region.content):
             bic_occurrences.setdefault(candidate, set()).add(region.page)
 
-        for match in _IBAN.finditer(region.content):
-            candidate = re.sub(r"[\s-]", "", match.group(1)).upper()
+        for candidate in _extract_labeled_ibans(region.content):
             iban_occurrences.setdefault(candidate, set()).add(region.page)
 
     for candidate, pages in bic_occurrences.items():
@@ -542,6 +537,61 @@ def _validation_reason(reasons: tuple[str, ...]) -> str:
     return ", ".join(labels.get(reason, reason) for reason in reasons) or "format invalide"
 
 
+def _extract_labeled_ibans(text: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for label in _IBAN_LABEL.finditer(text):
+        tail = text[label.end() : label.end() + 128].lstrip(" \t:.-")
+        prefix = re.match(r"([A-Z]{2})\s*(\d{2})", tail, re.IGNORECASE)
+        if prefix is None:
+            continue
+        expected_length = expected_iban_length(prefix.group(1))
+        if expected_length is None:
+            continue
+
+        compact: list[str] = []
+        source = tail[prefix.start() :]
+        for index, character in enumerate(source):
+            if character.isascii() and character.isalnum():
+                compact.append(character.upper())
+            elif character in " \t-\u00a0":
+                continue
+            else:
+                break
+            if len(compact) == expected_length:
+                extra_digits = re.match(
+                    r"[ \t\-\u00a0]+((?:\d[ \t\-\u00a0]*){1,14})"
+                    r"(?=$|[^A-Z0-9])",
+                    source[index + 1 :],
+                    re.IGNORECASE,
+                )
+                if extra_digits is not None:
+                    compact.extend(re.sub(r"\D", "", extra_digits.group(1)))
+                candidates.append("".join(compact))
+                break
+    return tuple(dict.fromkeys(candidates))
+
+
+def _extract_labeled_bics(text: str) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for label in _BIC_LABEL.finditer(text):
+        tail = text[label.end() : label.end() + 40].lstrip(" \t:.-")
+        contiguous = re.match(r"[A-Z0-9]{8,}", tail, re.IGNORECASE)
+        if contiguous is not None:
+            value = contiguous.group(0).upper()
+            candidates.append(value)
+            continue
+
+        grouped = re.match(
+            r"([A-Z0-9]{4})[ \t]+([A-Z0-9]{2})[ \t]+([A-Z0-9]{2})"
+            r"(?:[ \t]+([A-Z0-9]{3}))?",
+            tail,
+            re.IGNORECASE,
+        )
+        if grouped is not None:
+            candidates.append("".join(part or "" for part in grouped.groups()).upper())
+    return tuple(dict.fromkeys(candidates))
+
+
 def _single_character_difference(values: tuple[str, ...]) -> int | None:
     if len(values) != 2 or len(values[0]) != len(values[1]):
         return None
@@ -586,8 +636,11 @@ def _date_check(regions: tuple[_Region, ...], reference_date: date) -> Laborator
     future = [
         item
         for item in dates
-        if item.value is not None and item.value > reference_date + timedelta(days=1)
+        if item.value is not None
+        and not item.ambiguous
+        and item.value > reference_date + timedelta(days=1)
     ]
+    ambiguous = [item for item in dates if item.ambiguous]
     for item in invalid:
         observations.append(
             LaboratoryObservation(
@@ -604,13 +657,28 @@ def _date_check(regions: tuple[_Region, ...], reference_date: date) -> Laborator
         observations.append(
             LaboratoryObservation(
                 code="OCR_DATE_IN_FUTURE",
-                title="Date future",
+                title="Date postérieure à l'analyse",
                 summary=f"La date reconnue « {item.raw} » est posterieure a l'analyse.",
-                state="attention",
-                strength="weak",
+                state="detected",
+                strength="informational",
                 explanation=(
-                    "Une date future peut etre legitime selon le type de document; "
-                    "elle demande seulement une verification contextuelle."
+                    "Une date d'expiration, d'échéance ou de validité peut légitimement "
+                    "être future. Sans rôle sémantique fiable, elle reste informative."
+                ),
+                page=item.page,
+            )
+        )
+    for item in ambiguous:
+        observations.append(
+            LaboratoryObservation(
+                code="OCR_DATE_AMBIGUOUS",
+                title="Format de date ambigu",
+                summary=f"La date reconnue « {item.raw} » admet deux lectures.",
+                state="detected",
+                strength="informational",
+                explanation=(
+                    "Sans connaître la convention du document, le jour et le mois ne "
+                    "peuvent pas être distingués. Ce constat ne constitue pas une anomalie."
                 ),
                 page=item.page,
             )
@@ -633,7 +701,7 @@ def _date_check(regions: tuple[_Region, ...], reference_date: date) -> Laborator
             )
         )
 
-    anomaly_count = len(invalid) + len(future)
+    anomaly_count = len(invalid)
     return LaboratoryCheck(
         code="ocr_dates",
         title="Coherence des dates",
@@ -1033,7 +1101,44 @@ def _extract_dates(regions: tuple[_Region, ...]) -> tuple[_ParsedDate, ...]:
                 except ValueError:
                     parsed = None
                 values.append(_ParsedDate(page=region.page, raw=raw, value=parsed))
+        for match in _NUMERIC_DATE.finditer(region.content):
+            raw = match.group(0)
+            first = int(match.group(1))
+            second = int(match.group(3))
+            year = int(match.group(4))
+            parsed, ambiguous = _parse_localized_numeric_date(first, second, year)
+            values.append(
+                _ParsedDate(
+                    page=region.page,
+                    raw=raw,
+                    value=parsed,
+                    ambiguous=ambiguous,
+                )
+            )
     return tuple(values)
+
+
+def _parse_localized_numeric_date(
+    first: int,
+    second: int,
+    year: int,
+) -> tuple[date | None, bool]:
+    day_first = _safe_date(year, second, first)
+    month_first = _safe_date(year, first, second)
+    if day_first is not None and month_first is not None:
+        return day_first, day_first != month_first
+    if day_first is not None:
+        return day_first, False
+    if month_first is not None:
+        return month_first, False
+    return None, False
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
 
 
 def _parse_date_text(value: str) -> date | None:
