@@ -15,7 +15,12 @@ from fraude_detector.financial_identifiers import (
     expected_iban_length,
     validate_bic,
     validate_card_number,
+    validate_eu_vat,
+    validate_finess,
     validate_iban,
+    validate_rpps,
+    validate_siren,
+    validate_siret,
 )
 from fraude_detector.models import LaboratoryCheck, LaboratoryObservation
 
@@ -54,6 +59,47 @@ _MICR = re.compile(
     r"\bMICR(?:\s+(?:CODE|NO|NUMBER))?\b\s*[:.]?\s*(\d{6,18})",
     re.IGNORECASE,
 )
+_SIRET_LABEL = re.compile(r"\b(?:N(?:°|O)\s*)?SIRET\b", re.IGNORECASE)
+_SIREN_LABEL = re.compile(r"\b(?:N(?:°|O)\s*)?SIREN(?!T)\b", re.IGNORECASE)
+_VAT_LABEL = re.compile(
+    r"\b(?:N(?:°|O)\s*)?(?:TVA(?:\s+INTRACOMMUNAUTAIRE)?|VAT(?:\s+(?:ID|NO|NUMBER))?)\b",
+    re.IGNORECASE,
+)
+_RPPS_LABEL = re.compile(r"\b(?:N(?:°|O)\s*)?RPPS\b", re.IGNORECASE)
+_FINESS_LABEL = re.compile(
+    r"\b(?:N(?:°|O)\s*)?FINESS(?:\s+(?:EJ|ET|JURIDIQUE|G[EÉ]OGRAPHIQUE))?\b",
+    re.IGNORECASE,
+)
+_EU_VAT_LENGTHS: dict[str, tuple[int, ...]] = {
+    "AT": (11,),
+    "BE": (12,),
+    "BG": (11, 12),
+    "CY": (11,),
+    "CZ": (10, 11, 12),
+    "DE": (11,),
+    "DK": (10,),
+    "EE": (11,),
+    "EL": (11,),
+    "ES": (11,),
+    "FI": (10,),
+    "FR": (13,),
+    "HR": (13,),
+    "HU": (10,),
+    "IE": (10, 11),
+    "IT": (13,),
+    "LT": (11, 14),
+    "LU": (10,),
+    "LV": (13,),
+    "MT": (10,),
+    "NL": (14,),
+    "PL": (12,),
+    "PT": (11,),
+    "RO": tuple(range(4, 13)),
+    "SE": (14,),
+    "SI": (10,),
+    "SK": (12,),
+    "XI": (11, 14),
+}
 _CURRENCY = re.compile(r"\b(EUR|USD|GBP|CHF|THB)\b", re.IGNORECASE)
 _DATE_PATTERNS = (
     (re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b"), "%Y-%m-%d"),
@@ -248,27 +294,55 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
         )
 
     for value, (pages, suffix) in suffixed_card_occurrences.items():
-        unverifiable += 1
+        checked += 1
+        full_validation = validate_card_number(value)
+        base_value = value[: -len(suffix)]
+        base_validation = validate_card_number(base_value)
+        if full_validation.valid:
+            code = "OCR_CARD_LUHN_VALID"
+            state = "clear"
+            strength = "informational"
+            summary = (
+                f"Le numéro complet de {len(value)} chiffres, suffixe « {suffix} » inclus, "
+                "respecte Luhn."
+            )
+        elif base_validation.valid:
+            code = "OCR_CARD_SUFFIX_SEPARATED"
+            state = "clear"
+            strength = "informational"
+            summary = (
+                f"Les {len(base_value)} premiers chiffres respectent Luhn ; le groupe "
+                f"final « {suffix} » est probablement un suffixe distinct."
+            )
+        else:
+            code = "OCR_CARD_LUHN_INVALID"
+            state = "attention"
+            strength = "moderate"
+            anomaly_count += 1
+            summary = (
+                "Ni le numéro complet ni la variante sans le suffixe séparé ne respectent Luhn."
+            )
         observations.append(
             LaboratoryObservation(
-                code="OCR_CARD_AMBIGUOUS_SUFFIX",
+                code=code,
                 title="Numéro de carte avec suffixe possible",
-                summary=(
-                    f"Le groupe final « {suffix} » peut appartenir au numéro ou à un champ "
-                    "de compte adjacent."
-                ),
-                state="indeterminate",
-                strength="informational",
+                summary=summary,
+                state=state,
+                strength=strength,
                 explanation=(
-                    "Les cartes peuvent comporter jusqu'à 19 chiffres. Sans séparation "
-                    "sémantique fiable, aucun chiffre n'est supprimé et Luhn n'est pas utilisé."
+                    "Le contrôle teste le PAN complet puis la variante sans le dernier groupe. "
+                    "Les espaces seuls ne suffisent jamais à supprimer des chiffres."
                 ),
                 page=min(pages),
                 evidence={
                     "value": value,
                     "possible_suffix": suffix,
-                    "total_positions": len(value),
-                    "algorithm": "Luhn non appliqué",
+                    "full_length": len(value),
+                    "full_pan_valid": full_validation.valid,
+                    "base_value": base_value,
+                    "base_length": len(base_value),
+                    "base_pan_valid": base_validation.valid,
+                    "algorithm": "Luhn, double hypothèse",
                 },
             )
         )
@@ -367,6 +441,53 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
         validation = validate_iban(candidate)
         anomaly_count += int(not validation.valid)
         observations.append(_iban_observation(validation, min(pages)))
+
+    labeled_identifiers = (
+        (
+            "SIREN",
+            _labeled_digit_occurrences(regions, _SIREN_LABEL, 9),
+            validate_siren,
+            "SIREN français de 9 chiffres et clé de Luhn",
+        ),
+        (
+            "SIRET",
+            _labeled_digit_occurrences(regions, _SIRET_LABEL, 14),
+            validate_siret,
+            "SIRET français de 14 chiffres et clé de contrôle",
+        ),
+        (
+            "RPPS",
+            _labeled_digit_occurrences(regions, _RPPS_LABEL, 11),
+            validate_rpps,
+            "RPPS français de 11 chiffres commençant par 1 et clé de Luhn",
+        ),
+        (
+            "FINESS",
+            _labeled_digit_occurrences(regions, _FINESS_LABEL, 9),
+            validate_finess,
+            "FINESS français de 9 chiffres et clé de Luhn",
+        ),
+    )
+    for identifier_type, occurrences, validator, standard in labeled_identifiers:
+        for candidate, pages in occurrences.items():
+            checked += 1
+            validation = validator(candidate)
+            anomaly_count += int(not validation.valid)
+            observations.append(
+                _national_identifier_observation(
+                    identifier_type,
+                    validation,
+                    min(pages),
+                    standard,
+                )
+            )
+
+    vat_occurrences = _labeled_vat_occurrences(regions)
+    for candidate, pages in vat_occurrences.items():
+        checked += 1
+        validation = validate_eu_vat(candidate)
+        anomaly_count += int(not validation.valid)
+        observations.append(_vat_observation(validation, min(pages)))
 
     ckyc_occurrences: list[tuple[str, int]] = []
     micr_occurrences: list[tuple[str, int]] = []
@@ -510,8 +631,11 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
     if checked == 0 and unverifiable == 0:
         return LaboratoryCheck(
             code="ocr_identifiers",
-            title="Identifiants structures",
-            purpose="Verifier les cartes, IBAN, BIC/SWIFT, CKYC et MICR reconnus.",
+            title="Identifiants structurés",
+            purpose=(
+                "Vérifier les identifiants bancaires, d'entreprise et de santé explicitement "
+                "reconnus."
+            ),
             state="not_applicable",
             summary="Aucun identifiant compatible n'a ete reconnu.",
             limitations=("Les identifiants non etiquetes explicitement ne sont pas devines.",),
@@ -519,8 +643,10 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
 
     return LaboratoryCheck(
         code="ocr_identifiers",
-        title="Identifiants structures",
-        purpose="Verifier les cartes, IBAN, BIC/SWIFT, CKYC et MICR reconnus.",
+        title="Identifiants structurés",
+        purpose=(
+            "Vérifier les identifiants bancaires, d'entreprise et de santé explicitement reconnus."
+        ),
         state="attention" if anomaly_count else "clear",
         summary=(
             f"{anomaly_count} anomalie(s) pour {checked} identifiant(s) controles."
@@ -536,6 +662,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
             "Une erreur OCR d'un seul caractere suffit a invalider un controle.",
             "Un checksum valide ne confirme pas que l'identifiant existe.",
             "La coherence geographique exige un contexte bancaire explicite.",
+            "Aucun registre d'entreprises ou de professionnels n'est interrogé par ce contrôle.",
         ),
     )
 
@@ -604,6 +731,71 @@ def _iban_observation(
     )
 
 
+def _national_identifier_observation(
+    identifier_type: str,
+    validation: IdentifierValidation,
+    page: int,
+    standard: str,
+) -> LaboratoryObservation:
+    reason = _validation_reason(validation.reasons)
+    return LaboratoryObservation(
+        code=(
+            f"OCR_{identifier_type}_VALID" if validation.valid else f"OCR_{identifier_type}_INVALID"
+        ),
+        title=identifier_type,
+        summary=(
+            f"Le numéro {identifier_type} respecte sa structure et sa clé de contrôle."
+            if validation.valid
+            else f"Le numéro {identifier_type} est invalide : {reason}."
+        ),
+        state="clear" if validation.valid else "attention",
+        strength="informational" if validation.valid else "moderate",
+        explanation=(
+            "Ce contrôle détecte certaines erreurs de saisie ou de lecture OCR. "
+            "Il ne confirme ni l'attribution du numéro ni l'activité de son titulaire."
+        ),
+        page=page,
+        evidence={
+            "value": validation.normalized,
+            "length": len(validation.normalized),
+            "country_code": validation.country_code,
+            "invalid_reasons": validation.reasons,
+            "standard": standard,
+            "registry_checked": False,
+        },
+    )
+
+
+def _vat_observation(
+    validation: IdentifierValidation,
+    page: int,
+) -> LaboratoryObservation:
+    reason = _validation_reason(validation.reasons)
+    return LaboratoryObservation(
+        code="OCR_EU_VAT_VALID" if validation.valid else "OCR_EU_VAT_INVALID",
+        title="Numéro de TVA intracommunautaire",
+        summary=(
+            f"Le numéro de TVA {validation.normalized} respecte les règles du pays."
+            if validation.valid
+            else f"Le numéro de TVA {validation.normalized} est invalide : {reason}."
+        ),
+        state="clear" if validation.valid else "attention",
+        strength="informational" if validation.valid else "moderate",
+        explanation=(
+            "La structure et la clé nationale sont vérifiées localement. L'inscription "
+            "effective de l'entreprise dans VIES n'est pas interrogée."
+        ),
+        page=page,
+        evidence={
+            "value": validation.normalized,
+            "country_code": validation.country_code,
+            "invalid_reasons": validation.reasons,
+            "registry_checked": False,
+            "registry": "VIES non interrogé",
+        },
+    )
+
+
 def _validation_reason(reasons: tuple[str, ...]) -> str:
     labels = {
         "invalid_length": "longueur non conforme",
@@ -614,6 +806,7 @@ def _validation_reason(reasons: tuple[str, ...]) -> str:
         "unknown_country_code": "code pays inconnu",
         "invalid_location_code": "code localisation invalide",
         "invalid_branch_code": "code agence invalide",
+        "invalid_component": "composant invalide",
         "unknown_country_or_structure": "pays inconnu ou structure nationale absente",
         "invalid_country_structure": "longueur ou structure nationale non conforme",
     }
@@ -699,6 +892,76 @@ def _extract_labeled_bics(text: str) -> tuple[str, ...]:
         if grouped is not None:
             candidates.append("".join(part or "" for part in grouped.groups()).upper())
     return tuple(dict.fromkeys(candidates))
+
+
+def _labeled_digit_occurrences(
+    regions: tuple[_Region, ...],
+    label_pattern: re.Pattern[str],
+    length: int,
+) -> dict[str, set[int]]:
+    occurrences: dict[str, set[int]] = {}
+    for region in regions:
+        for label in label_pattern.finditer(region.content):
+            tail = region.content[label.end() : label.end() + 80].lstrip(" \t:.-")
+            pattern = re.compile(rf"(?:\d[ \t.\-]*){{{length - 1}}}\d(?![ \t.\-]*\d)")
+            match = pattern.match(tail)
+            if match is None:
+                continue
+            candidate = re.sub(r"\D", "", match.group())
+            occurrences.setdefault(candidate, set()).add(region.page)
+    return occurrences
+
+
+def _labeled_vat_occurrences(regions: tuple[_Region, ...]) -> dict[str, set[int]]:
+    occurrences: dict[str, set[int]] = {}
+    for region in regions:
+        for label in _VAT_LABEL.finditer(region.content):
+            tail = region.content[label.end() : label.end() + 80].lstrip(" \t:.-")
+            prefix = re.match(r"[A-Z]{2}", tail, re.IGNORECASE)
+            if prefix is None:
+                continue
+            country = prefix.group().upper()
+            lengths = _EU_VAT_LENGTHS.get(country)
+            if not lengths:
+                continue
+            candidates = [
+                item for length in lengths if (item := _take_alphanumeric(tail, length)) is not None
+            ]
+            if not candidates:
+                continue
+            valid = [item for item in candidates if validate_eu_vat(item[0]).valid]
+            if valid:
+                candidate = max(valid, key=lambda item: len(item[0]))[0]
+            else:
+                candidate = max(
+                    candidates,
+                    key=lambda item: (_candidate_boundary_score(tail, item[1]), len(item[0])),
+                )[0]
+            occurrences.setdefault(candidate, set()).add(region.page)
+    return occurrences
+
+
+def _take_alphanumeric(source: str, length: int) -> tuple[str, int] | None:
+    compact: list[str] = []
+    for index, character in enumerate(source):
+        if character.isascii() and character.isalnum():
+            compact.append(character.upper())
+        elif character in " \t.- ":
+            continue
+        else:
+            return None
+        if len(compact) == length:
+            return "".join(compact), index + 1
+    return None
+
+
+def _candidate_boundary_score(source: str, consumed: int) -> int:
+    remainder = source[consumed:]
+    if not remainder or remainder[0] in "\n\r,;|)/]}":
+        return 2
+    if re.match(r"[ \t]+[A-Z]{3,}\b", remainder, re.IGNORECASE):
+        return 1
+    return 0
 
 
 def _single_character_difference(values: tuple[str, ...]) -> int | None:

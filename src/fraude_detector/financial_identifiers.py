@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from stdnum import bic, iban, luhn
+from stdnum.eu import vat as eu_vat
 from stdnum.exceptions import (
     InvalidChecksum,
     InvalidComponent,
@@ -13,6 +14,7 @@ from stdnum.exceptions import (
     InvalidLength,
     ValidationError,
 )
+from stdnum.fr import siren, siret
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,82 @@ def validate_card_number(value: str) -> IdentifierValidation:
         normalized=normalized,
         valid=not reasons,
         reasons=tuple(reasons),
+    )
+
+
+def validate_siren(value: str) -> IdentifierValidation:
+    """Validate the structure and checksum of a French SIREN."""
+
+    return _validate_stdnum(value, siren, country_code="FR")
+
+
+def validate_siret(value: str) -> IdentifierValidation:
+    """Validate the structure and checksum of a French SIRET."""
+
+    return _validate_stdnum(value, siret, country_code="FR")
+
+
+def validate_eu_vat(value: str) -> IdentifierValidation:
+    """Validate an EU VAT number with its country-specific local rules."""
+
+    normalized = re.sub(r"[\s.\-]", "", value).upper()
+    country_code = normalized[:2] if len(normalized) >= 2 else None
+    reasons: list[str] = []
+    try:
+        normalized = eu_vat.validate(normalized)
+    except InvalidChecksum:
+        reasons.append("invalid_checksum")
+    except InvalidComponent:
+        reasons.append("unknown_country_or_structure")
+    except InvalidLength:
+        reasons.append("invalid_length")
+    except InvalidFormat:
+        reasons.append("invalid_format")
+    except ValidationError:
+        reasons.append("invalid_format")
+    return IdentifierValidation(
+        normalized=normalized,
+        valid=not reasons,
+        reasons=tuple(dict.fromkeys(reasons)),
+        country_code=country_code,
+    )
+
+
+def validate_rpps(value: str) -> IdentifierValidation:
+    """Validate the published 11-digit RPPS structure and Luhn key."""
+
+    normalized = re.sub(r"[\s.\-]", "", value)
+    reasons: list[str] = []
+    if len(normalized) != 11:
+        reasons.append("invalid_length")
+    if not normalized.isdigit() or not normalized.startswith("1"):
+        reasons.append("invalid_format")
+    if not reasons and not luhn.is_valid(normalized):
+        reasons.append("invalid_checksum")
+    return IdentifierValidation(
+        normalized=normalized,
+        valid=not reasons,
+        reasons=tuple(reasons),
+        country_code="FR",
+    )
+
+
+def validate_finess(value: str) -> IdentifierValidation:
+    """Validate a 9-digit FINESS identifier and its Luhn key."""
+
+    normalized = re.sub(r"[\s.\-]", "", value)
+    reasons: list[str] = []
+    if len(normalized) != 9:
+        reasons.append("invalid_length")
+    if not normalized.isdigit():
+        reasons.append("invalid_format")
+    if not reasons and not luhn.is_valid(normalized):
+        reasons.append("invalid_checksum")
+    return IdentifierValidation(
+        normalized=normalized,
+        valid=not reasons,
+        reasons=tuple(reasons),
+        country_code="FR",
     )
 
 
@@ -133,3 +211,26 @@ def expected_iban_length(country_code: str) -> int | None:
         if component_lengths:
             return 4 + sum(component_lengths)
     return None
+
+
+def _validate_stdnum(value: str, module: object, *, country_code: str) -> IdentifierValidation:
+    normalized = re.sub(r"[\s.\-]", "", value)
+    reasons: list[str] = []
+    try:
+        normalized = module.validate(normalized)  # type: ignore[attr-defined]
+    except InvalidChecksum:
+        reasons.append("invalid_checksum")
+    except InvalidComponent:
+        reasons.append("invalid_component")
+    except InvalidLength:
+        reasons.append("invalid_length")
+    except InvalidFormat:
+        reasons.append("invalid_format")
+    except ValidationError:
+        reasons.append("invalid_format")
+    return IdentifierValidation(
+        normalized=normalized,
+        valid=not reasons,
+        reasons=tuple(dict.fromkeys(reasons)),
+        country_code=country_code,
+    )

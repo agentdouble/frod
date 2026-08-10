@@ -52,9 +52,21 @@ TRUFOR_WEIGHTS = PROJECT_CONFIG.trufor.weights_path
 TRUFOR_PIXEL_BUDGET = PROJECT_CONFIG.trufor.max_pixels
 CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
 ANALYSIS_POLICY_VERSION = (
-    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v2-full-identifiers-{CONFIG_FINGERPRINT}"
+    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
 )
 INDICATOR_STEP_SECONDS = 0.45
+OCR_IDENTIFIER_PREFIXES = (
+    "OCR_CARD_",
+    "OCR_IBAN_",
+    "OCR_BIC_",
+    "OCR_CKYC_",
+    "OCR_MICR_",
+    "OCR_SIREN_",
+    "OCR_SIRET_",
+    "OCR_EU_VAT_",
+    "OCR_RPPS_",
+    "OCR_FINESS_",
+)
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
@@ -1075,9 +1087,7 @@ def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
         observation
         for check in laboratory.checks
         for observation in check.observations
-        if observation.code.startswith(
-            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
-        )
+        if observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
     ]
     if not fields:
         return
@@ -1120,9 +1130,7 @@ def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
             observation.state in {"attention", "error"}
             or (observation.state == "detected" and observation.strength != "informational")
         )
-        and not observation.code.startswith(
-            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
-        )
+        and not observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
     ]
     if not observations:
         return

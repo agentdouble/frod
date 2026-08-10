@@ -208,6 +208,35 @@ def test_masked_card_does_not_create_a_content_finding() -> None:
     assert result.findings == ()
 
 
+def test_invalid_labeled_siret_uses_the_existing_ocr_reliability_gate() -> None:
+    payload = [
+        [
+            {
+                "label": "text",
+                "content": (
+                    "Facture avec un contenu suffisamment long pour contrôler "
+                    "le SIRET : 732 829 320 00075"
+                ),
+            },
+            {"label": "text", "content": "Adresse et détails complémentaires du fournisseur"},
+        ]
+    ]
+    markdown = "\n".join(item["content"] for item in payload[0])
+
+    result = build_ocr_content_result(
+        OcrReport(
+            success=True,
+            error_message=None,
+            markdown=markdown,
+            json_result=payload,
+        )
+    )
+
+    finding = result.findings[0]
+    assert finding.risk_points == 6
+    assert finding.evidence["groups"]["identity_consistency"]["signals"] == ("OCR_SIRET_INVALID",)
+
+
 def _fixture_report(*, markdown: str | None = None) -> OcrReport:
     payload = json.loads((FIXTURE / "document.json").read_text(encoding="utf-8"))
     return OcrReport(

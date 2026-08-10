@@ -211,7 +211,7 @@ def _similar_groups(
     minimum_similarity: float,
 ) -> tuple[tuple[tuple[_VisualCandidate, ...], tuple[float, ...]], ...]:
     groups: list[tuple[tuple[_VisualCandidate, ...], tuple[float, ...]]] = []
-    fingerprints: set[tuple[int, ...]] = set()
+    fingerprints: set[tuple[tuple[int, int, int], ...]] = set()
     for anchor in candidates:
         matches = [anchor]
         similarities = [1.0]
@@ -223,7 +223,7 @@ def _similar_groups(
             scored = [
                 (_visual_similarity(anchor, candidate), candidate)
                 for candidate in options
-                if _compatible_shape(anchor, candidate)
+                if _compatible_shape(anchor, candidate) and _compatible_position(anchor, candidate)
             ]
             if not scored:
                 continue
@@ -233,7 +233,10 @@ def _similar_groups(
                 similarities.append(similarity)
         if len(matches) < minimum_pages:
             continue
-        fingerprint = tuple(candidate.page for candidate in matches)
+        ordered = sorted(zip(matches, similarities, strict=True), key=lambda item: item[0].page)
+        matches = [item[0] for item in ordered]
+        similarities = [item[1] for item in ordered]
+        fingerprint = _group_fingerprint(matches)
         if fingerprint in fingerprints:
             continue
         fingerprints.add(fingerprint)
@@ -249,6 +252,25 @@ def _compatible_shape(left: _VisualCandidate, right: _VisualCandidate) -> bool:
         right.aspect_ratio,
     )
     return ratio >= 0.78
+
+
+def _compatible_position(left: _VisualCandidate, right: _VisualCandidate) -> bool:
+    left_x = (left.bbox[0] + left.bbox[2]) / 2
+    left_y = (left.bbox[1] + left.bbox[3]) / 2
+    right_x = (right.bbox[0] + right.bbox[2]) / 2
+    right_y = (right.bbox[1] + right.bbox[3]) / 2
+    return abs(left_x - right_x) <= 140 and abs(left_y - right_y) <= 140
+
+
+def _group_fingerprint(candidates: list[_VisualCandidate]) -> tuple[tuple[int, int, int], ...]:
+    return tuple(
+        (
+            candidate.page,
+            round((candidate.bbox[0] + candidate.bbox[2]) / 50),
+            round((candidate.bbox[1] + candidate.bbox[3]) / 50),
+        )
+        for candidate in candidates
+    )
 
 
 def _visual_similarity(left: _VisualCandidate, right: _VisualCandidate) -> float:
