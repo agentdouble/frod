@@ -30,6 +30,11 @@ _CARD_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _CARD_NUMBER = re.compile(r"(?<!\d)(?:\d[\s-]?){12,18}\d(?!\d)")
+_CARD_GROUPED = re.compile(
+    r"(?<![0-9A-Z*•])(?:[0-9X*•]{4}[ \t-]+){2,4}[0-9X*•]{1,4}"
+    r"(?![0-9A-Z*•])",
+    re.IGNORECASE,
+)
 _BIC_LABEL = re.compile(
     r"\b(?:"
     r"(?:BIC|SWIFT)(?:\s*[/|-]\s*(?:BIC|SWIFT))?(?:\s+(?:CODE|NO|NUMBER))?"
@@ -77,6 +82,14 @@ class _ParsedDate:
     raw: str
     value: date | None
     ambiguous: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _CardCandidate:
+    value: str
+    digits: str
+    masked: bool
+    possible_suffix: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,17 +195,83 @@ def _quality_check(ocr_json: Any, regions: tuple[_Region, ...]) -> LaboratoryChe
 def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
     observations: list[LaboratoryObservation] = []
     checked = 0
+    unverifiable = 0
     anomaly_count = 0
 
     card_occurrences: dict[str, set[int]] = {}
+    masked_card_occurrences: dict[str, tuple[set[int], str | None]] = {}
+    suffixed_card_occurrences: dict[str, tuple[set[int], str]] = {}
     for region in regions:
-        for context in _CARD_CONTEXT.finditer(region.content):
-            nearby_text = region.content[context.end() : context.end() + 80]
-            match = _CARD_NUMBER.search(nearby_text)
-            if match is None:
-                continue
-            digits = re.sub(r"\D", "", match.group())
-            card_occurrences.setdefault(digits, set()).add(region.page)
+        for candidate in _extract_labeled_cards(region.content):
+            if candidate.masked:
+                pages, _ = masked_card_occurrences.setdefault(
+                    candidate.value,
+                    (set(), candidate.possible_suffix),
+                )
+                pages.add(region.page)
+            elif candidate.possible_suffix is not None:
+                pages, _ = suffixed_card_occurrences.setdefault(
+                    candidate.value,
+                    (set(), candidate.possible_suffix),
+                )
+                pages.add(region.page)
+            else:
+                card_occurrences.setdefault(candidate.digits, set()).add(region.page)
+
+    for value, (pages, suffix) in masked_card_occurrences.items():
+        unverifiable += 1
+        observations.append(
+            LaboratoryObservation(
+                code="OCR_CARD_MASKED",
+                title="Numéro de carte masqué",
+                summary=(
+                    f"Le numéro est masqué et le groupe final « {suffix} » peut être un "
+                    "suffixe de compte ; Luhn ne peut pas être calculé."
+                    if suffix is not None
+                    else "Le numéro est partiellement masqué ; Luhn ne peut pas être calculé."
+                ),
+                state="indeterminate",
+                strength="informational",
+                explanation=(
+                    "Le masquage est courant sur les relevés bancaires. Il ne constitue "
+                    "ni une anomalie ni une confirmation de validité."
+                ),
+                page=min(pages),
+                evidence={
+                    "value": value,
+                    "visible_digits": sum(character.isdigit() for character in value),
+                    "total_positions": len(value),
+                    "possible_suffix": suffix,
+                    "algorithm": "Luhn non applicable",
+                },
+            )
+        )
+
+    for value, (pages, suffix) in suffixed_card_occurrences.items():
+        unverifiable += 1
+        observations.append(
+            LaboratoryObservation(
+                code="OCR_CARD_AMBIGUOUS_SUFFIX",
+                title="Numéro de carte avec suffixe possible",
+                summary=(
+                    f"Le groupe final « {suffix} » peut appartenir au numéro ou à un champ "
+                    "de compte adjacent."
+                ),
+                state="indeterminate",
+                strength="informational",
+                explanation=(
+                    "Les cartes peuvent comporter jusqu'à 19 chiffres. Sans séparation "
+                    "sémantique fiable, aucun chiffre n'est supprimé et Luhn n'est pas utilisé."
+                ),
+                page=min(pages),
+                evidence={
+                    "value": value,
+                    "possible_suffix": suffix,
+                    "total_positions": len(value),
+                    "algorithm": "Luhn non appliqué",
+                },
+            )
+        )
 
     if len(card_occurrences) > 1:
         difference = _single_character_difference(tuple(card_occurrences))
@@ -428,7 +507,7 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
             )
         )
 
-    if checked == 0:
+    if checked == 0 and unverifiable == 0:
         return LaboratoryCheck(
             code="ocr_identifiers",
             title="Identifiants structures",
@@ -446,7 +525,11 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
         summary=(
             f"{anomaly_count} anomalie(s) pour {checked} identifiant(s) controles."
             if anomaly_count
-            else f"{checked} identifiant(s) respectent leur controle de structure."
+            else (
+                f"{checked} identifiant(s) contrôlé(s), {unverifiable} non vérifiable(s)."
+                if unverifiable
+                else f"{checked} identifiant(s) respectent leur controle de structure."
+            )
         ),
         observations=tuple(observations),
         limitations=(
@@ -535,6 +618,32 @@ def _validation_reason(reasons: tuple[str, ...]) -> str:
         "invalid_country_structure": "longueur ou structure nationale non conforme",
     }
     return ", ".join(labels.get(reason, reason) for reason in reasons) or "format invalide"
+
+
+def _extract_labeled_cards(text: str) -> tuple[_CardCandidate, ...]:
+    candidates: list[_CardCandidate] = []
+    for context in _CARD_CONTEXT.finditer(text):
+        nearby_text = text[context.end() : context.end() + 80]
+        grouped = _CARD_GROUPED.search(nearby_text)
+        numeric = _CARD_NUMBER.search(nearby_text)
+        matches = [match for match in (grouped, numeric) if match is not None]
+        if not matches:
+            continue
+        match = min(matches, key=lambda item: (item.start(), -len(item.group())))
+        raw = match.group().strip()
+        groups = tuple(part for part in re.split(r"[ \t-]+", raw) if part)
+        normalized = "".join(groups).upper().replace("*", "X").replace("•", "X")
+        masked = "X" in normalized
+        possible_suffix = groups[-1] if len(groups) >= 5 and 1 <= len(groups[-1]) <= 2 else None
+        candidates.append(
+            _CardCandidate(
+                value=normalized,
+                digits="".join(character for character in normalized if character.isdigit()),
+                masked=masked,
+                possible_suffix=possible_suffix,
+            )
+        )
+    return tuple(dict.fromkeys(candidates))
 
 
 def _extract_labeled_ibans(text: str) -> tuple[str, ...]:
@@ -640,7 +749,6 @@ def _date_check(regions: tuple[_Region, ...], reference_date: date) -> Laborator
         and not item.ambiguous
         and item.value > reference_date + timedelta(days=1)
     ]
-    ambiguous = [item for item in dates if item.ambiguous]
     for item in invalid:
         observations.append(
             LaboratoryObservation(
@@ -668,22 +776,6 @@ def _date_check(regions: tuple[_Region, ...], reference_date: date) -> Laborator
                 page=item.page,
             )
         )
-    for item in ambiguous:
-        observations.append(
-            LaboratoryObservation(
-                code="OCR_DATE_AMBIGUOUS",
-                title="Format de date ambigu",
-                summary=f"La date reconnue « {item.raw} » admet deux lectures.",
-                state="detected",
-                strength="informational",
-                explanation=(
-                    "Sans connaître la convention du document, le jour et le mois ne "
-                    "peuvent pas être distingués. Ce constat ne constitue pas une anomalie."
-                ),
-                page=item.page,
-            )
-        )
-
     valid_values = [item.value for item in dates if item.value is not None]
     if valid_values:
         observations.append(
@@ -1093,6 +1185,9 @@ def _extract_dates(regions: tuple[_Region, ...]) -> tuple[_ParsedDate, ...]:
         for pattern, date_format in _DATE_PATTERNS:
             for match in pattern.finditer(region.content):
                 raw = match.group(0)
+                year = int(match.group(1) if date_format == "%Y-%m-%d" else match.group(3))
+                if not _supported_document_year(year):
+                    continue
                 normalized = raw
                 if date_format == "%d/%m/%Y":
                     normalized = raw.replace(".", "/")
@@ -1106,6 +1201,8 @@ def _extract_dates(regions: tuple[_Region, ...]) -> tuple[_ParsedDate, ...]:
             first = int(match.group(1))
             second = int(match.group(3))
             year = int(match.group(4))
+            if not _supported_document_year(year):
+                continue
             parsed, ambiguous = _parse_localized_numeric_date(first, second, year)
             values.append(
                 _ParsedDate(
@@ -1139,6 +1236,10 @@ def _safe_date(year: int, month: int, day: int) -> date | None:
         return date(year, month, day)
     except ValueError:
         return None
+
+
+def _supported_document_year(year: int) -> bool:
+    return 1000 <= year <= 2999
 
 
 def _parse_date_text(value: str) -> date | None:

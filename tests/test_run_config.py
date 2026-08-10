@@ -82,6 +82,9 @@ models:
 laboratory:
   pdf_enabled: false
   image_enabled: true
+  visual_repetition_enabled: true
+  visual_repetition_min_pages: 4
+  visual_repetition_similarity: 0.93
 """,
         encoding="utf-8",
     )
@@ -105,6 +108,9 @@ laboratory:
     assert config.trufor.max_pixels == 500000
     assert config.trufor.timeout_seconds == 600
     assert config.laboratory.pdf_enabled is False
+    assert config.laboratory.visual_repetition_enabled is True
+    assert config.laboratory.visual_repetition_min_pages == 4
+    assert config.laboratory.visual_repetition_similarity == 0.93
 
 
 def test_environment_explicitly_overrides_yaml(tmp_path: Path) -> None:

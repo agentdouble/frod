@@ -68,6 +68,8 @@ Redémarrer `./start.sh` après une modification.
   sans contribution au score Frod.
 - controles OCR de coherence interne : identifiants internationaux, contradictions
   de valeurs, dates, totaux, soldes et referentiels bancaires incompatibles.
+- comparaison experimentale, non scoree, des zones image, cachet ou signature que
+  l'OCR localise de facon tres similaire sur au moins trois pages.
 
 L'absence de C2PA, d'EXIF ou de XMP n'ajoute aucun point. Une declaration C2PA
 d'origine algorithmique indique comment un media a ete produit; elle ne dit pas si
@@ -234,5 +236,8 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 - les controles OCR generiques ne connaissent pas toutes les regles metier propres
   a chaque assureur, pays ou type de document ;
 - une inversion OCR peut invalider un checksum ou creer une contradiction apparente ;
+- un numero de carte masque ou suivi d'un suffixe ambigu n'est pas soumis a Luhn ;
+- la repetition visuelle depend des zones proposees par l'OCR et peut correspondre a
+  un pied de page ou a un formulaire, pas necessairement a une signature copiee ;
 - une calibration serieuse exige un corpus anonymise de vrais documents legitimes et
   modifies, avec mesure du taux de faux positifs.

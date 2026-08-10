@@ -185,6 +185,29 @@ def test_two_distinct_valid_cards_do_not_create_a_finding() -> None:
     assert result.findings == ()
 
 
+def test_masked_card_does_not_create_a_content_finding() -> None:
+    payload = [
+        [
+            {
+                "label": "text",
+                "content": "Numéro de carte : 9401 XXXX XXXX 0100 00",
+            }
+        ]
+    ]
+    markdown = payload[0][0]["content"]
+
+    result = build_ocr_content_result(
+        OcrReport(
+            success=True,
+            error_message=None,
+            markdown=markdown,
+            json_result=payload,
+        )
+    )
+
+    assert result.findings == ()
+
+
 def _fixture_report(*, markdown: str | None = None) -> OcrReport:
     payload = json.loads((FIXTURE / "document.json").read_text(encoding="utf-8"))
     return OcrReport(

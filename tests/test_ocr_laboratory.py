@@ -303,10 +303,39 @@ def test_numeric_dates_support_unambiguous_us_format_and_abstain_when_ambiguous(
     dates = next(check for check in checks if check.code == "ocr_dates")
 
     assert dates.state == "clear"
-    assert {item.code for item in dates.observations} == {
-        "OCR_DATE_AMBIGUOUS",
-        "OCR_DATE_INVENTORY",
+    assert {item.code for item in dates.observations} == {"OCR_DATE_INVENTORY"}
+
+
+def test_date_like_identifier_with_implausible_year_is_ignored() -> None:
+    payload = [[_region("text", "Référence technique : 14-05-6789")]]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "not_applicable"
+    assert dates.observations == ()
+
+
+def test_masked_card_and_possible_account_suffix_are_not_sent_to_luhn() -> None:
+    payload = [
+        [
+            _region("text", "Numéro de carte : 9401 XXXX XXXX 0100 00"),
+            _region("text", "Card number: 9401 1234 5678 0100 00"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    assert {item.code for item in identifiers.observations} == {
+        "OCR_CARD_MASKED",
+        "OCR_CARD_AMBIGUOUS_SUFFIX",
     }
+    assert all(item.state == "indeterminate" for item in identifiers.observations)
+    masked = next(item for item in identifiers.observations if item.code == "OCR_CARD_MASKED")
+    assert masked.evidence["possible_suffix"] == "00"
+    assert "2 non vérifiable(s)" in identifiers.summary
 
 
 def test_future_date_is_informational_without_semantic_role() -> None:
