@@ -51,6 +51,19 @@ def test_photo_without_adapter_abstains(tmp_path: Path) -> None:
     assert result.artifacts == ()
 
 
+def test_pdf_image_analysis_is_disabled_by_default(tmp_path: Path) -> None:
+    adapter = ConstantAdapter("model-a", "frequency", 0.99)
+    context = _context(tmp_path, coverage=0.25, analyze_pdf_images=False)
+    try:
+        result = AiGeneratedImageDetector((adapter,)).analyze(context)
+    finally:
+        context.pdfium_document.close()
+
+    assert result.status == "not_applicable"
+    assert adapter.calls == 0
+    assert result.findings == ()
+
+
 def test_full_page_document_is_not_sent_to_model(tmp_path: Path) -> None:
     adapter = ConstantAdapter("model-a", "frequency", 0.99)
     context = _context(tmp_path, coverage=1.0)
@@ -150,7 +163,12 @@ def test_unstable_model_adds_zero_risk_quality_finding(tmp_path: Path) -> None:
     assert "AI_PIXEL_TRACE_CONSENSUS" not in {item.code for item in result.findings}
 
 
-def _context(tmp_path: Path, *, coverage: float) -> AnalysisContext:
+def _context(
+    tmp_path: Path,
+    *,
+    coverage: float,
+    analyze_pdf_images: bool = True,
+) -> AnalysisContext:
     image_path = tmp_path / "photo.jpg"
     Image.new("RGB", (1000, 800), (80, 120, 160)).save(
         image_path,
@@ -175,5 +193,8 @@ def _context(tmp_path: Path, *, coverage: float) -> AnalysisContext:
         raw_pdf=raw_pdf,
         pdfium_document=pypdfium2.PdfDocument(raw_pdf),
         reader=PdfReader(BytesIO(raw_pdf)),
-        config=AnalysisConfig(render_dpi=72),
+        config=AnalysisConfig(
+            render_dpi=72,
+            ai_analyze_pdf_images=analyze_pdf_images,
+        ),
     )

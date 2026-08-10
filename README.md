@@ -55,18 +55,21 @@ Redémarrer `./start.sh` après une modification.
 - historique de mises a jour incrementales encore present dans le PDF ;
 - difference visuelle localisee entre les deux dernieres revisions conservees ;
 - contradictions de dates et logiciels de retouche declares dans les metadonnees ;
-- petite image ou texte visible superpose a une image de scan pleine page ;
+- couches image ou texte au-dessus d'un scan, sans points lorsqu'elles correspondent
+  a une construction de scanner ou qu'aucune revision posterieure n'est conservee ;
 - annotations PDF visibles ;
 - anomalies locales de recompression dans un JPEG original embarque (ELA).
 - provenance C2PA du PDF et des images natives, avec validation separee de la
   confiance accordee au certificat ;
 - noms explicites de generateurs IA dans les metadonnees EXIF/XMP ;
-- analyse passive GAPL des images et des photos embarquees eligibles, avec
-  aggregation multi-fenetre et controle de stabilite.
+- analyse passive GAPL des images autonomes, avec aggregation multi-fenetre et
+  controle de stabilite ; l'analyse des images embarquees dans un PDF est optionnelle.
 - localisation experimentale de retouches sur les images autonomes avec TruFor,
   sans contribution au score Frod.
 - controles OCR de coherence interne : identifiants internationaux, contradictions
   de valeurs, dates, totaux, soldes et referentiels bancaires incompatibles.
+- comparaison experimentale, non scoree, des zones image, cachet ou signature que
+  l'OCR localise de facon tres similaire sur au moins trois pages.
 
 L'absence de C2PA, d'EXIF ou de XMP n'ajoute aucun point. Une declaration C2PA
 d'origine algorithmique indique comment un media a ete produit; elle ne dit pas si
@@ -77,8 +80,10 @@ ne charge ni manifeste distant ni reponse OCSP depuis un document non fiable.
 
 Frod combine la provenance C2PA, les metadonnees EXIF/XMP et le modele local GAPL.
 Pour une image autonome, GAPL analyse plusieurs fenetres completes de 224 x 224
-pixels, sans inventer de pixels aux bords. Pour un PDF, seules les photographies
-embarquees et eligibles sont transmises au modele.
+pixels, sans inventer de pixels aux bords. Les images embarquees dans les PDF ne sont
+pas transmises au modele par defaut, car scans et recompressions degradent fortement
+la pertinence du signal. Ce comportement peut etre active explicitement avec
+`analysis.ai_images.analyze_pdf_images`.
 
 Les scores des fenetres sont agreges en un indice global robuste aux modifications
 locales. Cet indice commence a ajouter quelques points au-dessus de 50 % et ajoute
@@ -212,7 +217,8 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 ## Limites connues
 
 - une fraude aplatie puis reecrite proprement peut ne laisser aucun historique ;
-- ELA est sensible aux bords, au contenu et aux recompressions legitimes ;
+- ELA est sensible aux bords, au contenu et aux recompressions legitimes ; sa
+  contribution est donc limitee a un faible signal de corroboration ;
 - les images PNG ou sans compression JPEG ne sont pas analysees par ELA ;
 - les detecteurs passifs d'images IA se degradent sur scans, texte dense,
   recompressions et generateurs absents de leur corpus d'entrainement ;
@@ -230,5 +236,8 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 - les controles OCR generiques ne connaissent pas toutes les regles metier propres
   a chaque assureur, pays ou type de document ;
 - une inversion OCR peut invalider un checksum ou creer une contradiction apparente ;
+- un numero de carte masque ou suivi d'un suffixe ambigu n'est pas soumis a Luhn ;
+- la repetition visuelle depend des zones proposees par l'OCR et peut correspondre a
+  un pied de page ou a un formulaire, pas necessairement a une signature copiee ;
 - une calibration serieuse exige un corpus anonymise de vrais documents legitimes et
   modifies, avec mesure du taux de faux positifs.

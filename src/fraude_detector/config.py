@@ -25,6 +25,7 @@ class AnalysisConfig:
     ela_max_region_area_fraction: float = 0.25
     ai_max_images: int = 20
     ai_max_inventory_images: int = 100
+    ai_analyze_pdf_images: bool = False
     ai_min_photo_page_coverage: float = 0.02
     ai_min_photo_side: int = 256
     ai_min_photo_pixels: int = 262_144

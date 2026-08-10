@@ -57,6 +57,7 @@ analysis:
   ai_images:
     max_images: 10
     max_inventory_images: 50
+    analyze_pdf_images: true
     min_photo_page_coverage: 0.03
     min_photo_side: 300
     min_photo_pixels: 300000
@@ -81,6 +82,9 @@ models:
 laboratory:
   pdf_enabled: false
   image_enabled: true
+  visual_repetition_enabled: true
+  visual_repetition_min_pages: 4
+  visual_repetition_similarity: 0.93
 """,
         encoding="utf-8",
     )
@@ -94,6 +98,7 @@ laboratory:
     assert config.analysis.max_pages == 12
     assert config.analysis.ela_jpeg_quality == 88
     assert config.analysis.ai_max_images == 10
+    assert config.analysis.ai_analyze_pdf_images is True
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://ocr.internal:9000"
     assert config.analysis.ocr_timeout_seconds == 420
@@ -103,6 +108,9 @@ laboratory:
     assert config.trufor.max_pixels == 500000
     assert config.trufor.timeout_seconds == 600
     assert config.laboratory.pdf_enabled is False
+    assert config.laboratory.visual_repetition_enabled is True
+    assert config.laboratory.visual_repetition_min_pages == 4
+    assert config.laboratory.visual_repetition_similarity == 0.93
 
 
 def test_environment_explicitly_overrides_yaml(tmp_path: Path) -> None:
@@ -125,6 +133,7 @@ models:
             "FROD_PORT": "8700",
             "FROD_OCR_URL": "http://environment:8100",
             "FROD_GAPL_ENABLED": "false",
+            "FROD_AI_ANALYZE_PDF_IMAGES": "true",
             "FROD_TRUFOR_MAX_PIXELS": "600000",
         },
     )
@@ -133,6 +142,7 @@ models:
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://environment:8100"
     assert config.gapl.enabled is False
+    assert config.analysis.ai_analyze_pdf_images is True
     assert config.trufor.max_pixels == 600000
 
 

@@ -53,6 +53,9 @@ analysis:
     max_region_area_fraction: 0.25
 
   ai_images:
+    # Par défaut, les modèles IA analysent les images autonomes mais pas celles
+    # embarquées dans un PDF, souvent recompressées ou issues d'un scanner.
+    analyze_pdf_images: false
     # Nombre maximal de photos réellement envoyées aux modèles d'image.
     max_images: 20
     # Nombre maximal d'images inventoriées avant de déclarer l'analyse partielle.
@@ -100,3 +103,10 @@ laboratory:
   pdf_enabled: true
   # Contrôles expérimentaux réservés aux images, notamment TruFor.
   image_enabled: true
+  # Compare les zones image, cachet ou signature proposées par l'OCR sur plusieurs pages.
+  # Le résultat reste dans le laboratoire et n'ajoute aucun point au score.
+  visual_repetition_enabled: true
+  # Trois pages réduisent les alertes dues à une simple répétition accidentelle.
+  visual_repetition_min_pages: 3
+  # Similarité minimale des formes binarisées, de 0 à 1. Conserver un seuil élevé.
+  visual_repetition_similarity: 0.90

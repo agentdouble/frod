@@ -257,6 +257,166 @@ def test_unlabeled_long_numbers_are_not_guessed_as_bank_identifiers() -> None:
     assert identifiers.observations == ()
 
 
+def test_iban_stops_at_country_length_before_following_prose() -> None:
+    payload = [
+        [
+            _region("text", "Payment account IBAN: BE71 0961 2345 6769 with KBC EUR"),
+            _region("text", "SWIFT: KREDBEBB additional banking details"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    iban = next(item for item in identifiers.observations if item.code == "OCR_IBAN_VALID")
+    bic = next(item for item in identifiers.observations if item.code == "OCR_BIC_VALID")
+    assert iban.evidence["value"] == "BE71096123456769"
+    assert bic.evidence["value"] == "KREDBEBB"
+
+
+def test_filename_shaped_like_iban_is_ignored_without_label() -> None:
+    payload = [
+        [
+            _region(
+                "text",
+                "LU280019400644750000_20250221_20250320.pdf",
+            )
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "not_applicable"
+
+
+def test_numeric_dates_support_unambiguous_us_format_and_abstain_when_ambiguous() -> None:
+    payload = [
+        [
+            _region("text", "Statement start 1/21/2025"),
+            _region("text", "Period reference 03/04/2025"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "clear"
+    assert {item.code for item in dates.observations} == {"OCR_DATE_INVENTORY"}
+
+
+def test_date_like_identifier_with_implausible_year_is_ignored() -> None:
+    payload = [[_region("text", "Référence technique : 14-05-6789")]]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "not_applicable"
+    assert dates.observations == ()
+
+
+def test_masked_card_abstains_and_unmasked_suffix_uses_two_luhn_hypotheses() -> None:
+    payload = [
+        [
+            _region("text", "Numéro de carte : 9401 XXXX XXXX 0100 00"),
+            _region("text", "Card number: 4111 1111 1111 1111 01"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    assert {item.code for item in identifiers.observations} == {
+        "OCR_CARD_MASKED",
+        "OCR_CARD_SUFFIX_SEPARATED",
+    }
+    masked = next(item for item in identifiers.observations if item.code == "OCR_CARD_MASKED")
+    assert masked.evidence["possible_suffix"] == "00"
+    unmasked = next(
+        item for item in identifiers.observations if item.code == "OCR_CARD_SUFFIX_SEPARATED"
+    )
+    assert unmasked.evidence["full_pan_valid"] is False
+    assert unmasked.evidence["base_pan_valid"] is True
+    assert "1 non vérifiable(s)" in identifiers.summary
+
+
+def test_double_zero_suffix_keeps_both_valid_card_hypotheses_visible() -> None:
+    payload = [[_region("text", "Card number: 4111 1111 1111 1111 00")]]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+    card = identifiers.observations[0]
+
+    assert card.code == "OCR_CARD_LUHN_VALID"
+    assert card.evidence["full_pan_valid"] is True
+    assert card.evidence["base_pan_valid"] is True
+    assert card.evidence["possible_suffix"] == "00"
+
+
+def test_labeled_company_health_and_eu_vat_identifiers_are_validated() -> None:
+    payload = [
+        [
+            _region("text", "SIREN : 404 833 048"),
+            _region("text", "N° SIRET : 732 829 320 00074"),
+            _region("text", "TVA intracommunautaire : FR 40 303 265 045"),
+            _region("text", "VAT number: LU 26375245"),
+            _region("text", "RPPS : 10000668540"),
+            _region("text", "FINESS géographique : 921234563"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "clear"
+    assert {item.code for item in identifiers.observations} == {
+        "OCR_SIREN_VALID",
+        "OCR_SIRET_VALID",
+        "OCR_EU_VAT_VALID",
+        "OCR_RPPS_VALID",
+        "OCR_FINESS_VALID",
+    }
+    assert sum(item.code == "OCR_EU_VAT_VALID" for item in identifiers.observations) == 2
+    assert all(item.evidence.get("registry_checked") is False for item in identifiers.observations)
+
+
+def test_invalid_labeled_identifiers_are_reported_but_unlabeled_numbers_are_ignored() -> None:
+    payload = [
+        [
+            _region("text", "SIRET : 732 829 320 00075"),
+            _region("text", "TVA : LU26375246 EUR"),
+            _region("text", "RPPS : 10000668541"),
+            _region("text", "FINESS : 921234564"),
+            _region("text", "Référence libre 404833047"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    assert identifiers.state == "attention"
+    assert {item.code for item in identifiers.observations} == {
+        "OCR_SIRET_INVALID",
+        "OCR_EU_VAT_INVALID",
+        "OCR_RPPS_INVALID",
+        "OCR_FINESS_INVALID",
+    }
+
+
+def test_future_date_is_informational_without_semantic_role() -> None:
+    payload = [[_region("text", "Expiration date: 12/31/2030")]]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    dates = next(check for check in checks if check.code == "ocr_dates")
+
+    assert dates.state == "clear"
+    future = next(item for item in dates.observations if item.code == "OCR_DATE_IN_FUTURE")
+    assert future.state == "detected"
+    assert future.strength == "informational"
+
+
 def test_descending_statement_dates_are_not_a_chronology_anomaly() -> None:
     payload = [
         [

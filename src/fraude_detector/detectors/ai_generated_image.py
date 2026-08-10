@@ -40,6 +40,16 @@ class AiGeneratedImageDetector:
         self._adapters = tuple(adapters)
 
     def analyze(self, context: AnalysisContext) -> DetectorResult:
+        if not context.config.ai_analyze_pdf_images:
+            return DetectorResult(
+                name=self.name,
+                status="not_applicable",
+                notes=(
+                    "Analyse IA des images embarquees dans les PDF desactivee par configuration.",
+                    "Les images autonomes restent analysees par le pipeline image.",
+                ),
+            )
+
         context.report_progress(0.02, "Inventaire des images du PDF")
         assets = extract_image_assets(
             context,

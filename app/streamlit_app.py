@@ -28,6 +28,7 @@ from fraude_detector.laboratory import (
     analyze_ocr_laboratory,
     analyze_pdf_laboratory,
 )
+from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
@@ -51,9 +52,21 @@ TRUFOR_WEIGHTS = PROJECT_CONFIG.trufor.weights_path
 TRUFOR_PIXEL_BUDGET = PROJECT_CONFIG.trufor.max_pixels
 CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
 ANALYSIS_POLICY_VERSION = (
-    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v2-full-identifiers-{CONFIG_FINGERPRINT}"
+    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
 )
 INDICATOR_STEP_SECONDS = 0.45
+OCR_IDENTIFIER_PREFIXES = (
+    "OCR_CARD_",
+    "OCR_IBAN_",
+    "OCR_BIC_",
+    "OCR_CKYC_",
+    "OCR_MICR_",
+    "OCR_SIREN_",
+    "OCR_SIRET_",
+    "OCR_EU_VAT_",
+    "OCR_RPPS_",
+    "OCR_FINESS_",
+)
 
 DEMO_DOCUMENTS = {
     "Document intact": Path("tests/fixtures/assurance-sans-fraude.pdf"),
@@ -544,7 +557,7 @@ def _run_analysis(
             if PROJECT_CONFIG.laboratory.pdf_enabled
             else _empty_laboratory_report()
         )
-        laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
+        laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
         return report, laboratory, output_dir, source
 
     def pipeline_progress(value: float, text: str) -> None:
@@ -574,7 +587,7 @@ def _run_analysis(
         if PROJECT_CONFIG.laboratory.image_enabled and PROJECT_CONFIG.trufor.enabled
         else _empty_laboratory_report()
     )
-    laboratory = _with_ocr_laboratory(report, laboratory, output_dir)
+    laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
     return report, laboratory, output_dir, source
 
 
@@ -586,6 +599,7 @@ def _with_ocr_laboratory(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport,
     output_dir: Path,
+    source_path: Path,
 ) -> LaboratoryReport:
     json_paths = _existing_artifacts(
         output_dir,
@@ -597,9 +611,30 @@ def _with_ocr_laboratory(
         payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return laboratory
+    page_images = _existing_artifacts(
+        output_dir,
+        report.artifacts.get("page_renders", ()),
+    )
+    if not page_images and isinstance(report, ImageAnalysisReport) and source_path.is_file():
+        page_images = [source_path]
+    visual_repetition = (
+        analyze_repeated_visual_regions(
+            payload,
+            tuple(page_images),
+            output_dir / "laboratory",
+            minimum_pages=PROJECT_CONFIG.laboratory.visual_repetition_min_pages,
+            minimum_similarity=PROJECT_CONFIG.laboratory.visual_repetition_similarity,
+        )
+        if PROJECT_CONFIG.laboratory.visual_repetition_enabled
+        else None
+    )
     return LaboratoryReport(
         schema_version=laboratory.schema_version,
-        checks=(*laboratory.checks, *analyze_ocr_laboratory(payload)),
+        checks=(
+            *laboratory.checks,
+            *analyze_ocr_laboratory(payload),
+            *((visual_repetition,) if visual_repetition is not None else ()),
+        ),
     )
 
 
@@ -1052,9 +1087,7 @@ def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
         observation
         for check in laboratory.checks
         for observation in check.observations
-        if observation.code.startswith(
-            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
-        )
+        if observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
     ]
     if not fields:
         return
@@ -1093,10 +1126,11 @@ def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
         observation
         for check in laboratory.checks
         for observation in check.observations
-        if observation.state in {"attention", "detected", "error"}
-        and not observation.code.startswith(
-            ("OCR_CARD_", "OCR_IBAN_", "OCR_BIC_", "OCR_CKYC_", "OCR_MICR_")
+        if (
+            observation.state in {"attention", "error"}
+            or (observation.state == "detected" and observation.strength != "informational")
         )
+        and not observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
     ]
     if not observations:
         return
@@ -1121,6 +1155,8 @@ def _render_control_matrix(laboratory: LaboratoryReport | None) -> None:
         return
     cards = []
     for check in laboratory.checks:
+        if check.state == "not_applicable":
+            continue
         cards.append(
             f"""
             <article class="control-status {check.state}">
@@ -1130,6 +1166,8 @@ def _render_control_matrix(laboratory: LaboratoryReport | None) -> None:
             </article>
             """
         )
+    if not cards:
+        return
     st.markdown('<h3 class="subsection-title">Contrôles effectués</h3>', unsafe_allow_html=True)
     st.markdown(
         '<section class="control-matrix">' + "".join(card.strip() for card in cards) + "</section>",
@@ -1335,6 +1373,8 @@ def _laboratory_artifact_caption(path: Path) -> str:
         return "Carte des incohérences locales"
     if "revision" in path.name:
         return "Différences entre les versions"
+    if "repeated-visual-region" in path.name:
+        return "Comparaison des éléments visuels répétés"
     return "Visualisation complémentaire"
 
 
@@ -1395,6 +1435,7 @@ def _business_check_title(code: str, title: str) -> str:
         "ocr_identifiers": "Validité des identifiants",
         "ocr_dates": "Cohérence des dates",
         "ocr_financial_consistency": "Cohérence des montants",
+        "ocr_visual_repetition": "Éléments visuels répétés entre les pages",
     }
     return labels.get(code, _sentence_case(title))
 

@@ -99,9 +99,9 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert not app.expander
     assert "Zones à revoir - page 1" in app.selectbox[0].options
 
-    assert "Signature électronique du PDF" in markdown
-    assert "Facture électronique embarquée" in markdown
-    assert "Code de vérification 2D-Doc" in markdown
+    assert "Signature électronique du PDF" not in markdown
+    assert "Facture électronique embarquée" not in markdown
+    assert "Code de vérification 2D-Doc" not in markdown
     assert "Historique complet des versions" in markdown
 
     app.segmented_control[0].set_value("Glossaire").run(timeout=30)

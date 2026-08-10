@@ -99,7 +99,7 @@ def analyze_fonts_and_hidden_objects(context: AnalysisContext) -> LaboratoryChec
     if suspicious:
         summary = f"{len(suspicious)} anomalie(s) ciblee(s) a examiner."
     elif detected:
-        summary = "Objets invisibles expliques par la structure du document."
+        summary = "Variations structurelles informatives detectees."
     else:
         summary = "Aucune rupture ciblee detectee."
 
@@ -271,15 +271,14 @@ def _rare_font_observations(
         observations.append(
             LaboratoryObservation(
                 code="PDF_RARE_FONT_NUMERIC_FRAGMENT",
-                title="Fragment numerique dans une police rare",
+                title="Variation typographique sur une valeur",
                 summary=f"Page {page} : {len(candidates)} fragment(s) cible(s).",
-                state="attention",
-                strength="weak",
+                state="detected",
+                strength="informational",
                 explanation=(
-                    "Une police employee une ou deux fois porte un fragment surtout "
-                    "numerique, alors qu'une autre police domine la page. Ce motif peut "
-                    "correspondre a un remplacement local, mais aussi a une mise en forme "
-                    "normale; il doit etre confirme visuellement."
+                    "Une police peu utilisee porte une valeur surtout numerique. Les totaux "
+                    "en gras, les polices de secours et les formulaires produisent souvent "
+                    "ce motif : il n'indique pas une modification a lui seul."
                 ),
                 page=page,
                 evidence={

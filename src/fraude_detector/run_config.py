@@ -58,6 +58,9 @@ class LaboratoryConfig:
 
     pdf_enabled: bool
     image_enabled: bool
+    visual_repetition_enabled: bool
+    visual_repetition_min_pages: int
+    visual_repetition_similarity: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +262,7 @@ def _load_analysis(
         {
             "max_images",
             "max_inventory_images",
+            "analyze_pdf_images",
             "min_photo_page_coverage",
             "min_photo_side",
             "min_photo_pixels",
@@ -294,6 +298,7 @@ def _load_analysis(
             "ocr.timeout_seconds",
         )
     )
+    ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
     try:
         return AnalysisConfig(
@@ -363,6 +368,15 @@ def _load_analysis(
                 ai_images.get("max_inventory_images", 100),
                 source,
                 "analysis.ai_images.max_inventory_images",
+            ),
+            ai_analyze_pdf_images=(
+                ai_pdf_override
+                if ai_pdf_override is not None
+                else _boolean(
+                    ai_images.get("analyze_pdf_images", False),
+                    source,
+                    "analysis.ai_images.analyze_pdf_images",
+                )
             ),
             ai_min_photo_page_coverage=_number(
                 ai_images.get("min_photo_page_coverage", 0.02),
@@ -501,7 +515,34 @@ def _load_laboratory(
     environ: Mapping[str, str],
 ) -> LaboratoryConfig:
     section = _section(config, "laboratory", source)
-    _reject_unknown(section, {"pdf_enabled", "image_enabled"}, source, "laboratory")
+    _reject_unknown(
+        section,
+        {
+            "pdf_enabled",
+            "image_enabled",
+            "visual_repetition_enabled",
+            "visual_repetition_min_pages",
+            "visual_repetition_similarity",
+        },
+        source,
+        "laboratory",
+    )
+    minimum_pages = _integer(
+        section.get("visual_repetition_min_pages", 3),
+        source,
+        "laboratory.visual_repetition_min_pages",
+    )
+    similarity = _number(
+        section.get("visual_repetition_similarity", 0.90),
+        source,
+        "laboratory.visual_repetition_similarity",
+    )
+    if minimum_pages < 3:
+        raise RunConfigError("laboratory.visual_repetition_min_pages doit etre au moins 3")
+    if not 0 < similarity <= 1:
+        raise RunConfigError(
+            "laboratory.visual_repetition_similarity doit etre compris entre 0 et 1"
+        )
     return LaboratoryConfig(
         pdf_enabled=_environment_boolean(
             environ,
@@ -517,6 +558,13 @@ def _load_laboratory(
             source,
             "laboratory.image_enabled",
         ),
+        visual_repetition_enabled=_boolean(
+            section.get("visual_repetition_enabled", True),
+            source,
+            "laboratory.visual_repetition_enabled",
+        ),
+        visual_repetition_min_pages=minimum_pages,
+        visual_repetition_similarity=similarity,
     )
 
 

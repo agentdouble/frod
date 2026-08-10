@@ -134,11 +134,15 @@ def test_rare_numeric_font_and_unexplained_hidden_text_are_weak_signals(
     codes = {item.code for item in check.observations}
     assert "PDF_RARE_FONT_NUMERIC_FRAGMENT" in codes
     assert "PDF_UNEXPLAINED_INVISIBLE_TEXT" in codes
-    assert all(
-        item.strength == "weak"
-        for item in check.observations
-        if item.code in codes - {"PDF_FONT_INVENTORY"}
+    rare_font = next(
+        item for item in check.observations if item.code == "PDF_RARE_FONT_NUMERIC_FRAGMENT"
     )
+    assert rare_font.state == "detected"
+    assert rare_font.strength == "informational"
+    hidden_text = next(
+        item for item in check.observations if item.code == "PDF_UNEXPLAINED_INVISIBLE_TEXT"
+    )
+    assert hidden_text.strength == "weak"
 
 
 def test_malformed_two_d_doc_payload_is_a_moderate_signal() -> None:
