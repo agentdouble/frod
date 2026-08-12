@@ -69,6 +69,14 @@ ocr:
   enabled: true
   url: "http://ocr.internal:9000"
   timeout_seconds: 420
+classification:
+  enabled: true
+  url: "http://llm.internal:8030"
+  model: "minimax-local"
+  timeout_seconds: 90
+  max_input_chars: 16000
+  max_tokens: 500
+  temperature: 0.1
 models:
   gapl:
     enabled: false
@@ -102,6 +110,13 @@ laboratory:
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://ocr.internal:9000"
     assert config.analysis.ocr_timeout_seconds == 420
+    assert config.analysis.classification_enabled is True
+    assert config.analysis.classification_url == "http://llm.internal:8030"
+    assert config.analysis.classification_model == "minimax-local"
+    assert config.analysis.classification_timeout_seconds == 90
+    assert config.analysis.classification_max_input_chars == 16000
+    assert config.analysis.classification_max_tokens == 500
+    assert config.analysis.classification_temperature == 0.1
     assert config.gapl.enabled is False
     assert config.gapl.device == "cpu"
     assert config.gapl.weights_path == (tmp_path / "weights/gapl.pt").resolve()
@@ -132,6 +147,8 @@ models:
         environ={
             "FROD_PORT": "8700",
             "FROD_OCR_URL": "http://environment:8100",
+            "FROD_CLASSIFICATION_URL": "http://llm:8030",
+            "FROD_CLASSIFICATION_MODEL": "minimax-test",
             "FROD_GAPL_ENABLED": "false",
             "FROD_AI_ANALYZE_PDF_IMAGES": "true",
             "FROD_TRUFOR_MAX_PIXELS": "600000",
@@ -141,6 +158,9 @@ models:
     assert config.application.port == 8700
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://environment:8100"
+    assert config.analysis.classification_enabled is True
+    assert config.analysis.classification_url == "http://llm:8030"
+    assert config.analysis.classification_model == "minimax-test"
     assert config.gapl.enabled is False
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.trufor.max_pixels == 600000

@@ -36,6 +36,13 @@ class AnalysisConfig:
     ocr_enabled: bool = False
     ocr_url: str = "http://127.0.0.1:8007"
     ocr_timeout_seconds: int = 300
+    classification_enabled: bool = False
+    classification_url: str = "http://127.0.0.1:8030"
+    classification_model: str = "minimax_m2_1"
+    classification_timeout_seconds: int = 120
+    classification_max_input_chars: int = 20_000
+    classification_max_tokens: int = 700
+    classification_temperature: float = 0.0
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -88,3 +95,17 @@ class AnalysisConfig:
             raise ValueError("ocr_url must not be empty when OCR is enabled")
         if self.ocr_timeout_seconds < 1:
             raise ValueError("ocr_timeout_seconds must be at least 1")
+        if self.classification_enabled and not self.classification_url.strip():
+            raise ValueError("classification_url must not be empty when classification is enabled")
+        if self.classification_enabled and not self.classification_model.strip():
+            raise ValueError(
+                "classification_model must not be empty when classification is enabled"
+            )
+        if self.classification_timeout_seconds < 1:
+            raise ValueError("classification_timeout_seconds must be at least 1")
+        if self.classification_max_input_chars < 100:
+            raise ValueError("classification_max_input_chars must be at least 100")
+        if self.classification_max_tokens < 100:
+            raise ValueError("classification_max_tokens must be at least 100")
+        if not 0 <= self.classification_temperature <= 2:
+            raise ValueError("classification_temperature must be between 0 and 2")

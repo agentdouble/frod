@@ -77,9 +77,23 @@ ocr:
   # Active ou désactive totalement l'appel au serveur OCR local.
   enabled: false
   # URL du serveur GLM-OCR. Aucune donnée n'est envoyée si enabled vaut false.
-  url: "http://127.0.0.1:8007"
+  url: "http://127.0.0.1:8010"
   # Durée maximale d'une requête OCR avant abandon, en secondes.
   timeout_seconds: 300
+
+classification:
+  # Classe le document après OCR. Ce traitement peut être désactivé séparément.
+  enabled: false
+  # API locale compatible OpenAI exposée par vLLM.
+  url: "http://127.0.0.1:8030"
+  # Nom servi par vLLM, à adapter sur le poste qui héberge le modèle.
+  model: "minimax_m2_1"
+  # Limites destinées à éviter qu'un serveur indisponible bloque longtemps l'analyse.
+  timeout_seconds: 120
+  max_input_chars: 20000
+  max_tokens: 700
+  # Une température nulle favorise un classement reproductible.
+  temperature: 0.0
 
 models:
   gapl:

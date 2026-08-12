@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import warnings
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from io import BytesIO
@@ -38,6 +39,7 @@ from fraude_detector.image_provenance import (
     analyze_image_provenance,
     find_ai_metadata_markers,
 )
+from fraude_detector.llm_classifier import classify_document
 from fraude_detector.models import (
     DetectorResult,
     Finding,
@@ -114,10 +116,20 @@ class ImageAnalysisPipeline:
         )
         ocr_report: OcrReport | None = None
         ocr_detector: OcrDetector | None = None
+        classification_result = None
         if self.config.ocr_enabled:
             report_progress(0.18, "Reconnaissance du contenu")
             ocr_detector = OcrDetector(self.config)
             ocr_report = ocr_detector.detect(source, destination)
+            if self.config.classification_enabled and ocr_report.success:
+                report_progress(0.20, "Classification du document")
+                try:
+                    classification_result = classify_document(
+                        ocr_report.markdown,
+                        self.config,
+                    )
+                except Exception as error:
+                    warnings.warn(f"Classification failed: {error}", stacklevel=2)
 
         report_progress(0.22, "Analyse des pixels")
         ai_detector = self._analyze_pixels(
@@ -166,6 +178,7 @@ class ImageAnalysisPipeline:
                 "Les controles de contenu utilisent une fiabilite de representation "
                 "plafonnee et peuvent etre neutralises si l'extraction est insuffisante.",
             ),
+            classification=classification_result,
         )
         (destination / "report.json").write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",

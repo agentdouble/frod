@@ -99,6 +99,21 @@ class RiskAssessment:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentClassification:
+    """Grounded semantic family inferred from OCR text."""
+
+    family: str
+    reliability: float
+    language: str | None
+    country: str | None
+    evidence: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.reliability <= 1:
+            raise ValueError("reliability must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisReport:
     schema_version: str
     analyzed_at: str
@@ -108,6 +123,7 @@ class AnalysisReport:
     findings: tuple[Finding, ...]
     artifacts: dict[str, tuple[str, ...]]
     limitations: tuple[str, ...]
+    classification: DocumentClassification | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -123,6 +139,7 @@ class ImageAnalysisReport:
     findings: tuple[Finding, ...]
     artifacts: dict[str, tuple[str, ...]]
     limitations: tuple[str, ...]
+    classification: DocumentClassification | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

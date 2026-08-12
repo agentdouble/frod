@@ -32,6 +32,7 @@ from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
+    DocumentClassification,
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
@@ -687,6 +688,7 @@ def _render_report(
         _render_risk_indicators(report.findings, report.detectors)
 
     _render_review_summary(scored, diagnostics, laboratory)
+    _render_classification(report.classification)
 
 
 def _render_ocr_demo_report(
@@ -1059,6 +1061,75 @@ def _render_review_summary(
     _render_ocr_field_cards(laboratory)
     _render_attention_observations(laboratory)
     _render_control_matrix(laboratory)
+
+
+def _render_classification(classification: DocumentClassification | None) -> None:
+    """Render the grounded semantic family without exposing model internals."""
+    if not classification:
+        return
+
+    st.markdown("---")
+    st.markdown(
+        '<h2 class="workspace-title">Type de document reconnu</h2>',
+        unsafe_allow_html=True,
+    )
+
+    family_labels = {
+        "facture_recu": "Facture ou reçu",
+        "devis": "Devis",
+        "releve_bancaire": "Relevé bancaire",
+        "justificatif_bancaire": "Justificatif bancaire",
+        "document_medical": "Document médical",
+        "declaration_sinistre": "Déclaration de sinistre",
+        "constat_accident": "Constat d'accident",
+        "contrat_attestation": "Contrat ou attestation",
+        "piece_identite": "Pièce d'identité",
+        "justificatif_revenus_fiscal": "Justificatif de revenus ou fiscal",
+        "justificatif_domicile": "Justificatif de domicile",
+        "correspondance": "Correspondance",
+        "autre": "Type non déterminé",
+    }
+    family_label = family_labels.get(classification.family, "Type non déterminé")
+    if classification.family == "autre":
+        tone = "undetermined"
+    elif classification.reliability >= 0.75:
+        tone = "reliable"
+    elif classification.reliability >= 0.50:
+        tone = "attention"
+    else:
+        tone = "uncertain"
+
+    language = classification.language.upper() if classification.language else "Non déterminée"
+    country = classification.country or "Non déterminé"
+
+    st.markdown(
+        f"""
+        <div class="classification-card {tone}">
+            <div class="classification-content">
+                <div class="classification-category">{_html(family_label)}</div>
+                <div class="classification-metadata">
+                    <span>Langue <strong>{_html(language)}</strong></span>
+                    <span>Pays <strong>{_html(country)}</strong></span>
+                    <span>Fiabilité du classement
+                      <strong>{classification.reliability:.0%}</strong>
+                    </span>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if classification.evidence:
+        st.markdown(
+            '<div class="classification-evidence-title">Indices textuels utilisés</div>',
+            unsafe_allow_html=True,
+        )
+        for excerpt in classification.evidence:
+            st.markdown(
+                f'<blockquote class="classification-evidence">{_html(excerpt)}</blockquote>',
+                unsafe_allow_html=True,
+            )
 
 
 def _group_findings(findings: list[Finding]) -> list[tuple[Finding, int]]:
@@ -2397,6 +2468,58 @@ def _inject_styles() -> None:
             opacity: 1;
             animation: none;
           }
+        }
+        /* Classification card styles - matching finding-card style */
+        .classification-card {
+          padding: 0.85rem 0.9rem;
+          margin-bottom: 0.5rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--blue);
+          border-radius: 6px;
+          background: #181e28;
+        }
+        .classification-card.reliable { border-left-color: var(--blue); background: #181e28; }
+        .classification-card.attention { border-left-color: var(--amber); background: #1d1a17; }
+        .classification-card.uncertain,
+        .classification-card.undetermined { border-left-color: var(--muted); background: #1b1a1e; }
+        .classification-content {
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+        }
+        .classification-category {
+          color: var(--ink);
+          font-size: 1rem;
+          font-weight: 800;
+        }
+        .classification-metadata {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 0.45rem 1rem;
+          color: var(--muted);
+          font-size: 0.72rem;
+        }
+        .classification-metadata strong {
+          color: var(--ink);
+          margin-left: 0.2rem;
+        }
+        .classification-evidence-title {
+          color: var(--muted);
+          font-size: 0.68rem;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          margin: 0.5rem 0 0.3rem;
+        }
+        .classification-evidence {
+          color: #d8d5cf;
+          font-size: 0.78rem;
+          line-height: 1.4;
+          margin: 0.25rem 0;
+          padding: 0.35rem 0.55rem;
+          border-left: 2px solid var(--blue);
+          background: #17171b;
         }
         </style>
         """,

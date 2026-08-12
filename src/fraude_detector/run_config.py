@@ -103,6 +103,7 @@ def load_run_config(
             "application",
             "analysis",
             "ocr",
+            "classification",
             "models",
             "laboratory",
         },
@@ -222,6 +223,7 @@ def _load_analysis(
     ela = _section(section, "ela", source, prefix="analysis")
     ai_images = _section(section, "ai_images", source, prefix="analysis")
     ocr = _section(config, "ocr", source)
+    classification = _section(config, "classification", source)
 
     _reject_unknown(rendering, {"dpi"}, source, "analysis.rendering")
     _reject_unknown(
@@ -275,6 +277,20 @@ def _load_analysis(
         "analysis.ai_images",
     )
     _reject_unknown(ocr, {"enabled", "url", "timeout_seconds"}, source, "ocr")
+    _reject_unknown(
+        classification,
+        {
+            "enabled",
+            "url",
+            "model",
+            "timeout_seconds",
+            "max_input_chars",
+            "max_tokens",
+            "temperature",
+        },
+        source,
+        "classification",
+    )
 
     ocr_url_override = _env_text(environ, "FROD_OCR_URL")
     ocr_enabled_override = _env_bool(environ, "FROD_OCR_ENABLED")
@@ -297,6 +313,53 @@ def _load_analysis(
             source,
             "ocr.timeout_seconds",
         )
+    )
+    classification_url_override = _env_text(environ, "FROD_CLASSIFICATION_URL")
+    classification_enabled_override = _env_bool(environ, "FROD_CLASSIFICATION_ENABLED")
+    classification_enabled = (
+        classification_enabled_override
+        if classification_enabled_override is not None
+        else bool(classification_url_override)
+        or _boolean(
+            classification.get("enabled", False),
+            source,
+            "classification.enabled",
+        )
+    )
+    classification_url = classification_url_override or _text(
+        classification.get("url", "http://127.0.0.1:8030"),
+        source,
+        "classification.url",
+    )
+    classification_model = _env_text(environ, "FROD_CLASSIFICATION_MODEL") or _text(
+        classification.get("model", "minimax_m2_1"),
+        source,
+        "classification.model",
+    )
+    classification_timeout_override = _env_int(environ, "FROD_CLASSIFICATION_TIMEOUT_SECONDS")
+    classification_timeout = (
+        classification_timeout_override
+        if classification_timeout_override is not None
+        else _integer(
+            classification.get("timeout_seconds", 120),
+            source,
+            "classification.timeout_seconds",
+        )
+    )
+    classification_max_input_chars = _integer(
+        classification.get("max_input_chars", 20_000),
+        source,
+        "classification.max_input_chars",
+    )
+    classification_max_tokens = _integer(
+        classification.get("max_tokens", 700),
+        source,
+        "classification.max_tokens",
+    )
+    classification_temperature = _number(
+        classification.get("temperature", 0.0),
+        source,
+        "classification.temperature",
     )
     ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
@@ -416,6 +479,13 @@ def _load_analysis(
             ocr_enabled=ocr_enabled,
             ocr_url=ocr_url,
             ocr_timeout_seconds=ocr_timeout,
+            classification_enabled=classification_enabled,
+            classification_url=classification_url,
+            classification_model=classification_model,
+            classification_timeout_seconds=classification_timeout,
+            classification_max_input_chars=classification_max_input_chars,
+            classification_max_tokens=classification_max_tokens,
+            classification_temperature=classification_temperature,
         )
     except ValueError as error:
         raise RunConfigError(f"Configuration d'analyse invalide: {error}") from error

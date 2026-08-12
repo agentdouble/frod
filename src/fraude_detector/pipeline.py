@@ -27,6 +27,7 @@ from fraude_detector.detectors import (
 )
 from fraude_detector.detectors.base import AnalysisContext, Detector
 from fraude_detector.errors import AnalysisError
+from fraude_detector.llm_classifier import classify_document
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
@@ -106,6 +107,7 @@ class AnalysisPipeline:
             report_progress(0.20, "Pages preparees")
             ocr_report: OcrReport | None = None
             ocr_detector: OcrDetector | None = None
+            classification_result = None
             if self.config.ocr_enabled:
                 report_progress(0.21, "Reconnaissance du contenu")
                 ocr_detector = OcrDetector(self.config)
@@ -114,6 +116,15 @@ class AnalysisPipeline:
                     destination,
                     rendered_pages=rendered_pages,
                 )
+                if self.config.classification_enabled and ocr_report.success:
+                    report_progress(0.22, "Classification du document")
+                    try:
+                        classification_result = classify_document(
+                            ocr_report.markdown,
+                            self.config,
+                        )
+                    except Exception as error:
+                        warnings.warn(f"Classification failed: {error}", stacklevel=2)
 
             detector_results_list: list[DetectorResult] = []
             detector_count = max(1, len(self.detectors))
@@ -201,6 +212,7 @@ class AnalysisPipeline:
                     "natif; certains pixels analyses peuvent differer du rendu visible.",
                     "L'absence de signal ne prouve pas l'authenticite du document.",
                 ),
+                classification=classification_result,
             )
             self._write_report(report, destination / "report.json")
             report_progress(1.0, "Analyse terminee")

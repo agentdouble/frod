@@ -229,6 +229,7 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
     assert "st.expander" not in source
+    assert "raw_response" not in source
     report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
     assert 'st.columns([0.56, 0.44], gap="large")' in report_view
     assert (

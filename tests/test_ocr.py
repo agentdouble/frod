@@ -10,6 +10,7 @@ from PIL import Image
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.detectors.ocr import OcrDetector
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
+from fraude_detector.models import DocumentClassification
 from fraude_detector.pipeline import AnalysisPipeline
 
 
@@ -127,6 +128,53 @@ def test_pdf_pipeline_exposes_clean_ocr_content_without_scoring_it(
     assert report.artifacts["ocr_markdown"] == ("ocr/document.md",)
     assert report.artifacts["ocr_layout"] == ("ocr/layout/page-001-layout.png",)
     assert report.assessment.score >= 0
+
+
+def test_pdf_pipeline_exposes_classification_outside_artifacts(
+    monkeypatch: Any,
+    vector_pdf: Path,
+    tmp_path: Path,
+) -> None:
+    markdown = "Relevé de compte\nSolde précédent\nOpérations du mois"
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {
+                "json_result": [[{"index": 0, "label": "text", "content": markdown}]],
+                "markdown_result": markdown,
+            }
+        ),
+    )
+    classifier_calls: list[tuple[str, AnalysisConfig]] = []
+
+    def fake_classify(text: str, config: AnalysisConfig) -> DocumentClassification:
+        classifier_calls.append((text, config))
+        return DocumentClassification(
+            family="releve_bancaire",
+            reliability=0.82,
+            language="fr",
+            country=None,
+            evidence=("Relevé de compte", "Opérations du mois"),
+        )
+
+    monkeypatch.setattr("fraude_detector.pipeline.classify_document", fake_classify)
+    config = AnalysisConfig(
+        render_dpi=72,
+        max_pages=1,
+        ocr_enabled=True,
+        classification_enabled=True,
+    )
+    output = tmp_path / "classification-analysis"
+    report = AnalysisPipeline(config=config).analyze(vector_pdf, output)
+
+    assert classifier_calls == [(markdown, config)]
+    assert report.classification is not None
+    assert report.classification.family == "releve_bancaire"
+    assert "classification" not in report.artifacts
+    assert all(isinstance(paths, tuple) for paths in report.artifacts.values())
+    serialized = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert serialized["classification"]["reliability"] == 0.82
 
 
 def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(
