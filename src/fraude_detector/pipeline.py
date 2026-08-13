@@ -28,6 +28,7 @@ from fraude_detector.detectors import (
 from fraude_detector.detectors.base import AnalysisContext, Detector
 from fraude_detector.errors import AnalysisError
 from fraude_detector.llm_classifier import classify_document
+from fraude_detector.llm_extractor import extract_document
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
@@ -108,6 +109,7 @@ class AnalysisPipeline:
             ocr_report: OcrReport | None = None
             ocr_detector: OcrDetector | None = None
             classification_result = None
+            extraction_result = None
             if self.config.ocr_enabled:
                 report_progress(0.21, "Reconnaissance du contenu")
                 ocr_detector = OcrDetector(self.config)
@@ -125,6 +127,16 @@ class AnalysisPipeline:
                         )
                     except Exception as error:
                         warnings.warn(f"Classification failed: {error}", stacklevel=2)
+                if self.config.extraction_enabled and ocr_report.success:
+                    report_progress(0.23, "Extraction des informations")
+                    try:
+                        extraction_result = extract_document(
+                            ocr_report.json_result,
+                            classification_result,
+                            self.config,
+                        )
+                    except Exception as error:
+                        warnings.warn(f"Extraction failed: {error}", stacklevel=2)
 
             detector_results_list: list[DetectorResult] = []
             detector_count = max(1, len(self.detectors))
@@ -213,6 +225,7 @@ class AnalysisPipeline:
                     "L'absence de signal ne prouve pas l'authenticite du document.",
                 ),
                 classification=classification_result,
+                extraction=extraction_result,
             )
             self._write_report(report, destination / "report.json")
             report_progress(1.0, "Analyse terminee")

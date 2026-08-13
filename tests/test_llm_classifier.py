@@ -28,7 +28,7 @@ def _chat_response(content: str, status_code: int = 200) -> _Response:
     )
 
 
-def test_classification_is_grounded_and_reliability_is_capped(monkeypatch: Any) -> None:
+def test_classification_accepts_paraphrased_reasons(monkeypatch: Any) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_post(url: str, **kwargs: Any) -> _Response:
@@ -40,8 +40,11 @@ def test_classification_is_grounded_and_reliability_is_capped(monkeypatch: Any) 
               "ambigu": false,
               "langue": "fr",
               "pays": "LU",
-              "indices_categorie": ["FACTURE N° 2026-42", "Total TTC 125,00 EUR"],
-              "indice_pays": "L-1234 Luxembourg"
+              "indices_categorie": [
+                "Le document porte un numéro de facture",
+                "Un total TTC est indiqué"
+              ],
+              "indice_pays": "L'adresse se situe au Luxembourg"
             }"""
         )
 
@@ -51,16 +54,20 @@ def test_classification_is_grounded_and_reliability_is_capped(monkeypatch: Any) 
     )
 
     assert result.family == "facture_recu"
-    assert result.reliability == 0.82
+    assert result.reliability == 0.97
     assert result.language == "fr"
     assert result.country == "LU"
-    assert result.evidence == ("FACTURE N° 2026-42", "Total TTC 125,00 EUR")
+    assert result.evidence == (
+        "Le document porte un numéro de facture",
+        "Un total TTC est indiqué",
+    )
     assert calls[0]["url"] == "http://127.0.0.1:8030/v1/chat/completions"
     assert calls[0]["json"]["messages"][0]["role"] == "system"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
+    assert '"confiance_modele": "confiance"' in calls[0]["json"]["messages"][1]["content"]
 
 
-def test_ungrounded_family_and_country_are_discarded(monkeypatch: Any) -> None:
+def test_classification_does_not_require_verbatim_reasons(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         requests,
         "post",
@@ -81,11 +88,11 @@ def test_ungrounded_family_and_country_are_discarded(monkeypatch: Any) -> None:
         "Synthèse mensuelle\nOpérations du compte\nSolde au 31 janvier"
     )
 
-    assert result.family == "autre"
-    assert result.reliability == 0.0
-    assert result.country is None
+    assert result.family == "releve_bancaire"
+    assert result.reliability == 0.99
+    assert result.country == "FR"
     assert result.language == "fr"
-    assert result.evidence == ()
+    assert result.evidence == ("Relevé bancaire complet",)
 
 
 def test_ambiguous_classification_never_looks_reliable(monkeypatch: Any) -> None:

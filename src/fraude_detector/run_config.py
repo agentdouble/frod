@@ -104,6 +104,7 @@ def load_run_config(
             "analysis",
             "ocr",
             "classification",
+            "extraction",
             "models",
             "laboratory",
         },
@@ -224,6 +225,7 @@ def _load_analysis(
     ai_images = _section(section, "ai_images", source, prefix="analysis")
     ocr = _section(config, "ocr", source)
     classification = _section(config, "classification", source)
+    extraction = _section(config, "extraction", source)
 
     _reject_unknown(rendering, {"dpi"}, source, "analysis.rendering")
     _reject_unknown(
@@ -290,6 +292,21 @@ def _load_analysis(
         },
         source,
         "classification",
+    )
+    _reject_unknown(
+        extraction,
+        {
+            "enabled",
+            "url",
+            "model",
+            "timeout_seconds",
+            "max_input_chars",
+            "max_tokens",
+            "temperature",
+            "coverage_retry",
+        },
+        source,
+        "extraction",
     )
 
     ocr_url_override = _env_text(environ, "FROD_OCR_URL")
@@ -360,6 +377,62 @@ def _load_analysis(
         classification.get("temperature", 0.0),
         source,
         "classification.temperature",
+    )
+    extraction_url_override = _env_text(environ, "FROD_EXTRACTION_URL")
+    extraction_enabled_override = _env_bool(environ, "FROD_EXTRACTION_ENABLED")
+    extraction_enabled = (
+        extraction_enabled_override
+        if extraction_enabled_override is not None
+        else bool(extraction_url_override)
+        or _boolean(extraction.get("enabled", False), source, "extraction.enabled")
+    )
+    extraction_url = extraction_url_override or _text(
+        extraction.get("url", "http://127.0.0.1:8030"),
+        source,
+        "extraction.url",
+    )
+    extraction_model = _env_text(environ, "FROD_EXTRACTION_MODEL") or _text(
+        extraction.get("model", "minimax_m2_1"),
+        source,
+        "extraction.model",
+    )
+    extraction_timeout_override = _env_int(environ, "FROD_EXTRACTION_TIMEOUT_SECONDS")
+    extraction_timeout = (
+        extraction_timeout_override
+        if extraction_timeout_override is not None
+        else _integer(
+            extraction.get("timeout_seconds", 180),
+            source,
+            "extraction.timeout_seconds",
+        )
+    )
+    extraction_max_input_chars = _integer(
+        extraction.get("max_input_chars", 16_000),
+        source,
+        "extraction.max_input_chars",
+    )
+    extraction_max_tokens = _integer(
+        extraction.get("max_tokens", 6_000),
+        source,
+        "extraction.max_tokens",
+    )
+    extraction_temperature = _number(
+        extraction.get("temperature", 0.0),
+        source,
+        "extraction.temperature",
+    )
+    extraction_coverage_retry_override = _env_bool(
+        environ,
+        "FROD_EXTRACTION_COVERAGE_RETRY",
+    )
+    extraction_coverage_retry = (
+        extraction_coverage_retry_override
+        if extraction_coverage_retry_override is not None
+        else _boolean(
+            extraction.get("coverage_retry", True),
+            source,
+            "extraction.coverage_retry",
+        )
     )
     ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
@@ -486,6 +559,14 @@ def _load_analysis(
             classification_max_input_chars=classification_max_input_chars,
             classification_max_tokens=classification_max_tokens,
             classification_temperature=classification_temperature,
+            extraction_enabled=extraction_enabled,
+            extraction_url=extraction_url,
+            extraction_model=extraction_model,
+            extraction_timeout_seconds=extraction_timeout,
+            extraction_max_input_chars=extraction_max_input_chars,
+            extraction_max_tokens=extraction_max_tokens,
+            extraction_temperature=extraction_temperature,
+            extraction_coverage_retry=extraction_coverage_retry,
         )
     except ValueError as error:
         raise RunConfigError(f"Configuration d'analyse invalide: {error}") from error

@@ -95,6 +95,20 @@ classification:
   # Une température nulle favorise un classement reproductible.
   temperature: 0.0
 
+extraction:
+  # Extraction sémantique expérimentale, sans effet sur le score de fraude.
+  enabled: false
+  # API locale compatible OpenAI; elle peut partager le serveur de classification.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 180
+  # Les régions OCR sont regroupées sans couper les champs courts ni les lignes de tableau.
+  max_input_chars: 16000
+  max_tokens: 6000
+  temperature: 0.0
+  # Une seconde passe limitée tente de comptabiliser uniquement les régions oubliées.
+  coverage_retry: true
+
 models:
   gapl:
     # Détection locale de caractéristiques compatibles avec une image générée par IA.

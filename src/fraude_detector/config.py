@@ -43,6 +43,14 @@ class AnalysisConfig:
     classification_max_input_chars: int = 20_000
     classification_max_tokens: int = 700
     classification_temperature: float = 0.0
+    extraction_enabled: bool = False
+    extraction_url: str = "http://127.0.0.1:8030"
+    extraction_model: str = "minimax_m2_1"
+    extraction_timeout_seconds: int = 180
+    extraction_max_input_chars: int = 16_000
+    extraction_max_tokens: int = 6_000
+    extraction_temperature: float = 0.0
+    extraction_coverage_retry: bool = True
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -109,3 +117,15 @@ class AnalysisConfig:
             raise ValueError("classification_max_tokens must be at least 100")
         if not 0 <= self.classification_temperature <= 2:
             raise ValueError("classification_temperature must be between 0 and 2")
+        if self.extraction_enabled and not self.extraction_url.strip():
+            raise ValueError("extraction_url must not be empty when extraction is enabled")
+        if self.extraction_enabled and not self.extraction_model.strip():
+            raise ValueError("extraction_model must not be empty when extraction is enabled")
+        if self.extraction_timeout_seconds < 1:
+            raise ValueError("extraction_timeout_seconds must be at least 1")
+        if self.extraction_max_input_chars < 500:
+            raise ValueError("extraction_max_input_chars must be at least 500")
+        if self.extraction_max_tokens < 500:
+            raise ValueError("extraction_max_tokens must be at least 500")
+        if not 0 <= self.extraction_temperature <= 2:
+            raise ValueError("extraction_temperature must be between 0 and 2")

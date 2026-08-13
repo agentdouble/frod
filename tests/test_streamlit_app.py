@@ -12,7 +12,7 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    assert app.segmented_control[0].options == ["Analyse", "Glossaire"]
+    assert app.segmented_control[0].options == ["Analyse", "Laboratoire", "Glossaire"]
     assert app.segmented_control[0].value == "Analyse"
     assert len(app.file_uploader) == 1
     assert [selectbox.label for selectbox in app.selectbox] == ["Document de démonstration"]
@@ -199,6 +199,28 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     app.segmented_control[0].set_value("Glossaire").run(timeout=30)
     glossary = _component_markup(app, '<section class="indicator-glossary"')
     assert "Cohérence des dates, montants et identifiants reconnus." in glossary
+
+
+def test_extraction_laboratory_has_a_business_readable_empty_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
+    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
+    monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
+
+    app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
+    app.selectbox[0].select("OCR - Relevé bancaire à anomalies").run(timeout=30)
+    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+    markdown = "\n".join(element.value for element in app.markdown)
+
+    assert not app.exception
+    assert app.segmented_control[0].value == "Laboratoire"
+    assert "Extraction structurée expérimentale" in markdown
+    assert "Aucune extraction disponible" in markdown
+    assert "Texte reconnu" in markdown
+    assert "TRANSACTION SUMMARY" in markdown
+    assert not app.expander
 
 
 def test_local_original_ocr_demo_is_discovered_when_present(

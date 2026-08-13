@@ -16,6 +16,7 @@ LaboratoryState = Literal[
     "error",
 ]
 EvidenceStrength = Literal["strong", "moderate", "weak", "informational"]
+NormalizationStatus = Literal["normalized", "ambiguous", "raw_only"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,95 @@ class DocumentClassification:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtractedFact:
+    """One comparable value proposed from the OCR document."""
+
+    field_code: str
+    role: str
+    raw_label: str | None
+    raw_value: str
+    normalized_value: str | None
+    normalization_status: NormalizationStatus
+    confidence: float
+    page: int | None
+    region_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class AdditionalExtractionField:
+    """Useful document value not yet represented by the canonical vocabulary."""
+
+    raw_label: str
+    raw_value: str
+    semantic_hint: str | None
+    confidence: float
+    page: int | None
+    region_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedTable:
+    """One table preserved with its original headers and cells."""
+
+    title: str | None
+    semantic_type: str
+    headers: tuple[str, ...]
+    column_roles: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+    confidence: float
+    pages: tuple[int, ...] = ()
+    region_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionCoverage:
+    """How much of the OCR region inventory was accounted for."""
+
+    total_regions: int
+    accounted_regions: int
+    mapped_regions: int
+    table_regions: int
+    boilerplate_regions: int
+    unstructured_regions: int
+    unreadable_regions: int
+    uncovered_region_ids: tuple[str, ...] = ()
+
+    @property
+    def ratio(self) -> float:
+        if self.total_regions == 0:
+            return 0.0
+        return self.accounted_regions / self.total_regions
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtraction:
+    """Experimental structured inventory kept outside fraud scoring."""
+
+    schema_version: str
+    family: str
+    language: str | None
+    country: str | None
+    facts: tuple[ExtractedFact, ...]
+    additional_fields: tuple[AdditionalExtractionField, ...]
+    tables: tuple[ExtractedTable, ...]
+    coverage: ExtractionCoverage
+    passes: int
+    limitations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisReport:
     schema_version: str
     analyzed_at: str
@@ -124,6 +214,7 @@ class AnalysisReport:
     artifacts: dict[str, tuple[str, ...]]
     limitations: tuple[str, ...]
     classification: DocumentClassification | None = None
+    extraction: DocumentExtraction | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -140,6 +231,7 @@ class ImageAnalysisReport:
     artifacts: dict[str, tuple[str, ...]]
     limitations: tuple[str, ...]
     classification: DocumentClassification | None = None
+    extraction: DocumentExtraction | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

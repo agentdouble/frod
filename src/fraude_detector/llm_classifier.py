@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import unicodedata
 from collections.abc import Mapping
 from typing import Any
 
@@ -87,7 +86,7 @@ class LLMClassifier:
         prompt_text = _truncate_document(text, self.max_input_chars)
         response = self._call_llm(self._build_user_prompt(prompt_text))
         payload = _parse_json_object(response)
-        return _ground_result(payload, text)
+        return _classification_result(payload)
 
     def _build_user_prompt(self, text: str) -> str:
         families = "\n".join(
@@ -97,14 +96,14 @@ class LLMClassifier:
 {families}
 
 Choisis exactement une famille. Utilise "autre" dès que plusieurs familles restent plausibles.
-Pour justifier une famille autre que "autre", recopie de 1 à 3 extraits courts présents mot pour mot
-dans le texte OCR. N'utilise ni le nom du fichier ni une information extérieure.
+Pour justifier ton choix, donne de 1 à 3 explications courtes fondées uniquement sur le texte OCR.
+Tu peux reformuler le contenu du document. N'utilise ni le nom du fichier ni une information
+extérieure.
 
 Retourne la langue principale sous forme de code ISO 639 en minuscules, ou null.
 Retourne le pays sous forme de code ISO 3166-1 alpha-2 en majuscules, ou null. Un pays n'est permis
 que si une adresse, un identifiant, un organisme ou une mention explicite du texte le démontre.
-La langue et la devise seules ne démontrent jamais le pays. Cite séparément l'extrait qui le
-démontre.
+La langue et la devise seules ne démontrent jamais le pays. Justifie séparément le pays retenu.
 
 La confiance_modele exprime seulement ton degré d'hésitation entre les familles. Mets ambigu=true
 si une autre famille reste raisonnablement possible. Ne présente jamais cette confiance comme une
@@ -113,14 +112,15 @@ probabilité de fraude.
 Format JSON exact:
 {{
   "categorie": "une_famille_autorisee",
-  "confiance_modele": 0.0,
+  "confiance_modele": "confiance",
   "ambigu": false,
   "langue": "fr",
   "pays": "LU",
-  "indices_categorie": ["extrait exact du document"],
-  "indice_pays": "extrait exact justifiant le pays"
+  "indices_categorie": ["justification courte fondée sur le document"],
+  "indice_pays": "justification du pays fondée sur le document"
 }}
-Utilise null pour une langue, un pays ou un indice pays indéterminé.
+Dans la réponse réelle, remplace "confiance" par un nombre entre 0 et 1. Utilise null pour une
+langue, un pays ou un indice pays indéterminé.
 
 <document_ocr>
 {text}
@@ -222,32 +222,24 @@ def _parse_json_object(response: str) -> Mapping[str, Any]:
     return payload
 
 
-def _ground_result(payload: Mapping[str, Any], source_text: str) -> DocumentClassification:
+def _classification_result(payload: Mapping[str, Any]) -> DocumentClassification:
     family = str(payload.get("categorie", "autre"))
     if family not in DOCUMENT_FAMILIES:
         family = "autre"
 
     model_confidence = _bounded_float(payload.get("confiance_modele"))
     ambiguous = payload.get("ambigu") is True
-    evidence = _grounded_quotes(payload.get("indices_categorie"), source_text)
-
-    if family != "autre" and not evidence:
-        logger.warning("Classification discarded because no cited OCR excerpt was found")
-        family = "autre"
-        model_confidence = 0.0
+    evidence = _classification_reasons(payload.get("indices_categorie"))
 
     if family == "autre":
         reliability = min(model_confidence, 0.50)
-        evidence = ()
     else:
-        evidence_ceiling = {1: 0.65, 2: 0.82, 3: 0.90}[min(len(evidence), 3)]
-        reliability = min(model_confidence, evidence_ceiling)
+        reliability = model_confidence
         if ambiguous:
             reliability = min(reliability, 0.49)
 
     language = _language_code(payload.get("langue"))
-    country_evidence = _grounded_quote(payload.get("indice_pays"), source_text)
-    country = _country_code(payload.get("pays")) if country_evidence else None
+    country = _country_code(payload.get("pays"))
 
     return DocumentClassification(
         family=family,
@@ -258,32 +250,17 @@ def _ground_result(payload: Mapping[str, Any], source_text: str) -> DocumentClas
     )
 
 
-def _grounded_quotes(value: object, source_text: str) -> tuple[str, ...]:
+def _classification_reasons(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
-    grounded: list[str] = []
+    reasons: list[str] = []
     for candidate in value[:3]:
-        quote = _grounded_quote(candidate, source_text)
-        if quote and quote not in grounded:
-            grounded.append(quote)
-    return tuple(grounded)
-
-
-def _grounded_quote(value: object, source_text: str) -> str | None:
-    if not isinstance(value, str):
-        return None
-    quote = value.strip()[:240]
-    normalized_quote = _normalize_for_matching(quote)
-    if len(normalized_quote) < 4:
-        return None
-    if normalized_quote not in _normalize_for_matching(source_text):
-        return None
-    return quote
-
-
-def _normalize_for_matching(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).casefold()
-    return " ".join(normalized.split())
+        if not isinstance(candidate, str):
+            continue
+        reason = " ".join(candidate.split())[:240]
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    return tuple(reasons)
 
 
 def _language_code(value: object) -> str | None:

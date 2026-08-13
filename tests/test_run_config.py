@@ -77,6 +77,15 @@ classification:
   max_input_chars: 16000
   max_tokens: 500
   temperature: 0.1
+extraction:
+  enabled: true
+  url: "http://extract.internal:8030"
+  model: "minimax-extract"
+  timeout_seconds: 240
+  max_input_chars: 18000
+  max_tokens: 7000
+  temperature: 0.05
+  coverage_retry: false
 models:
   gapl:
     enabled: false
@@ -117,6 +126,14 @@ laboratory:
     assert config.analysis.classification_max_input_chars == 16000
     assert config.analysis.classification_max_tokens == 500
     assert config.analysis.classification_temperature == 0.1
+    assert config.analysis.extraction_enabled is True
+    assert config.analysis.extraction_url == "http://extract.internal:8030"
+    assert config.analysis.extraction_model == "minimax-extract"
+    assert config.analysis.extraction_timeout_seconds == 240
+    assert config.analysis.extraction_max_input_chars == 18000
+    assert config.analysis.extraction_max_tokens == 7000
+    assert config.analysis.extraction_temperature == 0.05
+    assert config.analysis.extraction_coverage_retry is False
     assert config.gapl.enabled is False
     assert config.gapl.device == "cpu"
     assert config.gapl.weights_path == (tmp_path / "weights/gapl.pt").resolve()
@@ -149,6 +166,9 @@ models:
             "FROD_OCR_URL": "http://environment:8100",
             "FROD_CLASSIFICATION_URL": "http://llm:8030",
             "FROD_CLASSIFICATION_MODEL": "minimax-test",
+            "FROD_EXTRACTION_URL": "http://extract:8030",
+            "FROD_EXTRACTION_MODEL": "minimax-extract-test",
+            "FROD_EXTRACTION_COVERAGE_RETRY": "false",
             "FROD_GAPL_ENABLED": "false",
             "FROD_AI_ANALYZE_PDF_IMAGES": "true",
             "FROD_TRUFOR_MAX_PIXELS": "600000",
@@ -161,6 +181,10 @@ models:
     assert config.analysis.classification_enabled is True
     assert config.analysis.classification_url == "http://llm:8030"
     assert config.analysis.classification_model == "minimax-test"
+    assert config.analysis.extraction_enabled is True
+    assert config.analysis.extraction_url == "http://extract:8030"
+    assert config.analysis.extraction_model == "minimax-extract-test"
+    assert config.analysis.extraction_coverage_retry is False
     assert config.gapl.enabled is False
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.trufor.max_pixels == 600000

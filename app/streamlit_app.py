@@ -29,10 +29,13 @@ from fraude_detector.laboratory import (
     analyze_pdf_laboratory,
 )
 from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
+from fraude_detector.llm_classifier import classify_document
+from fraude_detector.llm_extractor import extract_document
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
     DocumentClassification,
+    DocumentExtraction,
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
@@ -293,7 +296,7 @@ def _render_app_header() -> tuple[str, Any]:
             with st.container(key="header_navigation", width="content"):
                 selected = st.segmented_control(
                     "Navigation principale",
-                    ("Analyse", "Glossaire"),
+                    ("Analyse", "Laboratoire", "Glossaire"),
                     default="Analyse",
                     key="workspace_view",
                     label_visibility="collapsed",
@@ -442,6 +445,8 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         markdown = cached["ocr_markdown"]
         laboratory = cached["laboratory"]
         ocr_detector = cached["ocr_detector"]
+        classification = cached.get("classification")
+        extraction = cached.get("extraction")
     else:
         try:
             payload = json.loads(json_bytes)
@@ -460,12 +465,26 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
                 json_result=payload,
             )
         )
+        classification = None
+        extraction = None
+        if PROJECT_CONFIG.analysis.classification_enabled:
+            try:
+                classification = classify_document(markdown, PROJECT_CONFIG.analysis)
+            except Exception:
+                classification = None
+        if PROJECT_CONFIG.analysis.extraction_enabled:
+            try:
+                extraction = extract_document(payload, classification, PROJECT_CONFIG.analysis)
+            except Exception:
+                extraction = None
         st.session_state["analysis"] = {
             "key": current_key,
             "ocr_payload": payload,
             "ocr_markdown": markdown,
             "laboratory": laboratory,
             "ocr_detector": ocr_detector,
+            "classification": classification,
+            "extraction": extraction,
         }
 
     entering = _render_pdf_loading_if_pending(
@@ -479,6 +498,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             markdown=markdown,
             laboratory=laboratory,
             ocr_detector=ocr_detector,
+            extraction=extraction,
             workspace_view=workspace_view,
         )
 
@@ -672,6 +692,12 @@ def _render_report(
     if workspace_view == "Glossaire":
         _render_indicator_glossary()
         return
+    if workspace_view == "Laboratoire":
+        _render_extraction_laboratory(
+            report.extraction,
+            recognized_text=_read_ocr_markdown(report, output_dir),
+        )
+        return
 
     document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
     with document_column:
@@ -697,6 +723,7 @@ def _render_ocr_demo_report(
     markdown: str,
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
+    extraction: DocumentExtraction | None,
     workspace_view: str,
 ) -> None:
     finding = ocr_detector.findings[0] if ocr_detector.findings else None
@@ -705,6 +732,9 @@ def _render_ocr_demo_report(
     color = LEVEL_STYLE[tone]["color"]
     if workspace_view == "Glossaire":
         _render_indicator_glossary(categories=("content_consistency",))
+        return
+    if workspace_view == "Laboratoire":
+        _render_extraction_laboratory(extraction, recognized_text=markdown)
         return
 
     document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
@@ -745,6 +775,242 @@ def _read_ocr_layout_images(
         output_dir,
         report.artifacts.get("ocr_layout", ()),
     )
+
+
+def _read_ocr_markdown(
+    report: AnalysisReport | ImageAnalysisReport,
+    output_dir: Path,
+) -> str:
+    paths = _existing_artifacts(output_dir, report.artifacts.get("ocr_markdown", ()))
+    if not paths:
+        return ""
+    try:
+        return paths[0].read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+EXTRACTION_FIELD_LABELS = {
+    "person_name": "Personne",
+    "organization_name": "Organisation",
+    "address": "Adresse",
+    "phone_number": "Téléphone",
+    "email_address": "Adresse e-mail",
+    "document_number": "Numéro de document",
+    "invoice_number": "Numéro de facture",
+    "contract_number": "Numéro de contrat",
+    "claim_number": "Numéro de sinistre",
+    "account_number": "Numéro de compte",
+    "tax_identifier": "Identifiant fiscal",
+    "professional_identifier": "Identifiant professionnel",
+    "registration_identifier": "Numéro d'enregistrement",
+    "other_identifier": "Autre identifiant",
+    "iban": "IBAN",
+    "bic": "BIC",
+    "payment_card_number": "Numéro de carte",
+    "date": "Date",
+    "date_period": "Période",
+    "monetary_amount": "Montant",
+    "quantity": "Quantité",
+    "percentage": "Pourcentage",
+    "service_description": "Service",
+    "service_code": "Code de service",
+    "product_description": "Produit",
+    "product_code": "Code produit",
+    "transaction_description": "Transaction",
+}
+
+EXTRACTION_ROLE_LABELS = {
+    "issuer": "Émetteur",
+    "recipient": "Destinataire",
+    "customer": "Client",
+    "patient": "Patient",
+    "practitioner": "Professionnel",
+    "provider": "Prestataire",
+    "beneficiary": "Bénéficiaire",
+    "payer": "Payeur",
+    "account_holder": "Titulaire",
+    "bank": "Banque",
+    "insurer": "Assureur",
+    "employer": "Employeur",
+    "supplier": "Fournisseur",
+    "document": "Document",
+    "invoice": "Facture",
+    "contract": "Contrat",
+    "claim": "Sinistre",
+    "transaction": "Transaction",
+    "line_item": "Ligne",
+    "subtotal": "Sous-total",
+    "tax": "Taxe",
+    "total": "Total",
+    "opening_balance": "Solde initial",
+    "closing_balance": "Solde final",
+    "debit": "Débit",
+    "credit": "Crédit",
+    "unit_price": "Prix unitaire",
+    "issue": "Émission",
+    "due": "Échéance",
+    "service": "Prestation",
+    "start": "Début",
+    "end": "Fin",
+    "birth": "Naissance",
+    "expiry": "Expiration",
+    "other": "Autre",
+}
+
+EXTRACTION_COLUMN_ROLE_LABELS = {
+    "transaction_date": "Date de transaction",
+    "value_date": "Date de valeur",
+    "description": "Libellé",
+    "debit_amount": "Débit",
+    "credit_amount": "Crédit",
+    "amount": "Montant",
+    "currency": "Devise",
+    "balance": "Solde",
+    "quantity": "Quantité",
+    "unit_price": "Prix unitaire",
+    "tax_rate": "Taux de taxe",
+    "tax_amount": "Montant de taxe",
+    "line_total": "Total de ligne",
+    "service_code": "Code de service",
+    "product_code": "Code produit",
+    "other": "Autre",
+}
+
+
+def _render_extraction_laboratory(
+    extraction: DocumentExtraction | None,
+    *,
+    recognized_text: str = "",
+) -> None:
+    st.markdown(
+        '<h2 class="workspace-title">Extraction structurée expérimentale</h2>',
+        unsafe_allow_html=True,
+    )
+    if extraction is None:
+        st.markdown(
+            """
+            <div class="extraction-empty">
+              <strong>Aucune extraction disponible</strong>
+              <span>Activer l'OCR et l'extraction locale, puis relancer l'analyse.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if recognized_text:
+            _render_recognized_text(recognized_text)
+        return
+
+    coverage = extraction.coverage
+    coverage_tone = "clear" if coverage.ratio >= 0.95 else "attention"
+    facts_count = len(extraction.facts)
+    extra_count = len(extraction.additional_fields)
+    table_count = len(extraction.tables)
+    st.markdown(
+        f"""
+        <section class="extraction-overview">
+          <article class="extraction-coverage {coverage_tone}">
+            <div><strong>{coverage.ratio:.0%}</strong><span>Couverture des zones OCR</span></div>
+            <i><b style="width:{coverage.ratio:.1%}"></b></i>
+            <small>{coverage.accounted_regions} zone(s) comptabilisée(s)
+              sur {coverage.total_regions}</small>
+          </article>
+          <article><strong>{facts_count}</strong><span>Faits comparables</span></article>
+          <article><strong>{extra_count}</strong><span>Informations additionnelles</span></article>
+          <article><strong>{table_count}</strong><span>Tableaux conservés</span></article>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if extraction.facts:
+        rows = []
+        for fact in extraction.facts:
+            field_label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
+            role_label = EXTRACTION_ROLE_LABELS.get(fact.role, fact.role)
+            normalized = fact.normalized_value or "Non normalisée"
+            page = f"Page {fact.page}" if fact.page is not None else "Source non localisée"
+            rows.append(
+                "<tr>"
+                f"<td><strong>{_html(field_label)}</strong><span>{_html(role_label)}</span></td>"
+                f"<td>{_html(fact.raw_value)}</td>"
+                f"<td>{_html(normalized)}</td>"
+                f"<td>{fact.confidence:.0%}</td>"
+                f"<td>{_html(page)}</td>"
+                "</tr>"
+            )
+        st.markdown(
+            '<h3 class="subsection-title">Informations comparables</h3>'
+            '<div class="extraction-table-wrap"><table class="extraction-table">'
+            "<thead><tr><th>Champ</th><th>Valeur lue</th><th>Valeur de comparaison</th>"
+            "<th>Fiabilité</th><th>Source</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>",
+            unsafe_allow_html=True,
+        )
+
+    if extraction.additional_fields:
+        cards = []
+        for field in extraction.additional_fields:
+            page = f"Page {field.page}" if field.page is not None else "Source non localisée"
+            cards.append(
+                '<article class="additional-extraction">'
+                f"<span>{_html(field.raw_label)}</span>"
+                f"<strong>{_html(field.raw_value)}</strong>"
+                f"<small>{_html(page)} · Fiabilité {field.confidence:.0%}</small>"
+                "</article>"
+            )
+        st.markdown(
+            '<h3 class="subsection-title">Autres informations présentes</h3>'
+            '<section class="additional-extractions">' + "".join(cards) + "</section>",
+            unsafe_allow_html=True,
+        )
+
+    for index, table in enumerate(extraction.tables, start=1):
+        title = table.title or f"Tableau {index}"
+        headers = table.headers or tuple(
+            f"Colonne {column + 1}"
+            for column in range(max((len(row) for row in table.rows), default=0))
+        )
+        roles = (*table.column_roles, *("other" for _ in range(len(headers))))[: len(headers)]
+        head = "".join(
+            "<th>"
+            f"{_html(header)}"
+            f"<span>{_html(EXTRACTION_COLUMN_ROLE_LABELS.get(role, role))}</span>"
+            "</th>"
+            for header, role in zip(headers, roles, strict=True)
+        )
+        body_rows = []
+        for row in table.rows:
+            cells = (*row, *("" for _ in range(max(0, len(headers) - len(row)))))
+            body_rows.append(
+                "<tr>"
+                + "".join(f"<td>{_html(cell)}</td>" for cell in cells[: len(headers)])
+                + "</tr>"
+            )
+        st.markdown(
+            f'<h3 class="subsection-title">{_html(title)}</h3>'
+            '<div class="extraction-table-wrap"><table class="extraction-table">'
+            f"<thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody>"
+            "</table></div>",
+            unsafe_allow_html=True,
+        )
+
+    if coverage.uncovered_region_ids:
+        st.markdown(
+            f"""
+            <div class="extraction-coverage-warning">
+              <strong>{len(coverage.uncovered_region_ids)} zone(s)
+                restent sans interprétation</strong>
+              <span>Elles sont conservées dans la sortie OCR et pourront être retraitées.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if recognized_text:
+        st.markdown('<h3 class="subsection-title">Texte reconnu</h3>', unsafe_allow_html=True)
+        _render_recognized_text(recognized_text, compact=True)
 
 
 LAB_STATE_LABELS = {
@@ -1064,7 +1330,7 @@ def _render_review_summary(
 
 
 def _render_classification(classification: DocumentClassification | None) -> None:
-    """Render the grounded semantic family without exposing model internals."""
+    """Render the semantic family without exposing model internals."""
     if not classification:
         return
 
@@ -1122,7 +1388,7 @@ def _render_classification(classification: DocumentClassification | None) -> Non
 
     if classification.evidence:
         st.markdown(
-            '<div class="classification-evidence-title">Indices textuels utilisés</div>',
+            '<div class="classification-evidence-title">Éléments ayant guidé le classement</div>',
             unsafe_allow_html=True,
         )
         for excerpt in classification.evidence:
@@ -2358,6 +2624,148 @@ def _inject_styles() -> None:
           margin: 1rem 0 .45rem;
           padding: 0;
         }
+        .extraction-empty,
+        .extraction-coverage-warning {
+          display: flex;
+          flex-direction: column;
+          gap: .25rem;
+          padding: .8rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--muted);
+          border-radius: 6px;
+          background: #19191d;
+        }
+        .extraction-empty span,
+        .extraction-coverage-warning span {
+          color: var(--muted);
+          font-size: .75rem;
+        }
+        .extraction-coverage-warning {
+          margin-top: .8rem;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .extraction-overview {
+          display: grid;
+          grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(130px, 1fr));
+          gap: .55rem;
+          margin-bottom: .85rem;
+        }
+        .extraction-overview > article {
+          min-height: 105px;
+          padding: .75rem;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #19191d;
+        }
+        .extraction-overview > article > strong,
+        .extraction-coverage div strong {
+          display: block;
+          color: var(--ink);
+          font-size: 1.45rem;
+          line-height: 1;
+        }
+        .extraction-overview > article > span,
+        .extraction-coverage div span,
+        .extraction-coverage small {
+          display: block;
+          margin-top: .35rem;
+          color: var(--muted);
+          font-size: .68rem;
+        }
+        .extraction-coverage {
+          border-left: 5px solid var(--amber) !important;
+        }
+        .extraction-coverage.clear {
+          border-left-color: var(--green) !important;
+        }
+        .extraction-coverage i {
+          display: block;
+          height: 7px;
+          margin-top: .55rem;
+          overflow: hidden;
+          border-radius: 4px;
+          background: #2c2c32;
+        }
+        .extraction-coverage i b {
+          display: block;
+          height: 100%;
+          background: var(--amber);
+        }
+        .extraction-coverage.clear i b { background: var(--green); }
+        .extraction-table-wrap {
+          width: 100%;
+          max-height: 420px;
+          overflow: auto;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #17171b;
+        }
+        .extraction-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: .72rem;
+        }
+        .extraction-table th,
+        .extraction-table td {
+          padding: .55rem .6rem;
+          border-bottom: 1px solid var(--line);
+          text-align: left;
+          vertical-align: top;
+        }
+        .extraction-table th {
+          position: sticky;
+          top: 0;
+          z-index: 1;
+          color: var(--muted);
+          background: #202025;
+          font-size: .62rem;
+          text-transform: uppercase;
+        }
+        .extraction-table th span {
+          display: block;
+          margin-top: .16rem;
+          color: var(--cyan);
+          font-size: .56rem;
+          text-transform: none;
+        }
+        .extraction-table td strong,
+        .extraction-table td span {
+          display: block;
+        }
+        .extraction-table td span {
+          margin-top: .15rem;
+          color: var(--muted);
+          font-size: .62rem;
+        }
+        .additional-extractions {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: .45rem;
+        }
+        .additional-extraction {
+          min-width: 0;
+          padding: .65rem;
+          border: 1px solid var(--line);
+          border-left: 4px solid var(--blue);
+          border-radius: 5px;
+          background: #181c24;
+        }
+        .additional-extraction span,
+        .additional-extraction strong,
+        .additional-extraction small {
+          display: block;
+        }
+        .additional-extraction span,
+        .additional-extraction small {
+          color: var(--muted);
+          font-size: .64rem;
+        }
+        .additional-extraction strong {
+          margin: .2rem 0;
+          overflow-wrap: anywhere;
+          font-size: .78rem;
+        }
         @media (max-width: 700px) {
           .block-container {
             padding: .8rem .75rem 1.5rem;
@@ -2390,7 +2798,9 @@ def _inject_styles() -> None:
             width: auto;
           }
           .extracted-fields,
-          .control-matrix {
+          .control-matrix,
+          .additional-extractions,
+          .extraction-overview {
             grid-template-columns: 1fr;
           }
           .indicator-sequence {

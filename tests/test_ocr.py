@@ -10,7 +10,11 @@ from PIL import Image
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.detectors.ocr import OcrDetector
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
-from fraude_detector.models import DocumentClassification
+from fraude_detector.models import (
+    DocumentClassification,
+    DocumentExtraction,
+    ExtractionCoverage,
+)
 from fraude_detector.pipeline import AnalysisPipeline
 
 
@@ -159,11 +163,42 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
         )
 
     monkeypatch.setattr("fraude_detector.pipeline.classify_document", fake_classify)
+    extraction = DocumentExtraction(
+        schema_version="0.1-experimental",
+        family="releve_bancaire",
+        language="fr",
+        country=None,
+        facts=(),
+        additional_fields=(),
+        tables=(),
+        coverage=ExtractionCoverage(
+            total_regions=1,
+            accounted_regions=1,
+            mapped_regions=0,
+            table_regions=0,
+            boilerplate_regions=1,
+            unstructured_regions=0,
+            unreadable_regions=0,
+        ),
+        passes=1,
+    )
+    extractor_calls: list[tuple[Any, DocumentClassification | None, AnalysisConfig]] = []
+
+    def fake_extract(
+        payload: Any,
+        classification: DocumentClassification | None,
+        extraction_config: AnalysisConfig,
+    ) -> DocumentExtraction:
+        extractor_calls.append((payload, classification, extraction_config))
+        return extraction
+
+    monkeypatch.setattr("fraude_detector.pipeline.extract_document", fake_extract)
     config = AnalysisConfig(
         render_dpi=72,
         max_pages=1,
         ocr_enabled=True,
         classification_enabled=True,
+        extraction_enabled=True,
     )
     output = tmp_path / "classification-analysis"
     report = AnalysisPipeline(config=config).analyze(vector_pdf, output)
@@ -171,10 +206,16 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
     assert classifier_calls == [(markdown, config)]
     assert report.classification is not None
     assert report.classification.family == "releve_bancaire"
+    assert len(extractor_calls) == 1
+    assert extractor_calls[0][1] == report.classification
+    assert extractor_calls[0][2] == config
+    assert report.extraction == extraction
     assert "classification" not in report.artifacts
+    assert "extraction" not in report.artifacts
     assert all(isinstance(paths, tuple) for paths in report.artifacts.values())
     serialized = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert serialized["classification"]["reliability"] == 0.82
+    assert serialized["extraction"]["coverage"]["accounted_regions"] == 1
 
 
 def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(

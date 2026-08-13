@@ -40,6 +40,7 @@ from fraude_detector.image_provenance import (
     find_ai_metadata_markers,
 )
 from fraude_detector.llm_classifier import classify_document
+from fraude_detector.llm_extractor import extract_document
 from fraude_detector.models import (
     DetectorResult,
     Finding,
@@ -117,6 +118,7 @@ class ImageAnalysisPipeline:
         ocr_report: OcrReport | None = None
         ocr_detector: OcrDetector | None = None
         classification_result = None
+        extraction_result = None
         if self.config.ocr_enabled:
             report_progress(0.18, "Reconnaissance du contenu")
             ocr_detector = OcrDetector(self.config)
@@ -130,6 +132,16 @@ class ImageAnalysisPipeline:
                     )
                 except Exception as error:
                     warnings.warn(f"Classification failed: {error}", stacklevel=2)
+            if self.config.extraction_enabled and ocr_report.success:
+                report_progress(0.21, "Extraction des informations")
+                try:
+                    extraction_result = extract_document(
+                        ocr_report.json_result,
+                        classification_result,
+                        self.config,
+                    )
+                except Exception as error:
+                    warnings.warn(f"Extraction failed: {error}", stacklevel=2)
 
         report_progress(0.22, "Analyse des pixels")
         ai_detector = self._analyze_pixels(
@@ -179,6 +191,7 @@ class ImageAnalysisPipeline:
                 "plafonnee et peuvent etre neutralises si l'extraction est insuffisante.",
             ),
             classification=classification_result,
+            extraction=extraction_result,
         )
         (destination / "report.json").write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
