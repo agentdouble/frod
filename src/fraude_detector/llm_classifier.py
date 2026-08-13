@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import re
 from collections.abc import Mapping
 from typing import Any
 
-import requests
-
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.models import DocumentClassification
-
-logger = logging.getLogger(__name__)
-
+from fraude_detector.structured_llm import StructuredLlmError, request_json_object
 
 DOCUMENT_FAMILIES = {
     "facture_recu": (
@@ -84,8 +78,7 @@ class LLMClassifier:
             )
 
         prompt_text = _truncate_document(text, self.max_input_chars)
-        response = self._call_llm(self._build_user_prompt(prompt_text))
-        payload = _parse_json_object(response)
+        payload = self._call_llm(self._build_user_prompt(prompt_text))
         return _classification_result(payload)
 
     def _build_user_prompt(self, text: str) -> str:
@@ -105,55 +98,48 @@ Retourne le pays sous forme de code ISO 3166-1 alpha-2 en majuscules, ou null. U
 que si une adresse, un identifiant, un organisme ou une mention explicite du texte le démontre.
 La langue et la devise seules ne démontrent jamais le pays. Justifie séparément le pays retenu.
 
-La confiance_modele exprime seulement ton degré d'hésitation entre les familles. Mets ambigu=true
+model_confidence exprime seulement ton degré d'hésitation entre les familles. Mets ambiguous=true
 si une autre famille reste raisonnablement possible. Ne présente jamais cette confiance comme une
 probabilité de fraude.
 
+Toutes les clés JSON et valeurs d'énumération doivent être en anglais exactement comme dans le
+format ci-dessous. Les courtes justifications peuvent rester dans la langue du document.
+
 Format JSON exact:
 {{
-  "categorie": "une_famille_autorisee",
-  "confiance_modele": "confiance",
-  "ambigu": false,
-  "langue": "fr",
-  "pays": "LU",
-  "indices_categorie": ["justification courte fondée sur le document"],
-  "indice_pays": "justification du pays fondée sur le document"
+  "category": "one_allowed_family",
+  "model_confidence": "confidence",
+  "ambiguous": false,
+  "language": "fr",
+  "country": "LU",
+  "category_evidence": ["short justification grounded in the document"],
+  "country_evidence": "country justification grounded in the document"
 }}
-Dans la réponse réelle, remplace "confiance" par un nombre entre 0 et 1. Utilise null pour une
+Dans la réponse réelle, remplace "confidence" par un nombre entre 0 et 1. Utilise null pour une
 langue, un pays ou un indice pays indéterminé.
 
 <document_ocr>
 {text}
 </document_ocr>"""
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str) -> Mapping[str, Any]:
         url = f"{self.vllm_url}/v1/chat/completions"
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "response_format": _response_format(),
-        }
-
         try:
-            response = requests.post(url, json=dict(payload), timeout=self.timeout_seconds)
-            if getattr(response, "status_code", 200) in {400, 422}:
-                logger.info("vLLM structured output unavailable; retrying with JSON instructions")
-                payload.pop("response_format")
-                response = requests.post(url, json=dict(payload), timeout=self.timeout_seconds)
-            response.raise_for_status()
-            result = response.json()
-            content = result["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError, requests.RequestException) as error:
+            return request_json_object(
+                endpoint=url,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=_response_format(),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                timeout_seconds=self.timeout_seconds,
+                operation="document classification",
+            )
+        except StructuredLlmError as error:
             raise ClassificationError(f"Service de classification indisponible: {error}") from error
-
-        if not isinstance(content, str) or not content.strip():
-            raise ClassificationError("Le service de classification a retourné une réponse vide")
-        return content
 
 
 def classify_document(
@@ -175,26 +161,26 @@ def _response_format() -> dict[str, Any]:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "categorie": {"type": "string", "enum": family_names},
-                    "confiance_modele": {"type": "number", "minimum": 0, "maximum": 1},
-                    "ambigu": {"type": "boolean"},
-                    "langue": {"type": ["string", "null"]},
-                    "pays": {"type": ["string", "null"]},
-                    "indices_categorie": {
+                    "category": {"type": "string", "enum": family_names},
+                    "model_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "ambiguous": {"type": "boolean"},
+                    "language": {"type": ["string", "null"]},
+                    "country": {"type": ["string", "null"]},
+                    "category_evidence": {
                         "type": "array",
                         "items": {"type": "string"},
                         "maxItems": 3,
                     },
-                    "indice_pays": {"type": ["string", "null"]},
+                    "country_evidence": {"type": ["string", "null"]},
                 },
                 "required": [
-                    "categorie",
-                    "confiance_modele",
-                    "ambigu",
-                    "langue",
-                    "pays",
-                    "indices_categorie",
-                    "indice_pays",
+                    "category",
+                    "model_confidence",
+                    "ambiguous",
+                    "language",
+                    "country",
+                    "category_evidence",
+                    "country_evidence",
                 ],
                 "additionalProperties": False,
             },
@@ -202,34 +188,14 @@ def _response_format() -> dict[str, Any]:
     }
 
 
-def _parse_json_object(response: str) -> Mapping[str, Any]:
-    cleaned = response.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as error:
-        start = cleaned.find("{")
-        if start < 0:
-            raise ClassificationError("Réponse de classification non JSON") from error
-        try:
-            payload, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        except json.JSONDecodeError as nested_error:
-            raise ClassificationError("Réponse de classification non JSON") from nested_error
-    if not isinstance(payload, Mapping):
-        raise ClassificationError("La classification JSON doit être un objet")
-    return payload
-
-
 def _classification_result(payload: Mapping[str, Any]) -> DocumentClassification:
-    family = str(payload.get("categorie", "autre"))
+    family = str(payload.get("category", "autre"))
     if family not in DOCUMENT_FAMILIES:
         family = "autre"
 
-    model_confidence = _bounded_float(payload.get("confiance_modele"))
-    ambiguous = payload.get("ambigu") is True
-    evidence = _classification_reasons(payload.get("indices_categorie"))
+    model_confidence = _bounded_float(payload.get("model_confidence"))
+    ambiguous = payload.get("ambiguous") is True
+    evidence = _classification_reasons(payload.get("category_evidence"))
 
     if family == "autre":
         reliability = min(model_confidence, 0.50)
@@ -238,8 +204,8 @@ def _classification_result(payload: Mapping[str, Any]) -> DocumentClassification
         if ambiguous:
             reliability = min(reliability, 0.49)
 
-    language = _language_code(payload.get("langue"))
-    country = _country_code(payload.get("pays"))
+    language = _language_code(payload.get("language"))
+    country = _country_code(payload.get("country"))
 
     return DocumentClassification(
         family=family,

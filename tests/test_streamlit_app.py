@@ -22,7 +22,8 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
 
     app.selectbox[0].select("Montant modifié").run(timeout=30)
 
-    markdown = "\n".join(element.value for element in app.markdown)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
     assert not app.exception
     assert not app.file_uploader
     assert [selectbox.label for selectbox in app.selectbox] == ["Vue affichée"]
@@ -49,7 +50,8 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("Montant modifié").run(timeout=30)
 
-    markdown = "\n".join(element.value for element in app.markdown)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert not app.exception
     assert "<h1>FROD</h1>" in markdown
@@ -232,6 +234,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
+    monkeypatch.setenv("FROD_CLASSIFICATION_URL", "http://extract.test:8030")
     monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
     monkeypatch.setenv("FROD_VERIFICATION_URL", "http://extract.test:8030")
     calls: list[list[str]] = []
@@ -241,6 +244,17 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
         roles = [message["role"] for message in kwargs["json"]["messages"]]
         calls.append(roles)
         prompt = kwargs["json"]["messages"][1]["content"]
+        if "<document_ocr>" in prompt:
+            result = {
+                "category": "declaration_sinistre",
+                "model_confidence": 0.96,
+                "ambiguous": False,
+                "language": "fr",
+                "country": None,
+                "category_evidence": ["Le document décrit un sinistre."],
+                "country_evidence": None,
+            }
+            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         if "<extraction_targets>" in prompt:
             result = {
                 "reviews": [
@@ -291,12 +305,28 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("OCR - Déclaration cohérente").run(timeout=30)
     app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
-    markdown = "\n".join(element.value for element in app.markdown)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
 
     assert not app.exception
     assert [expander.label for expander in app.expander] == ["JSON final de l'extraction"]
     assert "Aucune contradiction concrète relevée" in markdown
-    assert calls == [["system", "user"], ["system", "user"]]
+    classification_index = next(
+        index
+        for index, value in enumerate(markdown_blocks)
+        if "Type de document reconnu" in value
+    )
+    extraction_index = next(
+        index
+        for index, value in enumerate(markdown_blocks)
+        if '<section class="extraction-overview">' in value
+    )
+    assert classification_index < extraction_index
+    assert calls == [
+        ["system", "user"],
+        ["system", "user"],
+        ["system", "user"],
+    ]
 
 
 def test_local_original_ocr_demo_is_discovered_when_present(
@@ -325,6 +355,7 @@ def test_business_ui_contains_no_json_renderer() -> None:
     laboratory_view = source[
         source.index("def _render_extraction_laboratory") : source.index("LAB_STATE_LABELS")
     ]
+    report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
 
     assert source.count("st.json(") == 1
     assert '"extraction": extraction.to_dict()' in laboratory_view
@@ -333,8 +364,9 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert source.count("st.segmented_control(") == 1
     assert source.count("st.expander(") == 1
     assert "JSON final de l'extraction" in laboratory_view
+    assert "_render_classification(classification)" in laboratory_view
+    assert "_render_classification(report.classification)" not in report_view
     assert "raw_response" not in source
-    report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
     assert 'st.columns([0.56, 0.44], gap="large")' in report_view
     assert (
         report_view.index("with document_column:")

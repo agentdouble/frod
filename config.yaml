@@ -84,7 +84,7 @@ ocr:
 classification:
   # Classe le document après OCR. Ce traitement peut être désactivé séparément.
   enabled: false
-  # API locale compatible OpenAI exposée par vLLM.
+  # API locale exposée par vLLM.
   url: "http://127.0.0.1:8030"
   # Nom servi par vLLM, à adapter sur le poste qui héberge le modèle.
   model: "minimax_m2_1"
@@ -98,7 +98,7 @@ classification:
 extraction:
   # Extraction sémantique expérimentale, sans effet sur le score de fraude.
   enabled: false
-  # API locale compatible OpenAI; elle peut partager le serveur de classification.
+  # API locale vLLM; elle peut partager le serveur de classification.
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
   timeout_seconds: 180

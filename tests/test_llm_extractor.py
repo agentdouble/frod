@@ -117,6 +117,8 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert calls[0]["url"] == "http://llm.internal:8030/v1/chat/completions"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
     assert "famille: facture_recu" in calls[0]["json"]["messages"][1]["content"]
+    assert "Toutes les clés JSON" in calls[0]["json"]["messages"][1]["content"]
+    assert "doivent être en anglais" in calls[0]["json"]["messages"][1]["content"]
     assert extraction.family == "facture_recu"
     assert extraction.facts[1].raw_value == "1 234,50 EUR"
     assert extraction.facts[1].normalized_value == "1234.50 EUR"
@@ -215,7 +217,7 @@ def test_uncertain_classification_keeps_generic_extraction_as_priority(monkeypat
     assert "N'impose aucune structure métier" in prompts[0]
 
 
-def test_extractor_falls_back_when_vllm_rejects_json_schema(monkeypatch: Any) -> None:
+def test_extractor_retains_json_mode_when_vllm_rejects_json_schema(monkeypatch: Any) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_post(url: str, **kwargs: Any) -> _Response:
@@ -240,10 +242,46 @@ def test_extractor_falls_back_when_vllm_rejects_json_schema(monkeypatch: Any) ->
     )
 
     assert len(calls) == 2
-    assert "response_format" in calls[0]
-    assert "response_format" not in calls[1]
+    assert calls[0]["response_format"]["type"] == "json_schema"
+    assert calls[1]["response_format"] == {"type": "json_object"}
     assert extraction.coverage.unstructured_regions == 1
     assert extraction.coverage.ratio == 1
+
+
+def test_extractor_retries_a_non_json_generation_with_constrained_output(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    valid = _empty_result()
+    valid["region_dispositions"] = [
+        {
+            "region_id": "p001-r000",
+            "disposition": "unstructured",
+            "reason": "Free text",
+        }
+    ]
+    responses = iter(
+        (
+            _Response({"choices": [{"message": {"content": "analysis..."}}]}),
+            _chat_response(valid),
+        )
+    )
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        calls.append(kwargs["json"])
+        return next(responses)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Free text")]],
+        None,
+    )
+
+    assert extraction.coverage.ratio == 1
+    assert len(calls) == 2
+    assert all(call["response_format"]["type"] == "json_schema" for call in calls)
+    assert calls[1]["max_tokens"] == calls[0]["max_tokens"] * 2
 
 
 def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: Any) -> None:

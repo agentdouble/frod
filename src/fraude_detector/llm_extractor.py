@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
-
-import requests
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.models import (
@@ -22,8 +18,7 @@ from fraude_detector.models import (
     ExtractedTable,
     ExtractionCoverage,
 )
-
-logger = logging.getLogger(__name__)
+from fraude_detector.structured_llm import StructuredLlmError, request_json_object
 
 FIELD_CODES = (
     "person_name",
@@ -325,38 +320,26 @@ class LLMDocumentExtractor:
             country=country,
             coverage_pass=coverage_pass,
         )
-        response = self._call_llm(prompt)
-        return _raw_extraction(_parse_json_object(response))
+        return _raw_extraction(self._call_llm(prompt))
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str) -> Mapping[str, Any]:
         endpoint = f"{self.url}/v1/chat/completions"
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "response_format": _response_format(),
-        }
         try:
-            response = requests.post(endpoint, json=dict(payload), timeout=self.timeout_seconds)
-            if getattr(response, "status_code", 200) in {400, 422}:
-                logger.info("vLLM extraction schema unavailable; retrying without response_format")
-                payload.pop("response_format")
-                response = requests.post(
-                    endpoint,
-                    json=dict(payload),
-                    timeout=self.timeout_seconds,
-                )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError, requests.RequestException) as error:
+            return request_json_object(
+                endpoint=endpoint,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=_response_format(),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                timeout_seconds=self.timeout_seconds,
+                operation="document extraction",
+            )
+        except StructuredLlmError as error:
             raise ExtractionError(f"Service d'extraction indisponible: {error}") from error
-        if not isinstance(content, str) or not content.strip():
-            raise ExtractionError("Le service d'extraction a retourné une réponse vide")
-        return content
 
 
 def extract_document(
@@ -409,6 +392,9 @@ Instruction propre à cette famille:
 {pass_instruction}
 
 Règles:
+0. Toutes les clés JSON, les identifiants canoniques, les valeurs d'énumération et
+   semantic_hint doivent être en anglais. raw_label, raw_value, les titres et en-têtes de tableaux
+   ainsi que leurs cellules doivent conserver la langue et la graphie observées dans le document.
 1. Comprends la fonction du document et les relations entre libellés, valeurs, sections et
    tableaux avant d'extraire. Retourne chaque information comparable dans facts avec un
    field_code et un role autorisés.
@@ -633,26 +619,6 @@ def _chunk_regions(
     if current:
         chunks.append(tuple(current))
     return tuple(chunks)
-
-
-def _parse_json_object(response: str) -> Mapping[str, Any]:
-    cleaned = response.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as error:
-        start = cleaned.find("{")
-        if start < 0:
-            raise ExtractionError("Réponse d'extraction non JSON") from error
-        try:
-            payload, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        except json.JSONDecodeError as nested_error:
-            raise ExtractionError("Réponse d'extraction non JSON") from nested_error
-    if not isinstance(payload, Mapping):
-        raise ExtractionError("La réponse d'extraction doit être un objet JSON")
-    return payload
 
 
 def _raw_extraction(payload: Mapping[str, Any]) -> _RawExtraction:

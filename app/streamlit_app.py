@@ -513,6 +513,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             markdown=markdown,
             laboratory=laboratory,
             ocr_detector=ocr_detector,
+            classification=classification,
             extraction=extraction,
             verification=verification,
             workspace_view=workspace_view,
@@ -711,6 +712,7 @@ def _render_report(
     if workspace_view == "Laboratoire":
         _render_extraction_laboratory(
             report.extraction,
+            classification=report.classification,
             verification=report.extraction_verification,
             recognized_text=_read_ocr_markdown(report, output_dir),
         )
@@ -731,7 +733,6 @@ def _render_report(
         _render_risk_indicators(report.findings, report.detectors)
 
     _render_review_summary(scored, diagnostics, laboratory)
-    _render_classification(report.classification)
 
 
 def _render_ocr_demo_report(
@@ -740,6 +741,7 @@ def _render_ocr_demo_report(
     markdown: str,
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
+    classification: DocumentClassification | None,
     extraction: DocumentExtraction | None,
     verification: ExtractionVerification | None,
     workspace_view: str,
@@ -754,6 +756,7 @@ def _render_ocr_demo_report(
     if workspace_view == "Laboratoire":
         _render_extraction_laboratory(
             extraction,
+            classification=classification,
             verification=verification,
             recognized_text=markdown,
         )
@@ -915,6 +918,7 @@ EXTRACTION_ROW_ROLE_LABELS = {
 def _render_extraction_laboratory(
     extraction: DocumentExtraction | None,
     *,
+    classification: DocumentClassification | None = None,
     verification: ExtractionVerification | None = None,
     recognized_text: str = "",
 ) -> None:
@@ -922,6 +926,7 @@ def _render_extraction_laboratory(
         '<h2 class="workspace-title">Extraction structurée expérimentale</h2>',
         unsafe_allow_html=True,
     )
+    _render_classification(classification)
     if extraction is None:
         st.markdown(
             """
@@ -1469,7 +1474,6 @@ def _render_classification(classification: DocumentClassification | None) -> Non
     if not classification:
         return
 
-    st.markdown("---")
     st.markdown(
         '<h2 class="workspace-title">Type de document reconnu</h2>',
         unsafe_allow_html=True,

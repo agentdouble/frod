@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import json
-import logging
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
-
-import requests
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.llm_extractor import FACT_ROLES, FIELD_CODES
@@ -20,8 +16,7 @@ from fraude_detector.models import (
     ExtractionReview,
     ExtractionVerification,
 )
-
-logger = logging.getLogger(__name__)
+from fraude_detector.structured_llm import StructuredLlmError, request_json_object
 
 TARGET_TYPES = ("fact", "additional_field", "table")
 VERDICTS = ("supported", "plausible", "ambiguous", "contradicted")
@@ -78,8 +73,7 @@ class LLMExtractionVerifier:
             raise VerificationError(
                 "Le document dépasse la taille configurée pour une vérification indépendante"
             )
-        response = self._call_llm(prompt)
-        payload = _parse_json_object(response)
+        payload = self._call_llm(prompt)
         return _validated_verification(
             payload,
             regions=regions,
@@ -87,39 +81,24 @@ class LLMExtractionVerifier:
             issue_min_confidence=self.issue_min_confidence,
         )
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(self, prompt: str) -> Mapping[str, Any]:
         endpoint = f"{self.url}/v1/chat/completions"
-        request_payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "response_format": _response_format(),
-        }
         try:
-            response = requests.post(
-                endpoint,
-                json=dict(request_payload),
-                timeout=self.timeout_seconds,
+            return request_json_object(
+                endpoint=endpoint,
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=_response_format(),
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                timeout_seconds=self.timeout_seconds,
+                operation="extraction verification",
             )
-            if getattr(response, "status_code", 200) in {400, 422}:
-                logger.info("vLLM verification schema unavailable; retrying without it")
-                request_payload.pop("response_format")
-                response = requests.post(
-                    endpoint,
-                    json=dict(request_payload),
-                    timeout=self.timeout_seconds,
-                )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError, ValueError, requests.RequestException) as error:
+        except StructuredLlmError as error:
             raise VerificationError(f"Service de vérification indisponible: {error}") from error
-        if not isinstance(content, str) or not content.strip():
-            raise VerificationError("Le service de vérification a retourné une réponse vide")
-        return content
 
 
 def verify_extraction(
@@ -162,6 +141,8 @@ Objectif:
 pas la fraude et ne doit pas améliorer le style de la sortie.
 
 Principe conservateur obligatoire:
+0. Toutes les clés JSON, valeurs d'énumération, explications et descriptions générées doivent être
+   en anglais. Les valeurs documentaires proposées doivent conserver leur graphie source.
 1. Utilise supported lorsque la valeur et son rôle sont raisonnablement soutenus par le contexte.
 2. Utilise plausible lorsqu'une normalisation ou une correction OCR raisonnable a été appliquée.
    plausible est un résultat positif, pas une anomalie.
@@ -429,26 +410,6 @@ def _validated_verification(
             "Une absence de contradiction ne garantit pas l'exactitude du document ou de l'OCR.",
         ),
     )
-
-
-def _parse_json_object(response: str) -> Mapping[str, Any]:
-    cleaned = response.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        result = json.loads(cleaned)
-    except json.JSONDecodeError as error:
-        start = cleaned.find("{")
-        if start < 0:
-            raise VerificationError("Réponse de vérification non JSON") from error
-        try:
-            result, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-        except json.JSONDecodeError as nested_error:
-            raise VerificationError("Réponse de vérification non JSON") from nested_error
-    if not isinstance(result, Mapping):
-        raise VerificationError("La vérification JSON doit être un objet")
-    return result
 
 
 def _bounded_float(value: object) -> float:

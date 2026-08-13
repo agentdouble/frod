@@ -35,16 +35,16 @@ def test_classification_accepts_paraphrased_reasons(monkeypatch: Any) -> None:
         calls.append({"url": url, **kwargs})
         return _chat_response(
             """{
-              "categorie": "facture_recu",
-              "confiance_modele": 0.97,
-              "ambigu": false,
-              "langue": "fr",
-              "pays": "LU",
-              "indices_categorie": [
+              "category": "facture_recu",
+              "model_confidence": 0.97,
+              "ambiguous": false,
+              "language": "fr",
+              "country": "LU",
+              "category_evidence": [
                 "Le document porte un numéro de facture",
                 "Un total TTC est indiqué"
               ],
-              "indice_pays": "L'adresse se situe au Luxembourg"
+              "country_evidence": "L'adresse se situe au Luxembourg"
             }"""
         )
 
@@ -64,7 +64,17 @@ def test_classification_accepts_paraphrased_reasons(monkeypatch: Any) -> None:
     assert calls[0]["url"] == "http://127.0.0.1:8030/v1/chat/completions"
     assert calls[0]["json"]["messages"][0]["role"] == "system"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
-    assert '"confiance_modele": "confiance"' in calls[0]["json"]["messages"][1]["content"]
+    assert '"model_confidence": "confidence"' in calls[0]["json"]["messages"][1]["content"]
+    schema_properties = calls[0]["json"]["response_format"]["json_schema"]["schema"]["properties"]
+    assert set(schema_properties) == {
+        "category",
+        "model_confidence",
+        "ambiguous",
+        "language",
+        "country",
+        "category_evidence",
+        "country_evidence",
+    }
 
 
 def test_classification_does_not_require_verbatim_reasons(monkeypatch: Any) -> None:
@@ -73,13 +83,13 @@ def test_classification_does_not_require_verbatim_reasons(monkeypatch: Any) -> N
         "post",
         lambda *args, **kwargs: _chat_response(
             """{
-              "categorie": "releve_bancaire",
-              "confiance_modele": 0.99,
-              "ambigu": false,
-              "langue": "fr",
-              "pays": "FR",
-              "indices_categorie": ["Relevé bancaire complet"],
-              "indice_pays": "République française"
+              "category": "releve_bancaire",
+              "model_confidence": 0.99,
+              "ambiguous": false,
+              "language": "fr",
+              "country": "FR",
+              "category_evidence": ["Relevé bancaire complet"],
+              "country_evidence": "République française"
             }"""
         ),
     )
@@ -101,13 +111,13 @@ def test_ambiguous_classification_never_looks_reliable(monkeypatch: Any) -> None
         "post",
         lambda *args, **kwargs: _chat_response(
             """{
-              "categorie": "devis",
-              "confiance_modele": 0.95,
-              "ambigu": true,
-              "langue": "fr",
-              "pays": null,
-              "indices_categorie": ["Montant estimé : 800 EUR"],
-              "indice_pays": null
+              "category": "devis",
+              "model_confidence": 0.95,
+              "ambiguous": true,
+              "language": "fr",
+              "country": null,
+              "category_evidence": ["Montant estimé : 800 EUR"],
+              "country_evidence": null
             }"""
         ),
     )
@@ -118,20 +128,20 @@ def test_ambiguous_classification_never_looks_reliable(monkeypatch: Any) -> None
     assert result.reliability == 0.49
 
 
-def test_classifier_retries_without_schema_for_older_vllm(monkeypatch: Any) -> None:
+def test_classifier_retains_json_mode_for_older_vllm(monkeypatch: Any) -> None:
     calls: list[dict[str, Any]] = []
     responses = iter(
         [
             _chat_response("", status_code=400),
             _chat_response(
                 """{
-                  "categorie": "autre",
-                  "confiance_modele": 0.4,
-                  "ambigu": true,
-                  "langue": null,
-                  "pays": null,
-                  "indices_categorie": [],
-                  "indice_pays": null
+                  "category": "autre",
+                  "model_confidence": 0.4,
+                  "ambiguous": true,
+                  "language": null,
+                  "country": null,
+                  "category_evidence": [],
+                  "country_evidence": null
                 }"""
             ),
         ]
@@ -146,8 +156,8 @@ def test_classifier_retries_without_schema_for_older_vllm(monkeypatch: Any) -> N
 
     assert result.family == "autre"
     assert len(calls) == 2
-    assert "response_format" in calls[0]["json"]
-    assert "response_format" not in calls[1]["json"]
+    assert calls[0]["json"]["response_format"]["type"] == "json_schema"
+    assert calls[1]["json"]["response_format"] == {"type": "json_object"}
 
 
 def test_short_ocr_text_abstains_without_calling_vllm(monkeypatch: Any) -> None:

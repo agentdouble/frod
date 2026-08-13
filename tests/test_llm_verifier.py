@@ -147,6 +147,7 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     assert "Ne cherche jamais à produire un quota" in messages[0]["content"]
     assert "pas une anomalie" in messages[1]["content"]
     assert "tous les verdicts" in messages[1]["content"]
+    assert "doivent être\n   en anglais" in messages[1]["content"]
 
 
 def test_low_confidence_suspicion_cannot_create_a_visible_issue(monkeypatch: Any) -> None:
