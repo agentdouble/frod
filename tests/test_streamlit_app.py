@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -223,6 +225,45 @@ def test_extraction_laboratory_has_a_business_readable_empty_state(
     assert not app.expander
 
 
+def test_extraction_laboratory_exposes_final_json_on_demand(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
+    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
+    monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
+    monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        assert url == "http://extract.test:8030/v1/chat/completions"
+        prompt = kwargs["json"]["messages"][1]["content"]
+        region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
+        result = {
+            "facts": [],
+            "additional_fields": [],
+            "tables": [],
+            "region_dispositions": [
+                {
+                    "region_id": region_id,
+                    "disposition": "unstructured",
+                    "reason": "Conservé comme texte OCR",
+                }
+                for region_id in region_ids
+            ],
+        }
+        return _Response(
+            {"choices": [{"message": {"content": json.dumps(result)}}]},
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
+    app.selectbox[0].select("OCR - Déclaration cohérente").run(timeout=30)
+    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+
+    assert not app.exception
+    assert [expander.label for expander in app.expander] == ["JSON final de l'extraction"]
+
+
 def test_local_original_ocr_demo_is_discovered_when_present(
     monkeypatch,
     tmp_path: Path,
@@ -246,11 +287,16 @@ def test_business_ui_contains_no_json_renderer() -> None:
     document_view = source[
         source.index("def _render_document_view") : source.index("def _render_review_summary")
     ]
+    laboratory_view = source[
+        source.index("def _render_extraction_laboratory") : source.index("LAB_STATE_LABELS")
+    ]
 
-    assert "st.json" not in source
+    assert source.count("st.json(") == 1
+    assert "st.json(extraction.to_dict())" in laboratory_view
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
-    assert "st.expander" not in source
+    assert source.count("st.expander(") == 1
+    assert "JSON final de l'extraction" in laboratory_view
     assert "raw_response" not in source
     report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
     assert 'st.columns([0.56, 0.44], gap="large")' in report_view

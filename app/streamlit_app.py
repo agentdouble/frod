@@ -877,6 +877,18 @@ EXTRACTION_COLUMN_ROLE_LABELS = {
     "other": "Autre",
 }
 
+EXTRACTION_ROW_ROLE_LABELS = {
+    "transaction": "Opération",
+    "opening_balance": "Solde initial",
+    "closing_balance": "Solde final",
+    "subtotal": "Sous-total",
+    "total": "Total",
+    "section_header": "En-tête",
+    "line_item": "Ligne détaillée",
+    "informational": "Information",
+    "other": "Autre",
+}
+
 
 def _render_extraction_laboratory(
     extraction: DocumentExtraction | None,
@@ -968,12 +980,18 @@ def _render_extraction_laboratory(
 
     for index, table in enumerate(extraction.tables, start=1):
         title = table.title or f"Tableau {index}"
+        transaction_count = sum(role == "transaction" for role in table.row_roles)
+        table_summary = (
+            f" · {transaction_count} opération(s) identifiée(s)"
+            if table.semantic_type == "transactions"
+            else ""
+        )
         headers = table.headers or tuple(
             f"Colonne {column + 1}"
             for column in range(max((len(row) for row in table.rows), default=0))
         )
         roles = (*table.column_roles, *("other" for _ in range(len(headers))))[: len(headers)]
-        head = "".join(
+        head = "<th>Nature</th>" + "".join(
             "<th>"
             f"{_html(header)}"
             f"<span>{_html(EXTRACTION_COLUMN_ROLE_LABELS.get(role, role))}</span>"
@@ -981,15 +999,21 @@ def _render_extraction_laboratory(
             for header, role in zip(headers, roles, strict=True)
         )
         body_rows = []
-        for row in table.rows:
+        row_roles = (*table.row_roles, *("other" for _ in range(len(table.rows))))[
+            : len(table.rows)
+        ]
+        for row, row_role in zip(table.rows, row_roles, strict=True):
             cells = (*row, *("" for _ in range(max(0, len(headers) - len(row)))))
             body_rows.append(
                 "<tr>"
+                '<td><span class="extraction-row-role">'
+                f"{_html(EXTRACTION_ROW_ROLE_LABELS.get(row_role, row_role))}"
+                "</span></td>"
                 + "".join(f"<td>{_html(cell)}</td>" for cell in cells[: len(headers)])
                 + "</tr>"
             )
         st.markdown(
-            f'<h3 class="subsection-title">{_html(title)}</h3>'
+            f'<h3 class="subsection-title">{_html(title + table_summary)}</h3>'
             '<div class="extraction-table-wrap"><table class="extraction-table">'
             f"<thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody>"
             "</table></div>",
@@ -1011,6 +1035,9 @@ def _render_extraction_laboratory(
     if recognized_text:
         st.markdown('<h3 class="subsection-title">Texte reconnu</h3>', unsafe_allow_html=True)
         _render_recognized_text(recognized_text, compact=True)
+
+    with st.expander("JSON final de l'extraction", expanded=False):
+        st.json(extraction.to_dict())
 
 
 LAB_STATE_LABELS = {
@@ -2737,6 +2764,18 @@ def _inject_styles() -> None:
           margin-top: .15rem;
           color: var(--muted);
           font-size: .62rem;
+        }
+        .extraction-table td .extraction-row-role {
+          display: inline-flex;
+          margin: 0;
+          padding: .2rem .36rem;
+          border: 1px solid #3c5965;
+          border-radius: 4px;
+          color: #bdebf3;
+          background: #17252b;
+          font-size: .58rem;
+          font-weight: 800;
+          white-space: nowrap;
         }
         .additional-extractions {
           display: grid;

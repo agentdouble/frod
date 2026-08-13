@@ -158,6 +158,7 @@ class ExtractedTable:
     headers: tuple[str, ...]
     column_roles: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
+    row_roles: tuple[str, ...]
     confidence: float
     pages: tuple[int, ...] = ()
     region_ids: tuple[str, ...] = ()
@@ -201,6 +202,9 @@ class DocumentExtraction:
     coverage: ExtractionCoverage
     passes: int
     limitations: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)

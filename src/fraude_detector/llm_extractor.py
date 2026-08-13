@@ -121,34 +121,88 @@ TABLE_COLUMN_ROLES = (
     "other",
 )
 
+TABLE_ROW_ROLES = (
+    "transaction",
+    "opening_balance",
+    "closing_balance",
+    "subtotal",
+    "total",
+    "section_header",
+    "line_item",
+    "informational",
+    "other",
+)
+
 REGION_DISPOSITIONS = ("boilerplate", "unstructured", "unreadable")
 
 FAMILY_GUIDANCE = {
     "facture_recu": (
-        "Extrais notamment l'émetteur, le destinataire, le numéro, les dates, tous les "
-        "services ou produits, quantités, prix unitaires, taxes, sous-totaux, total, devise, "
-        "moyens de paiement et identifiants. Préserve chaque ligne facturée dans un tableau."
+        "Identifie émetteur et client, numéro de facture ou reçu, dates d'émission, d'échéance "
+        "et de prestation, devise, coordonnées, identifiants fiscaux et professionnels, moyens "
+        "de paiement, sous-total, taxes, remises et total. Préserve chaque produit ou service "
+        "avec description, code, quantité, prix unitaire, taux de taxe et total de ligne."
     ),
     "devis": (
-        "Extrais l'émetteur, le destinataire, la référence, les dates, la validité, chaque "
-        "service ou produit proposé, les quantités, prix, taxes et totaux."
+        "Identifie émetteur et client, référence du devis, dates d'émission et de validité, "
+        "devise, conditions, remises, taxes et totaux. Préserve chaque produit ou service "
+        "proposé avec description, code, quantité, prix unitaire et total de ligne."
     ),
     "releve_bancaire": (
-        "Extrais la banque, le titulaire, la période, tous les comptes et cartes, les soldes "
-        "d'ouverture et de clôture, puis chaque transaction avec sa date, son libellé, son "
-        "montant, son sens et sa devise. Ne résume jamais une liste de transactions."
+        "Identifie banque, titulaire, période, devise, comptes, IBAN, BIC, cartes, contrat et "
+        "soldes d'ouverture et de clôture. Préserve chaque mouvement individuel avec date "
+        "d'opération, date de valeur, libellé, débit, crédit et solde. Distingue strictement "
+        "transactions, en-têtes de carte, reports de solde, sous-totaux et totaux."
     ),
     "justificatif_bancaire": (
-        "Extrais l'établissement, le titulaire, les comptes, IBAN, BIC, références, dates, "
-        "montants et bénéficiaires visibles."
+        "Identifie établissement, titulaire, bénéficiaire, compte, IBAN, BIC, carte, référence "
+        "de virement ou de paiement, dates, montants, devise et statut explicitement visibles. "
+        "Ne transforme pas une preuve ponctuelle en relevé de transactions."
     ),
     "document_medical": (
-        "Extrais les personnes, professionnels, établissements, identifiants, dates, actes, "
-        "services, prescriptions et montants visibles, sans produire de diagnostic."
+        "Identifie patient, prescripteur, praticien, établissement, coordonnées, identifiants "
+        "professionnels, dates de consultation, prescription ou soin, actes, codes, médicaments, "
+        "quantités et montants explicitement écrits. Ne déduis jamais un diagnostic."
     ),
     "declaration_sinistre": (
-        "Extrais les personnes, contrats, références de sinistre, dates, lieux, biens, "
-        "circonstances, dommages, montants et intervenants explicitement indiqués."
+        "Identifie déclarant, assuré, bénéficiaire, assureur, contrat, référence de sinistre, "
+        "dates de survenance et de déclaration, lieux, biens, véhicules, circonstances, dommages, "
+        "montants, tiers et intervenants explicitement indiqués."
+    ),
+    "constat_accident": (
+        "Identifie les parties A et B sans les fusionner: conducteurs, assurés, propriétaires, "
+        "assureurs, contrats, véhicules, immatriculations, lieux, dates, témoins, circonstances, "
+        "points de choc et dommages. Préserve les cases cochées et observations comme telles."
+    ),
+    "contrat_attestation": (
+        "Identifie parties, assureur ou émetteur, bénéficiaire, numéro de contrat ou police, objet "
+        "couvert, garanties, exclusions, plafonds, franchise, prime, devise, dates de début, fin, "
+        "émission et expiration, ainsi que les signatures ou statuts mentionnés dans le texte."
+    ),
+    "piece_identite": (
+        "Identifie type de pièce, autorité émettrice, titulaire, numéro, noms, date et lieu de "
+        "naissance, nationalité, sexe uniquement s'il est écrit, adresse, dates d'émission et "
+        "d'expiration, ainsi que les valeurs MRZ ou codes lisibles. Ne complète aucun caractère."
+    ),
+    "justificatif_revenus_fiscal": (
+        "Identifie personne, employeur ou administration, période, identifiants, type de revenu, "
+        "devise, montants bruts, nets, imposables, retenues, cotisations, cumuls et totaux. "
+        "Préserve les lignes de rémunération ou d'imposition et distingue montants de période et "
+        "cumuls annuels."
+    ),
+    "justificatif_domicile": (
+        "Identifie titulaire, émetteur ou fournisseur, adresse de service et de correspondance, "
+        "référence client ou contrat, période, date d'émission, type de service, montants et "
+        "statut de paiement. Ne suppose pas que le destinataire réside à l'adresse indiquée."
+    ),
+    "correspondance": (
+        "Identifie expéditeur, destinataire, coordonnées, date, objet, références de dossier ou "
+        "contrat, organisations, montants, échéances, demandes et décisions explicitement écrites. "
+        "Conserve les paragraphes utiles comme informations additionnelles sans les interpréter."
+    ),
+    "autre": (
+        "Effectue un inventaire générique: personnes, organisations, coordonnées, références, "
+        "identifiants, dates, périodes, montants, produits, services et tableaux. N'impose aucune "
+        "structure métier si le type du document n'est pas démontré."
     ),
 }
 
@@ -208,13 +262,21 @@ class LLMDocumentExtractor:
     ) -> DocumentExtraction:
         regions = _ocr_regions(ocr_json)
         family = classification.family if classification else "autre"
+        family_reliability = classification.reliability if classification else 0.0
         language = classification.language if classification else None
         country = classification.country if classification else None
         if not regions:
             return _empty_extraction(family, language, country)
 
         raw_results = [
-            self._extract_chunk(chunk, family, language, country, coverage_pass=False)
+            self._extract_chunk(
+                chunk,
+                family,
+                family_reliability,
+                language,
+                country,
+                coverage_pass=False,
+            )
             for chunk in _chunk_regions(regions, self.max_input_chars)
         ]
         passes = 1
@@ -223,7 +285,14 @@ class LLMDocumentExtractor:
         if self.coverage_retry and uncovered:
             retry_regions = tuple(region for region in regions if region.region_id in uncovered)
             retry_results = [
-                self._extract_chunk(chunk, family, language, country, coverage_pass=True)
+                self._extract_chunk(
+                    chunk,
+                    family,
+                    family_reliability,
+                    language,
+                    country,
+                    coverage_pass=True,
+                )
                 for chunk in _chunk_regions(retry_regions, self.max_input_chars)
             ]
             combined = _combine_raw((combined, *retry_results))
@@ -242,6 +311,7 @@ class LLMDocumentExtractor:
         self,
         regions: tuple[_OcrRegion, ...],
         family: str,
+        family_reliability: float,
         language: str | None,
         country: str | None,
         *,
@@ -250,6 +320,7 @@ class LLMDocumentExtractor:
         prompt = _extraction_prompt(
             regions,
             family=family,
+            family_reliability=family_reliability,
             language=language,
             country=country,
             coverage_pass=coverage_pass,
@@ -302,6 +373,7 @@ def _extraction_prompt(
     regions: tuple[_OcrRegion, ...],
     *,
     family: str,
+    family_reliability: float,
     language: str | None,
     country: str | None,
     coverage_pass: bool,
@@ -311,11 +383,14 @@ def _extraction_prompt(
         f"{region.content}\n</region>"
         for region in regions
     )
-    family_guidance = FAMILY_GUIDANCE.get(
-        family,
-        "Extrais toutes les personnes, organisations, coordonnées, identifiants, dates, "
-        "montants, produits, services et autres valeurs explicitement présentes.",
-    )
+    generic_guidance = FAMILY_GUIDANCE["autre"]
+    family_guidance = FAMILY_GUIDANCE.get(family, generic_guidance)
+    if family_reliability < 0.5:
+        family_guidance = (
+            f"La famille proposée est incertaine. Applique d'abord cette consigne générique: "
+            f"{generic_guidance} La consigne {family!r} ci-dessous n'est qu'une piste secondaire: "
+            f"{family_guidance}"
+        )
     pass_instruction = (
         "Il s'agit d'une passe de couverture sur des régions non comptabilisées. Pour chacune, "
         "extrais l'information manquante ou indique explicitement sa disposition."
@@ -324,6 +399,7 @@ def _extraction_prompt(
     )
     return f"""Contexte proposé:
 - famille: {family}
+- fiabilité du classement: {family_reliability:.0%}
 - langue: {language or "inconnue"}
 - pays: {country or "inconnu"}
 
@@ -333,21 +409,35 @@ Instruction propre à cette famille:
 {pass_instruction}
 
 Règles:
-1. Retourne chaque information comparable dans facts avec un field_code et un role autorisés.
+1. Comprends la fonction du document et les relations entre libellés, valeurs, sections et
+   tableaux avant d'extraire. Retourne chaque information comparable dans facts avec un
+   field_code et un role autorisés.
 2. Une valeur importante répétée avec un rôle différent doit produire plusieurs faits.
 3. Place toute information utile sans code adapté dans additional_fields; ne la jette pas.
 4. Préserve les tableaux avec leurs en-têtes et toutes leurs lignes, sans résumé.
-   Associe chaque en-tête à un column_role canonique dans le même ordre.
-5. Chaque fait, champ ou tableau doit référencer uniquement les region_ids fournis.
-6. Pour toute région sans extraction, ajoute une disposition: boilerplate, unstructured ou
+   Associe chaque en-tête à un column_role canonique dans le même ordre et chaque ligne à
+   un row_role canonique dans le même ordre que rows.
+   Dans un relevé, transaction désigne uniquement un mouvement individuel. Un ancien solde,
+   un nouveau solde, un sous-total, un total ou une ligne annonçant une carte ne sont jamais
+   des transactions. Utilise opening_balance, closing_balance, subtotal, total ou
+   section_header. Dans une facture, utilise line_item pour un produit ou service facturé.
+5. Une cellule de tableau déjà conservée ne doit devenir un fait séparé que si elle représente
+   une information clé du document, par exemple un total, un solde, une référence ou une identité.
+6. Associe un libellé et sa valeur même s'ils occupent deux régions OCR voisines. Tu peux
+   réorganiser la sortie pour restituer leur relation, mais tu ne peux ni inventer une valeur ni
+   déplacer arbitrairement un montant lorsque la source reste ambiguë.
+7. Chaque fait, champ ou tableau doit référencer uniquement les region_ids fournis.
+8. Pour toute région sans extraction, ajoute une disposition: boilerplate, unstructured ou
    unreadable.
-7. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure.
-8. confidence mesure uniquement la confiance de lecture et d'association du champ, entre 0 et 1.
+9. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure.
+10. confidence mesure uniquement la confiance de lecture et d'association du champ. Réduis-la
+    si le libellé, la valeur, la colonne ou le rôle sont ambigus; elle est comprise entre 0 et 1.
 
 field_code autorisés: {", ".join(FIELD_CODES)}
 role autorisés: {", ".join(FACT_ROLES)}
 semantic_type de tableau: {", ".join(TABLE_TYPES)}
 column_role de tableau: {", ".join(TABLE_COLUMN_ROLES)}
+row_role de tableau: {", ".join(TABLE_ROW_ROLES)}
 
 Régions OCR:
 <ocr_regions>
@@ -429,6 +519,10 @@ def _response_format() -> dict[str, Any]:
                                         "items": {"type": "string"},
                                     },
                                 },
+                                "row_roles": {
+                                    "type": "array",
+                                    "items": {"type": "string", "enum": list(TABLE_ROW_ROLES)},
+                                },
                                 **source_fields,
                             },
                             "required": [
@@ -437,6 +531,7 @@ def _response_format() -> dict[str, Any]:
                                 "headers",
                                 "column_roles",
                                 "rows",
+                                "row_roles",
                                 "confidence",
                                 "region_ids",
                             ],
@@ -717,6 +812,18 @@ def _validated_tables(
             column_roles = (*column_roles, *("other" for _ in range(missing_roles)))
         column_roles = column_roles[: len(headers)]
         rows = _table_rows(candidate.get("rows"), maximum_rows=2000, maximum_columns=40)
+        row_roles = tuple(
+            role if role in TABLE_ROW_ROLES else "other"
+            for role in _string_sequence(
+                candidate.get("row_roles"),
+                maximum_items=2000,
+                maximum_length=40,
+            )
+        )
+        if len(row_roles) < len(rows):
+            missing_roles = len(rows) - len(row_roles)
+            row_roles = (*row_roles, *("other" for _ in range(missing_roles)))
+        row_roles = row_roles[: len(rows)]
         region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
         if not headers and not rows:
             continue
@@ -735,6 +842,7 @@ def _validated_tables(
                 headers=headers,
                 column_roles=column_roles,
                 rows=rows,
+                row_roles=row_roles,
                 confidence=confidence,
                 pages=pages,
                 region_ids=region_ids,

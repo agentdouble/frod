@@ -6,7 +6,8 @@ from typing import Any
 import requests
 
 from fraude_detector.config import AnalysisConfig
-from fraude_detector.llm_extractor import LLMDocumentExtractor
+from fraude_detector.llm_classifier import DOCUMENT_FAMILIES
+from fraude_detector.llm_extractor import FAMILY_GUIDANCE, LLMDocumentExtractor
 from fraude_detector.models import DocumentClassification
 
 
@@ -38,6 +39,10 @@ def _empty_result() -> dict[str, list[Any]]:
         "tables": [],
         "region_dispositions": [],
     }
+
+
+def test_every_classified_family_has_dedicated_extraction_guidance() -> None:
+    assert set(FAMILY_GUIDANCE) == set(DOCUMENT_FAMILIES)
 
 
 def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
@@ -78,6 +83,7 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
                 "headers": ["Date", "Désignation", "Montant"],
                 "column_roles": ["transaction_date", "description", "line_total"],
                 "rows": [["12/08/2026", "Consultation", "80,00 EUR"]],
+                "row_roles": ["line_item"],
                 "confidence": 0.91,
                 "region_ids": ["p001-r002"],
             }
@@ -120,6 +126,7 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
         "description",
         "line_total",
     )
+    assert extraction.tables[0].row_roles == ("line_item",)
     assert extraction.coverage.ratio == 1
     assert extraction.coverage.mapped_regions == 2
     assert extraction.coverage.table_regions == 1
@@ -173,6 +180,39 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
     assert extraction.passes == 2
     assert extraction.coverage.ratio == 1
     assert extraction.additional_fields[0].raw_value == "CHAMP_BETA"
+
+
+def test_uncertain_classification_keeps_generic_extraction_as_priority(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["region_dispositions"] = [
+        {
+            "region_id": "p001-r000",
+            "disposition": "unstructured",
+            "reason": "Contenu non structuré",
+        }
+    ]
+    prompts: list[str] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        prompts.append(kwargs["json"]["messages"][1]["content"])
+        return _chat_response(result)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    classification = DocumentClassification(
+        family="document_medical",
+        reliability=0.42,
+        language="fr",
+        country=None,
+    )
+    LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Document difficile à classer")]],
+        classification,
+    )
+
+    assert "fiabilité du classement: 42%" in prompts[0]
+    assert "La famille proposée est incertaine" in prompts[0]
+    assert "N'impose aucune structure métier" in prompts[0]
 
 
 def test_extractor_falls_back_when_vllm_rejects_json_schema(monkeypatch: Any) -> None:
@@ -237,3 +277,69 @@ def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: A
     assert extraction.facts[0].region_ids == ()
     assert extraction.facts[0].confidence == 0.3
     assert extraction.coverage.unreadable_regions == 1
+
+
+def test_bank_prompt_requires_summary_rows_to_be_separated_from_transactions(
+    monkeypatch: Any,
+) -> None:
+    table = (
+        "<table><tr><td>Total ancien solde</td><td></td></tr>"
+        "<tr><td>OPERATIONS CARTE VISA NUMERO 4697</td><td>-2500</td></tr>"
+        "<tr><td>Voyages Arosa</td><td>-2500</td></tr>"
+        "<tr><td>TOTAL CARTE</td><td>-2500</td></tr>"
+        "<tr><td>TOTAL NOUVEAU SOLDE</td><td>-2500</td></tr></table>"
+    )
+    result = _empty_result()
+    result["tables"] = [
+        {
+            "title": "Opérations carte VISA",
+            "semantic_type": "transactions",
+            "headers": ["Libellé", "Montant"],
+            "column_roles": ["description", "amount"],
+            "rows": [
+                ["Total ancien solde", ""],
+                ["OPERATIONS CARTE VISA NUMERO 4697", "-2500"],
+                ["Voyages Arosa", "-2500"],
+                ["TOTAL CARTE", "-2500"],
+                ["TOTAL NOUVEAU SOLDE", "-2500"],
+            ],
+            "row_roles": [
+                "opening_balance",
+                "section_header",
+                "transaction",
+                "total",
+                "closing_balance",
+            ],
+            "confidence": 0.92,
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    prompts: list[str] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        prompts.append(kwargs["json"]["messages"][1]["content"])
+        return _chat_response(result)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    classification = DocumentClassification(
+        family="releve_bancaire",
+        reliability=0.9,
+        language="fr",
+        country="CH",
+    )
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region(table, "table")]],
+        classification,
+    )
+
+    assert extraction.tables[0].row_roles == (
+        "opening_balance",
+        "section_header",
+        "transaction",
+        "total",
+        "closing_balance",
+    )
+    assert extraction.tables[0].row_roles.count("transaction") == 1
+    assert "Un ancien solde" in prompts[0]
+    assert "ne sont jamais\n   des transactions" in prompts[0]
