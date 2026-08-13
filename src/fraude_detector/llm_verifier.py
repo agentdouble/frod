@@ -135,6 +135,10 @@ def _verification_prompt(
     return f"""Contexte proposé:
 - famille: {family}
 - fiabilité du classement: {reliability:.0%}
+- field_code autorisés: {", ".join(FIELD_CODES)}
+- role autorisés: {", ".join(FACT_ROLES)}
+- rôles de date: issue = émission, due = échéance, payment = paiement effectué,
+  expiry = expiration
 
 Objectif:
 Évalue la fidélité de chaque objet extrait par rapport aux régions OCR. Ce contrôle ne recherche
@@ -152,15 +156,23 @@ Principe conservateur obligatoire:
    un format structuré la soutient. N'exige jamais une égalité textuelle stricte.
 5. Utilise ambiguous uniquement si au moins deux interprétations matériellement différentes sont
    réellement soutenues par la source et changent le sens métier.
-6. Utilise contradicted uniquement lorsqu'une région OCR ou la structure du tableau apporte une
-   contradiction concrète. Cite-la et propose une correction seulement si elle est clairement
-   démontrée. Une préférence de formulation ne constitue pas une contradiction.
-7. Ne signale une omission que pour une information métier explicite, importante et absente de
+6. Utilise contradicted uniquement pour un fait ou un champ additionnel lorsqu'une région OCR
+   apporte une contradiction concrète ET qu'une correction structurée est clairement démontrée.
+   Pour un fait, null signifie « conserver la propriété actuelle » dans suggested_value,
+   suggested_field_code ou suggested_role; au moins une propriété non nulle doit être différente.
+   Pour un champ additionnel, seule suggested_value est applicable. Ne déduis pas une correction
+   depuis l'explication libre.
+7. Si la correction nécessiterait un field_code ou un role absent des valeurs autorisées par le
+   schéma, ne crée pas de contradiction ou d'ambiguïté: utilise plausible et laisse les suggestions
+   à null. Une limite du vocabulaire n'est pas une erreur du document.
+8. Les tableaux ne peuvent pas être corrigés par ce contrat. Ne signale donc pas leurs problèmes
+   d'interprétation comme contradicted ou ambiguous; utilise plausible.
+9. Ne signale une omission que pour une information métier explicite, importante et absente de
    tous les faits, champs additionnels et tableaux. Une cellule déjà conservée dans un tableau
    n'est pas omise. Ne transforme pas du texte décoratif en champ.
-8. Examine chaque target_id exactement une fois. Il est parfaitement valide que tous les verdicts
+10. Examine chaque target_id exactement une fois. Il est parfaitement valide que tous les verdicts
    soient supported ou plausible et que possible_omissions soit vide.
-9. confidence mesure la solidité de ton contrôle, pas une probabilité de fraude.
+11. confidence mesure la solidité de ton contrôle, pas une probabilité de fraude.
 
 Objets extraits à contrôler:
 <extraction_targets>
@@ -175,6 +187,8 @@ Régions OCR de référence:
 
 def _response_format() -> dict[str, Any]:
     nullable_text = {"type": ["string", "null"]}
+    nullable_field_code = {"type": ["string", "null"], "enum": [*FIELD_CODES, None]}
+    nullable_role = {"type": ["string", "null"], "enum": [*FACT_ROLES, None]}
     return {
         "type": "json_schema",
         "json_schema": {
@@ -198,8 +212,8 @@ def _response_format() -> dict[str, Any]:
                                     "items": {"type": "string"},
                                 },
                                 "suggested_value": nullable_text,
-                                "suggested_field_code": nullable_text,
-                                "suggested_role": nullable_text,
+                                "suggested_field_code": nullable_field_code,
+                                "suggested_role": nullable_role,
                                 "problematic_row_indexes": {
                                     "type": "array",
                                     "items": {"type": "integer", "minimum": 0},
@@ -226,8 +240,8 @@ def _response_format() -> dict[str, Any]:
                             "type": "object",
                             "properties": {
                                 "description": {"type": "string"},
-                                "proposed_field_code": nullable_text,
-                                "proposed_role": nullable_text,
+                                "proposed_field_code": nullable_field_code,
+                                "proposed_role": nullable_role,
                                 "proposed_value": nullable_text,
                                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                                 "source_region_ids": {
@@ -337,6 +351,27 @@ def _validated_verification(
                 confidence < issue_min_confidence or not source_region_ids
             ):
                 verdict = "plausible"
+            suggested_value = None
+            suggested_field_code = None
+            suggested_role = None
+            if verdict == "contradicted":
+                suggested_value = _optional_text(candidate.get("suggested_value"), 1000)
+                suggested_field_code = _allowed_optional(
+                    candidate.get("suggested_field_code"), FIELD_CODES
+                )
+                suggested_role = _allowed_optional(candidate.get("suggested_role"), FACT_ROLES)
+                if not _actionable_correction(
+                    target,
+                    suggested_value=suggested_value,
+                    suggested_field_code=suggested_field_code,
+                    suggested_role=suggested_role,
+                ):
+                    verdict = "plausible"
+                    suggested_value = None
+                    suggested_field_code = None
+                    suggested_role = None
+            elif verdict == "ambiguous" and target_type == "table":
+                verdict = "plausible"
             reviews.append(
                 ExtractionReview(
                     target_id=target_id,
@@ -345,23 +380,13 @@ def _validated_verification(
                     confidence=confidence,
                     explanation=_clean_text(candidate.get("explanation"), 500),
                     source_region_ids=source_region_ids,
-                    suggested_value=(
-                        _optional_text(candidate.get("suggested_value"), 1000)
-                        if verdict == "contradicted"
-                        else None
-                    ),
-                    suggested_field_code=(
-                        _allowed_optional(candidate.get("suggested_field_code"), FIELD_CODES)
-                        if verdict == "contradicted"
-                        else None
-                    ),
-                    suggested_role=(
-                        _allowed_optional(candidate.get("suggested_role"), FACT_ROLES)
-                        if verdict == "contradicted"
-                        else None
-                    ),
-                    problematic_row_indexes=_non_negative_integers(
-                        candidate.get("problematic_row_indexes")
+                    suggested_value=suggested_value,
+                    suggested_field_code=suggested_field_code,
+                    suggested_role=suggested_role,
+                    problematic_row_indexes=(
+                        _non_negative_integers(candidate.get("problematic_row_indexes"))
+                        if verdict in {"ambiguous", "contradicted"}
+                        else ()
                     ),
                 )
             )
@@ -405,8 +430,8 @@ def _validated_verification(
         limitations=(
             "La vérification utilise une nouvelle conversation mais le même modèle "
             "que l'extraction.",
-            "Elle ne modifie jamais l'extraction initiale et ne voit que le contenu "
-            "fourni par l'OCR.",
+            "Elle ne modifie pas directement l'extraction et ne voit que le contenu fourni "
+            "par l'OCR; seules ses corrections structurées peuvent être réconciliées ensuite.",
             "Une absence de contradiction ne garantit pas l'exactitude du document ou de l'OCR.",
         ),
     )
@@ -432,6 +457,32 @@ def _optional_text(value: object, maximum: int) -> str | None:
 def _allowed_optional(value: object, allowed: tuple[str, ...]) -> str | None:
     text = str(value or "")
     return text if text in allowed else None
+
+
+def _actionable_correction(
+    target: _Target,
+    *,
+    suggested_value: str | None,
+    suggested_field_code: str | None,
+    suggested_role: str | None,
+) -> bool:
+    if target.target_type == "fact":
+        return any(
+            suggestion is not None and suggestion != str(target.payload.get(field, ""))
+            for field, suggestion in (
+                ("raw_value", suggested_value),
+                ("field_code", suggested_field_code),
+                ("role", suggested_role),
+            )
+        )
+    if target.target_type == "additional_field":
+        return (
+            suggested_value is not None
+            and suggested_value != str(target.payload.get("raw_value", ""))
+            and suggested_field_code is None
+            and suggested_role is None
+        )
+    return False
 
 
 def _valid_region_ids(value: object, valid: set[str]) -> tuple[str, ...]:

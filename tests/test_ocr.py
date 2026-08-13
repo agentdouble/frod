@@ -163,7 +163,7 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
             evidence=("Relevé de compte", "Opérations du mois"),
         )
 
-    monkeypatch.setattr("fraude_detector.pipeline.classify_document", fake_classify)
+    monkeypatch.setattr("fraude_detector.content_analysis.classify_document", fake_classify)
     extraction = DocumentExtraction(
         schema_version="0.1-experimental",
         family="releve_bancaire",
@@ -193,7 +193,7 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
         extractor_calls.append((payload, classification, extraction_config))
         return extraction
 
-    monkeypatch.setattr("fraude_detector.pipeline.extract_document", fake_extract)
+    monkeypatch.setattr("fraude_detector.content_analysis.extract_document", fake_extract)
     verification = ExtractionVerification(
         schema_version="0.1-experimental",
         status="clean",
@@ -215,7 +215,7 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
         verifier_calls.append((payload, extracted, classification, verification_config))
         return verification
 
-    monkeypatch.setattr("fraude_detector.pipeline.verify_extraction", fake_verify)
+    monkeypatch.setattr("fraude_detector.content_analysis.verify_extraction", fake_verify)
     config = AnalysisConfig(
         render_dpi=72,
         max_pages=1,

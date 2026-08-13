@@ -7,6 +7,7 @@ import io
 import json
 import warnings
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from pypdf import PdfReader
 
 from fraude_detector.ai_images import AiImageModelAdapter
 from fraude_detector.config import AnalysisConfig
+from fraude_detector.content_analysis import ContentAnalysisResult, analyze_document_content
 from fraude_detector.detectors import (
     AiGeneratedImageDetector,
     ImageProvenanceDetector,
@@ -27,15 +29,13 @@ from fraude_detector.detectors import (
 )
 from fraude_detector.detectors.base import AnalysisContext, Detector
 from fraude_detector.errors import AnalysisError
-from fraude_detector.llm_classifier import classify_document
-from fraude_detector.llm_extractor import extract_document
-from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
     DocumentInfo,
     OcrReport,
 )
+from fraude_detector.parallel_progress import ParallelProgress
 from fraude_detector.pdf_revisions import find_valid_revision_end_offsets
 from fraude_detector.rendering import create_review_overlays, render_input_pages
 from fraude_detector.scoring import assess_risk
@@ -49,19 +49,27 @@ class AnalysisPipeline:
         config: AnalysisConfig | None = None,
         detectors: Iterable[Detector] | None = None,
         ai_image_adapters: Iterable[AiImageModelAdapter] = (),
+        ai_image_adapter_loaders: Iterable[Callable[[], AiImageModelAdapter]] = (),
     ) -> None:
         self.config = config or AnalysisConfig()
-        adapters = tuple(ai_image_adapters)
-        self.detectors = tuple(
-            detectors
-            or (
-                PdfStructureDetector(),
-                RevisionDiffDetector(),
-                PageCompositionDetector(),
-                RasterAnomalyDetector(),
-                ImageProvenanceDetector(),
-                AiGeneratedImageDetector(adapters),
-            )
+        self._custom_detectors = tuple(detectors) if detectors else None
+        self._ai_image_adapters = tuple(ai_image_adapters)
+        self._ai_image_adapter_loaders = tuple(ai_image_adapter_loaders)
+
+    def _detectors(self, progress: ParallelProgress) -> tuple[Detector, ...]:
+        if self._custom_detectors is not None:
+            return self._custom_detectors
+        adapters = list(self._ai_image_adapters)
+        if self._ai_image_adapter_loaders:
+            progress.update("technical", 0.0, "Chargement des modèles d'analyse")
+            adapters.extend(loader() for loader in self._ai_image_adapter_loaders)
+        return (
+            PdfStructureDetector(),
+            RevisionDiffDetector(),
+            PageCompositionDetector(),
+            RasterAnomalyDetector(),
+            ImageProvenanceDetector(),
+            AiGeneratedImageDetector(adapters),
         )
 
     def analyze(
@@ -107,70 +115,39 @@ class AnalysisPipeline:
 
             rendered_pages = render_input_pages(context)
             report_progress(0.20, "Pages preparees")
-            ocr_report: OcrReport | None = None
-            ocr_detector: OcrDetector | None = None
-            classification_result = None
-            extraction_result = None
-            verification_result = None
+            content_result: ContentAnalysisResult | None = None
+            branch_weights = (
+                {"technical": 0.45, "content": 0.55}
+                if self.config.ocr_enabled
+                else {"technical": 1.0}
+            )
+            progress = ParallelProgress(
+                progress_callback,
+                start=0.20,
+                end=0.85,
+                weights=branch_weights,
+            )
             if self.config.ocr_enabled:
-                report_progress(0.21, "Reconnaissance du contenu")
-                ocr_detector = OcrDetector(self.config)
-                ocr_report = ocr_detector.detect(
-                    source,
-                    destination,
-                    rendered_pages=rendered_pages,
-                )
-                if self.config.classification_enabled and ocr_report.success:
-                    report_progress(0.22, "Classification du document")
-                    try:
-                        classification_result = classify_document(
-                            ocr_report.markdown,
-                            self.config,
-                        )
-                    except Exception as error:
-                        warnings.warn(f"Classification failed: {error}", stacklevel=2)
-                if self.config.extraction_enabled and ocr_report.success:
-                    report_progress(0.23, "Extraction des informations")
-                    try:
-                        extraction_result = extract_document(
-                            ocr_report.json_result,
-                            classification_result,
-                            self.config,
-                        )
-                    except Exception as error:
-                        warnings.warn(f"Extraction failed: {error}", stacklevel=2)
-                if (
-                    self.config.verification_enabled
-                    and ocr_report.success
-                    and extraction_result is not None
-                ):
-                    report_progress(0.24, "Vérification indépendante de l'extraction")
-                    try:
-                        verification_result = verify_extraction(
-                            ocr_report.json_result,
-                            extraction_result,
-                            classification_result,
-                            self.config,
-                        )
-                    except Exception as error:
-                        warnings.warn(f"Extraction verification failed: {error}", stacklevel=2)
+                with ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="frod-content",
+                ) as executor:
+                    content_future = executor.submit(
+                        analyze_document_content,
+                        source,
+                        destination,
+                        self.config,
+                        rendered_pages=rendered_pages,
+                        progress_callback=progress.worker_callback("content"),
+                    )
+                    detector_results_list = self._run_detectors(context, progress)
+                    content_result = progress.wait(content_future)
+            else:
+                detector_results_list = self._run_detectors(context, progress)
 
-            detector_results_list: list[DetectorResult] = []
-            detector_count = max(1, len(self.detectors))
-            detector_start = 0.25 if self.config.ocr_enabled else 0.20
-            for index, detector in enumerate(self.detectors):
-                start = detector_start + (0.85 - detector_start) * index / detector_count
-                width = (0.85 - detector_start) / detector_count
-                detector_context = replace(
-                    context,
-                    progress_callback=lambda value, label, start=start, width=width: (
-                        report_progress(start + width * value, label)
-                    ),
-                )
-                report_progress(start, f"Analyse : {detector.name}")
-                detector_results_list.append(self._run_detector(detector, detector_context))
-            if ocr_detector is not None and ocr_report is not None:
-                detector_results_list.append(ocr_detector.result(ocr_report))
+            ocr_report = content_result.ocr_report if content_result is not None else None
+            if content_result is not None:
+                detector_results_list.append(content_result.detector_result)
             detector_results = tuple(detector_results_list)
             report_progress(0.86, "Calcul du score")
             findings = tuple(
@@ -241,9 +218,9 @@ class AnalysisPipeline:
                     "natif; certains pixels analyses peuvent differer du rendu visible.",
                     "L'absence de signal ne prouve pas l'authenticite du document.",
                 ),
-                classification=classification_result,
-                extraction=extraction_result,
-                extraction_verification=verification_result,
+                classification=content_result.classification if content_result else None,
+                extraction=content_result.extraction if content_result else None,
+                extraction_verification=content_result.verification if content_result else None,
             )
             self._write_report(report, destination / "report.json")
             report_progress(1.0, "Analyse terminee")
@@ -299,6 +276,34 @@ class AnalysisPipeline:
                 status="partial",
                 notes=(f"Detecteur interrompu: {type(error).__name__}: {str(error)[:240]}",),
             )
+
+    def _run_detectors(
+        self,
+        context: AnalysisContext,
+        progress: ParallelProgress,
+    ) -> list[DetectorResult]:
+        results: list[DetectorResult] = []
+        detectors = self._detectors(progress)
+        detector_count = max(1, len(detectors))
+        for index, detector in enumerate(detectors):
+            start = index / detector_count
+            width = 1 / detector_count
+            detector_context = replace(
+                context,
+                progress_callback=lambda value, label, start=start, width=width: progress.update(
+                    "technical",
+                    start + width * value,
+                    label,
+                ),
+            )
+            progress.update("technical", start, f"Analyse technique : {detector.name}")
+            results.append(self._run_detector(detector, detector_context))
+            progress.update(
+                "technical",
+                start + width,
+                f"Analyse technique terminée : {detector.name}",
+            )
+        return results
 
     @staticmethod
     def _write_report(report: AnalysisReport, path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import requests
@@ -148,6 +149,11 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     assert "pas une anomalie" in messages[1]["content"]
     assert "tous les verdicts" in messages[1]["content"]
     assert "doivent être\n   en anglais" in messages[1]["content"]
+    assert "payment = paiement effectué" in messages[1]["content"]
+    suggested_role_schema = calls[0]["json"]["response_format"]["json_schema"]["schema"][
+        "properties"
+    ]["reviews"]["items"]["properties"]["suggested_role"]
+    assert "payment" in suggested_role_schema["enum"]
 
 
 def test_low_confidence_suspicion_cannot_create_a_visible_issue(monkeypatch: Any) -> None:
@@ -216,7 +222,18 @@ def test_concrete_high_confidence_contradiction_is_reported_without_mutation(
         ],
         "possible_omissions": [],
     }
-    extraction = _extraction()
+    initial = _extraction()
+    extraction = replace(
+        initial,
+        facts=(
+            replace(
+                initial.facts[0],
+                raw_value="FAC 2026/43",
+                normalized_value="fac 2026 43",
+            ),
+            initial.facts[1],
+        ),
+    )
     monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
 
     verification = LLMExtractionVerifier(AnalysisConfig(verification_enabled=True)).verify(
@@ -226,7 +243,30 @@ def test_concrete_high_confidence_contradiction_is_reported_without_mutation(
     assert verification.status == "attention"
     assert verification.reviews[0].verdict == "contradicted"
     assert verification.reviews[0].suggested_value == "FAC 2026/42"
-    assert extraction.facts[0].raw_value == "FAC 2026/42"
+    assert extraction.facts[0].raw_value == "FAC 2026/43"
+
+
+def test_contradiction_without_an_applicable_change_is_not_reported(
+    monkeypatch: Any,
+) -> None:
+    contradiction = _review("fact-0001", "contradicted", 0.99, "p001-r000")
+    contradiction["suggested_field_code"] = "invoice_number"
+    result = {
+        "reviews": [
+            contradiction,
+            _review("fact-0002", "supported", 0.94, "p001-r001"),
+        ],
+        "possible_omissions": [],
+    }
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    verification = LLMExtractionVerifier(AnalysisConfig(verification_enabled=True)).verify(
+        _ocr(), _extraction(), _classification()
+    )
+
+    assert verification.status == "clean"
+    assert verification.reviews[0].verdict == "plausible"
+    assert verification.reviews[0].suggested_field_code is None
 
 
 def test_missing_target_review_marks_verification_incomplete(monkeypatch: Any) -> None:

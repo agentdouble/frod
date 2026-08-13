@@ -17,6 +17,7 @@ from fraude_detector.models import (
     ExtractedFact,
     ExtractedTable,
     ExtractionCoverage,
+    NormalizationStatus,
 )
 from fraude_detector.structured_llm import StructuredLlmError, request_json_object
 
@@ -80,6 +81,7 @@ FACT_ROLES = (
     "unit_price",
     "issue",
     "due",
+    "payment",
     "service",
     "start",
     "end",
@@ -418,6 +420,8 @@ Règles:
 9. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure.
 10. confidence mesure uniquement la confiance de lecture et d'association du champ. Réduis-la
     si le libellé, la valeur, la colonne ou le rôle sont ambigus; elle est comprise entre 0 et 1.
+11. Pour field_code=date, distingue précisément issue (date d'émission), due (date d'échéance),
+    payment (date à laquelle le paiement a été effectué) et expiry (date d'expiration).
 
 field_code autorisés: {", ".join(FIELD_CODES)}
 role autorisés: {", ".join(FACT_ROLES)}
@@ -870,7 +874,7 @@ def _normalize_value(
     raw_value: str,
     language: str | None,
     country: str | None,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, NormalizationStatus]:
     del language, country
     if field_code in {
         "iban",
@@ -912,6 +916,17 @@ def _normalize_value(
         normalized = _comparison_text(raw_value)
         return (normalized, "normalized") if normalized else (None, "raw_only")
     return None, "raw_only"
+
+
+def normalize_extracted_value(
+    field_code: str,
+    raw_value: str,
+    language: str | None,
+    country: str | None,
+) -> tuple[str | None, NormalizationStatus]:
+    """Normalize a validated fact value after a structured reconciliation."""
+
+    return _normalize_value(field_code, raw_value, language, country)
 
 
 def _normalize_amount(raw_value: str) -> tuple[str | None, str]:

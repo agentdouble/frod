@@ -11,6 +11,7 @@ import re
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import streamlit as st
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.errors import AnalysisError
+from fraude_detector.extraction_reconciliation import reconcile_extraction
 from fraude_detector.gapl import (
     best_available_device,
     create_gapl_adapter,
@@ -439,7 +441,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
     json_bytes = json_path.read_bytes()
     markdown = markdown_path.read_text(encoding="utf-8")
     fixture_hash = hashlib.sha256(json_bytes + markdown.encode("utf-8")).hexdigest()
-    current_key = ("ocr-demo-v2", document.name, fixture_hash)
+    current_key = ("ocr-demo-v3", document.name, fixture_hash)
 
     cached = st.session_state.get("analysis")
     if cached is not None and cached.get("key") == current_key:
@@ -489,6 +491,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
                     classification,
                     PROJECT_CONFIG.analysis,
                 )
+                extraction, verification = reconcile_extraction(extraction, verification)
             except Exception:
                 verification = None
         st.session_state["analysis"] = {
@@ -553,20 +556,22 @@ def _run_analysis(
     if output_dir.exists():
         shutil.rmtree(output_dir)
 
-    adapters = ()
-    gapl_adapter = None
+    adapter_loaders = ()
     if PROJECT_CONFIG.gapl.enabled and GAPL_WEIGHTS.is_file():
-        report_progress(0.06, "Chargement de l'analyse des images générées par IA")
+        report_progress(0.06, "Préparation de l'analyse des images")
         device = (
             best_available_device()
             if PROJECT_CONFIG.gapl.device == "auto"
             else PROJECT_CONFIG.gapl.device
         )
-        gapl_adapter = _load_gapl_adapter(
-            str(GAPL_WEIGHTS.resolve()),
-            device,
+        weights_path = str(GAPL_WEIGHTS.resolve())
+        adapter_loaders = (
+            partial(
+                _load_gapl_adapter,
+                weights_path,
+                device,
+            ),
         )
-        adapters = (gapl_adapter,)
 
     if _is_pdf_bytes(file_bytes):
 
@@ -575,7 +580,7 @@ def _run_analysis(
 
         report = AnalysisPipeline(
             config=config,
-            ai_image_adapters=adapters,
+            ai_image_adapter_loaders=adapter_loaders,
         ).analyze(
             source,
             output_dir,
@@ -603,7 +608,7 @@ def _run_analysis(
 
     report = ImageAnalysisPipeline(
         config=config,
-        ai_image_adapters=adapters,
+        ai_image_adapter_loaders=adapter_loaders,
     ).analyze(
         source,
         output_dir,
@@ -875,6 +880,7 @@ EXTRACTION_ROLE_LABELS = {
     "unit_price": "Prix unitaire",
     "issue": "Émission",
     "due": "Échéance",
+    "payment": "Paiement",
     "service": "Prestation",
     "start": "Début",
     "end": "Fin",
@@ -1091,15 +1097,25 @@ def _render_extraction_verification(
         return
 
     attention_reviews = tuple(
-        review for review in verification.reviews if review.verdict in {"ambiguous", "contradicted"}
+        review
+        for review in verification.reviews
+        if review.verdict in {"ambiguous", "contradicted"} and not review.correction_applied
     )
     plausible_count = sum(review.verdict == "plausible" for review in verification.reviews)
+    corrected_count = sum(review.correction_applied for review in verification.reviews)
     if verification.status == "clean":
-        title = "Aucune contradiction concrète relevée"
-        detail = (
-            f"{verification.reviewed_targets} élément(s) contrôlé(s), dont "
-            f"{plausible_count} normalisation(s) ou correction(s) OCR jugée(s) plausible(s)."
-        )
+        if corrected_count:
+            title = "Extraction corrigée après vérification"
+            detail = (
+                f"{corrected_count} correction(s) structurée(s) appliquée(s), "
+                f"sans point restant à contrôler."
+            )
+        else:
+            title = "Aucune contradiction concrète relevée"
+            detail = (
+                f"{verification.reviewed_targets} élément(s) contrôlé(s), dont "
+                f"{plausible_count} normalisation(s) ou correction(s) OCR jugée(s) plausible(s)."
+            )
     elif verification.status == "incomplete":
         title = "Vérification partielle"
         detail = (

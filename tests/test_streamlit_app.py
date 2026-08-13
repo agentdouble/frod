@@ -312,9 +312,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     assert [expander.label for expander in app.expander] == ["JSON final de l'extraction"]
     assert "Aucune contradiction concrète relevée" in markdown
     classification_index = next(
-        index
-        for index, value in enumerate(markdown_blocks)
-        if "Type de document reconnu" in value
+        index for index, value in enumerate(markdown_blocks) if "Type de document reconnu" in value
     )
     extraction_index = next(
         index

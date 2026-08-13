@@ -223,6 +223,10 @@ class ExtractionReview:
     suggested_field_code: str | None = None
     suggested_role: str | None = None
     problematic_row_indexes: tuple[int, ...] = ()
+    correction_applied: bool = False
+    original_value: str | None = None
+    original_field_code: str | None = None
+    original_role: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 1:

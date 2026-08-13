@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import warnings
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -22,7 +22,7 @@ from fraude_detector.ai_images import (
     one_evaluation_per_family,
 )
 from fraude_detector.config import AnalysisConfig
-from fraude_detector.detectors.ocr import OcrDetector
+from fraude_detector.content_analysis import ContentAnalysisResult, analyze_document_content
 from fraude_detector.errors import AnalysisError
 from fraude_detector.gapl import GaplError
 from fraude_detector.gapl_windows import (
@@ -39,9 +39,6 @@ from fraude_detector.image_provenance import (
     analyze_image_provenance,
     find_ai_metadata_markers,
 )
-from fraude_detector.llm_classifier import classify_document
-from fraude_detector.llm_extractor import extract_document
-from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     DetectorResult,
     Finding,
@@ -49,6 +46,7 @@ from fraude_detector.models import (
     ImageInfo,
     OcrReport,
 )
+from fraude_detector.parallel_progress import ParallelProgress
 from fraude_detector.scoring import assess_risk
 
 
@@ -59,9 +57,11 @@ class ImageAnalysisPipeline:
         self,
         config: AnalysisConfig | None = None,
         ai_image_adapters: Iterable[AiImageModelAdapter] = (),
+        ai_image_adapter_loaders: Iterable[Callable[[], AiImageModelAdapter]] = (),
     ) -> None:
         self.config = config or AnalysisConfig()
         self.ai_image_adapters = tuple(ai_image_adapters)
+        self.ai_image_adapter_loaders = tuple(ai_image_adapter_loaders)
 
     def analyze(
         self,
@@ -116,64 +116,54 @@ class ImageAnalysisPipeline:
             ),
             artifacts=(provenance_artifact,),
         )
-        ocr_report: OcrReport | None = None
-        ocr_detector: OcrDetector | None = None
-        classification_result = None
-        extraction_result = None
-        verification_result = None
-        if self.config.ocr_enabled:
-            report_progress(0.18, "Reconnaissance du contenu")
-            ocr_detector = OcrDetector(self.config)
-            ocr_report = ocr_detector.detect(source, destination)
-            if self.config.classification_enabled and ocr_report.success:
-                report_progress(0.20, "Classification du document")
-                try:
-                    classification_result = classify_document(
-                        ocr_report.markdown,
-                        self.config,
-                    )
-                except Exception as error:
-                    warnings.warn(f"Classification failed: {error}", stacklevel=2)
-            if self.config.extraction_enabled and ocr_report.success:
-                report_progress(0.21, "Extraction des informations")
-                try:
-                    extraction_result = extract_document(
-                        ocr_report.json_result,
-                        classification_result,
-                        self.config,
-                    )
-                except Exception as error:
-                    warnings.warn(f"Extraction failed: {error}", stacklevel=2)
-            if (
-                self.config.verification_enabled
-                and ocr_report.success
-                and extraction_result is not None
-            ):
-                report_progress(0.215, "Vérification indépendante de l'extraction")
-                try:
-                    verification_result = verify_extraction(
-                        ocr_report.json_result,
-                        extraction_result,
-                        classification_result,
-                        self.config,
-                    )
-                except Exception as error:
-                    warnings.warn(f"Extraction verification failed: {error}", stacklevel=2)
-
-        report_progress(0.22, "Analyse des pixels")
-        ai_detector = self._analyze_pixels(
-            raw_image,
-            destination,
-            progress_callback=lambda value, label: report_progress(
-                0.22 + 0.68 * value,
-                label,
-            ),
+        content_result: ContentAnalysisResult | None = None
+        branch_weights = (
+            {"technical": 0.45, "content": 0.55} if self.config.ocr_enabled else {"technical": 1.0}
         )
+        progress = ParallelProgress(
+            progress_callback,
+            start=0.14,
+            end=0.90,
+            weights=branch_weights,
+        )
+        if self.config.ocr_enabled:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="frod-content") as executor:
+                content_future = executor.submit(
+                    analyze_document_content,
+                    source,
+                    destination,
+                    self.config,
+                    progress_callback=progress.worker_callback("content"),
+                )
+                ai_detector = self._analyze_pixels(
+                    raw_image,
+                    destination,
+                    progress_callback=lambda value, label: progress.update(
+                        "technical",
+                        value,
+                        label,
+                    ),
+                )
+                progress.update("technical", 1.0, "Analyse technique terminée")
+                content_result = progress.wait(content_future)
+        else:
+            ai_detector = self._analyze_pixels(
+                raw_image,
+                destination,
+                progress_callback=lambda value, label: progress.update(
+                    "technical",
+                    value,
+                    label,
+                ),
+            )
+            progress.update("technical", 1.0, "Analyse technique terminée")
+
+        ocr_report = content_result.ocr_report if content_result is not None else None
         report_progress(0.92, "Calcul du score")
         forensics = tuple(dict.fromkeys((*provenance_detector.artifacts, *ai_detector.artifacts)))
         detectors = [provenance_detector, ai_detector]
-        if ocr_detector is not None and ocr_report is not None:
-            detectors.append(ocr_detector.result(ocr_report))
+        if content_result is not None:
+            detectors.append(content_result.detector_result)
         findings = tuple(
             finding for detector_result in detectors for finding in detector_result.findings
         )
@@ -207,9 +197,9 @@ class ImageAnalysisPipeline:
                 "Les controles de contenu utilisent une fiabilite de representation "
                 "plafonnee et peuvent etre neutralises si l'extraction est insuffisante.",
             ),
-            classification=classification_result,
-            extraction=extraction_result,
-            extraction_verification=verification_result,
+            classification=content_result.classification if content_result else None,
+            extraction=content_result.extraction if content_result else None,
+            extraction_verification=content_result.verification if content_result else None,
         )
         (destination / "report.json").write_text(
             json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -240,7 +230,11 @@ class ImageAnalysisPipeline:
             if progress_callback is not None:
                 progress_callback(min(1.0, max(0.0, value)), label)
 
-        if not self.ai_image_adapters:
+        adapters = list(self.ai_image_adapters)
+        if self.ai_image_adapter_loaders:
+            report_progress(0.0, "Chargement des modèles d'analyse")
+            adapters.extend(loader() for loader in self.ai_image_adapter_loaders)
+        if not adapters:
             return DetectorResult(
                 name="ai_generated_image",
                 status="partial",
@@ -253,10 +247,10 @@ class ImageAnalysisPipeline:
         evaluations: list[AiImageEvaluation] = []
         gapl_analyses = []
         gapl_errors: list[str] = []
-        adapter_count = len(self.ai_image_adapters)
+        adapter_count = len(adapters)
         with Image.open(BytesIO(raw_image)) as source_image:
             source_image.load()
-            for index, adapter in enumerate(self.ai_image_adapters):
+            for index, adapter in enumerate(adapters):
                 adapter_start = index / adapter_count
                 adapter_width = 1 / adapter_count
                 report_progress(adapter_start, "Analyse du modele IA")
