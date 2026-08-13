@@ -51,6 +51,14 @@ class AnalysisConfig:
     extraction_max_tokens: int = 6_000
     extraction_temperature: float = 0.0
     extraction_coverage_retry: bool = True
+    verification_enabled: bool = False
+    verification_url: str = "http://127.0.0.1:8030"
+    verification_model: str = "minimax_m2_1"
+    verification_timeout_seconds: int = 180
+    verification_max_input_chars: int = 80_000
+    verification_max_tokens: int = 6_000
+    verification_temperature: float = 0.0
+    verification_issue_min_confidence: float = 0.80
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -129,3 +137,17 @@ class AnalysisConfig:
             raise ValueError("extraction_max_tokens must be at least 500")
         if not 0 <= self.extraction_temperature <= 2:
             raise ValueError("extraction_temperature must be between 0 and 2")
+        if self.verification_enabled and not self.verification_url.strip():
+            raise ValueError("verification_url must not be empty when verification is enabled")
+        if self.verification_enabled and not self.verification_model.strip():
+            raise ValueError("verification_model must not be empty when verification is enabled")
+        if self.verification_timeout_seconds < 1:
+            raise ValueError("verification_timeout_seconds must be at least 1")
+        if self.verification_max_input_chars < 1_000:
+            raise ValueError("verification_max_input_chars must be at least 1000")
+        if self.verification_max_tokens < 500:
+            raise ValueError("verification_max_tokens must be at least 500")
+        if not 0 <= self.verification_temperature <= 2:
+            raise ValueError("verification_temperature must be between 0 and 2")
+        if not 0 <= self.verification_issue_min_confidence <= 1:
+            raise ValueError("verification_issue_min_confidence must be between 0 and 1")

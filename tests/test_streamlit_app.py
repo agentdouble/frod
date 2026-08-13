@@ -233,13 +233,45 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
+    monkeypatch.setenv("FROD_VERIFICATION_URL", "http://extract.test:8030")
+    calls: list[list[str]] = []
 
     def fake_post(url: str, **kwargs: Any) -> _Response:
         assert url == "http://extract.test:8030/v1/chat/completions"
+        roles = [message["role"] for message in kwargs["json"]["messages"]]
+        calls.append(roles)
         prompt = kwargs["json"]["messages"][1]["content"]
+        if "<extraction_targets>" in prompt:
+            result = {
+                "reviews": [
+                    {
+                        "target_id": "fact-0001",
+                        "target_type": "fact",
+                        "verdict": "supported",
+                        "confidence": 0.98,
+                        "explanation": "La valeur est soutenue par la région OCR.",
+                        "source_region_ids": ["p001-r000"],
+                        "suggested_value": None,
+                        "suggested_field_code": None,
+                        "suggested_role": None,
+                        "problematic_row_indexes": [],
+                    }
+                ],
+                "possible_omissions": [],
+            }
+            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
         result = {
-            "facts": [],
+            "facts": [
+                {
+                    "field_code": "document_number",
+                    "role": "document",
+                    "raw_label": "Document",
+                    "raw_value": "DECLARATION DE SINISTRE",
+                    "confidence": 0.95,
+                    "region_ids": ["p001-r000"],
+                }
+            ],
             "additional_fields": [],
             "tables": [],
             "region_dispositions": [
@@ -259,9 +291,12 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("OCR - Déclaration cohérente").run(timeout=30)
     app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+    markdown = "\n".join(element.value for element in app.markdown)
 
     assert not app.exception
     assert [expander.label for expander in app.expander] == ["JSON final de l'extraction"]
+    assert "Aucune contradiction concrète relevée" in markdown
+    assert calls == [["system", "user"], ["system", "user"]]
 
 
 def test_local_original_ocr_demo_is_discovered_when_present(
@@ -292,7 +327,8 @@ def test_business_ui_contains_no_json_renderer() -> None:
     ]
 
     assert source.count("st.json(") == 1
-    assert "st.json(extraction.to_dict())" in laboratory_view
+    assert '"extraction": extraction.to_dict()' in laboratory_view
+    assert '"verification": verification.to_dict()' in laboratory_view
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
     assert source.count("st.expander(") == 1

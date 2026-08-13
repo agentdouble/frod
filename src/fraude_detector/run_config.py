@@ -105,6 +105,7 @@ def load_run_config(
             "ocr",
             "classification",
             "extraction",
+            "verification",
             "models",
             "laboratory",
         },
@@ -226,6 +227,7 @@ def _load_analysis(
     ocr = _section(config, "ocr", source)
     classification = _section(config, "classification", source)
     extraction = _section(config, "extraction", source)
+    verification = _section(config, "verification", source)
 
     _reject_unknown(rendering, {"dpi"}, source, "analysis.rendering")
     _reject_unknown(
@@ -307,6 +309,21 @@ def _load_analysis(
         },
         source,
         "extraction",
+    )
+    _reject_unknown(
+        verification,
+        {
+            "enabled",
+            "url",
+            "model",
+            "timeout_seconds",
+            "max_input_chars",
+            "max_tokens",
+            "temperature",
+            "issue_min_confidence",
+        },
+        source,
+        "verification",
     )
 
     ocr_url_override = _env_text(environ, "FROD_OCR_URL")
@@ -433,6 +450,54 @@ def _load_analysis(
             source,
             "extraction.coverage_retry",
         )
+    )
+    verification_url_override = _env_text(environ, "FROD_VERIFICATION_URL")
+    verification_enabled_override = _env_bool(environ, "FROD_VERIFICATION_ENABLED")
+    verification_enabled = (
+        verification_enabled_override
+        if verification_enabled_override is not None
+        else bool(verification_url_override)
+        or _boolean(verification.get("enabled", False), source, "verification.enabled")
+    )
+    verification_url = verification_url_override or _text(
+        verification.get("url", "http://127.0.0.1:8030"),
+        source,
+        "verification.url",
+    )
+    verification_model = _env_text(environ, "FROD_VERIFICATION_MODEL") or _text(
+        verification.get("model", "minimax_m2_1"),
+        source,
+        "verification.model",
+    )
+    verification_timeout_override = _env_int(environ, "FROD_VERIFICATION_TIMEOUT_SECONDS")
+    verification_timeout = (
+        verification_timeout_override
+        if verification_timeout_override is not None
+        else _integer(
+            verification.get("timeout_seconds", 180),
+            source,
+            "verification.timeout_seconds",
+        )
+    )
+    verification_max_input_chars = _integer(
+        verification.get("max_input_chars", 80_000),
+        source,
+        "verification.max_input_chars",
+    )
+    verification_max_tokens = _integer(
+        verification.get("max_tokens", 6_000),
+        source,
+        "verification.max_tokens",
+    )
+    verification_temperature = _number(
+        verification.get("temperature", 0.0),
+        source,
+        "verification.temperature",
+    )
+    verification_issue_min_confidence = _number(
+        verification.get("issue_min_confidence", 0.80),
+        source,
+        "verification.issue_min_confidence",
     )
     ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
@@ -567,6 +632,14 @@ def _load_analysis(
             extraction_max_tokens=extraction_max_tokens,
             extraction_temperature=extraction_temperature,
             extraction_coverage_retry=extraction_coverage_retry,
+            verification_enabled=verification_enabled,
+            verification_url=verification_url,
+            verification_model=verification_model,
+            verification_timeout_seconds=verification_timeout,
+            verification_max_input_chars=verification_max_input_chars,
+            verification_max_tokens=verification_max_tokens,
+            verification_temperature=verification_temperature,
+            verification_issue_min_confidence=verification_issue_min_confidence,
         )
     except ValueError as error:
         raise RunConfigError(f"Configuration d'analyse invalide: {error}") from error

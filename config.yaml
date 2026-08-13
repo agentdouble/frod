@@ -109,6 +109,20 @@ extraction:
   # Une seconde passe limitée tente de comptabiliser uniquement les régions oubliées.
   coverage_retry: true
 
+verification:
+  # Troisième appel expérimental, indépendant et sans modification de l'extraction initiale.
+  enabled: false
+  # Le même serveur MiniMax peut être utilisé; chaque vérification ouvre une nouvelle conversation.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 180
+  # La vérification reçoit les régions OCR et l'extraction structurée dans un seul contexte.
+  max_input_chars: 80000
+  max_tokens: 6000
+  temperature: 0.0
+  # Seuls les doutes ou omissions au-dessus de ce seuil deviennent des alertes visibles.
+  issue_min_confidence: 0.80
+
 models:
   gapl:
     # Détection locale de caractéristiques compatibles avec une image générée par IA.

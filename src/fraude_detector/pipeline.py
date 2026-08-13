@@ -29,6 +29,7 @@ from fraude_detector.detectors.base import AnalysisContext, Detector
 from fraude_detector.errors import AnalysisError
 from fraude_detector.llm_classifier import classify_document
 from fraude_detector.llm_extractor import extract_document
+from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
@@ -110,6 +111,7 @@ class AnalysisPipeline:
             ocr_detector: OcrDetector | None = None
             classification_result = None
             extraction_result = None
+            verification_result = None
             if self.config.ocr_enabled:
                 report_progress(0.21, "Reconnaissance du contenu")
                 ocr_detector = OcrDetector(self.config)
@@ -137,6 +139,21 @@ class AnalysisPipeline:
                         )
                     except Exception as error:
                         warnings.warn(f"Extraction failed: {error}", stacklevel=2)
+                if (
+                    self.config.verification_enabled
+                    and ocr_report.success
+                    and extraction_result is not None
+                ):
+                    report_progress(0.24, "Vérification indépendante de l'extraction")
+                    try:
+                        verification_result = verify_extraction(
+                            ocr_report.json_result,
+                            extraction_result,
+                            classification_result,
+                            self.config,
+                        )
+                    except Exception as error:
+                        warnings.warn(f"Extraction verification failed: {error}", stacklevel=2)
 
             detector_results_list: list[DetectorResult] = []
             detector_count = max(1, len(self.detectors))
@@ -226,6 +243,7 @@ class AnalysisPipeline:
                 ),
                 classification=classification_result,
                 extraction=extraction_result,
+                extraction_verification=verification_result,
             )
             self._write_report(report, destination / "report.json")
             report_progress(1.0, "Analyse terminee")

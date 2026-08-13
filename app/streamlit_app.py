@@ -31,11 +31,13 @@ from fraude_detector.laboratory import (
 from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
 from fraude_detector.llm_classifier import classify_document
 from fraude_detector.llm_extractor import extract_document
+from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
     DocumentClassification,
     DocumentExtraction,
+    ExtractionVerification,
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
@@ -447,6 +449,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         ocr_detector = cached["ocr_detector"]
         classification = cached.get("classification")
         extraction = cached.get("extraction")
+        verification = cached.get("verification")
     else:
         try:
             payload = json.loads(json_bytes)
@@ -467,6 +470,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         )
         classification = None
         extraction = None
+        verification = None
         if PROJECT_CONFIG.analysis.classification_enabled:
             try:
                 classification = classify_document(markdown, PROJECT_CONFIG.analysis)
@@ -477,6 +481,16 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
                 extraction = extract_document(payload, classification, PROJECT_CONFIG.analysis)
             except Exception:
                 extraction = None
+        if PROJECT_CONFIG.analysis.verification_enabled and extraction is not None:
+            try:
+                verification = verify_extraction(
+                    payload,
+                    extraction,
+                    classification,
+                    PROJECT_CONFIG.analysis,
+                )
+            except Exception:
+                verification = None
         st.session_state["analysis"] = {
             "key": current_key,
             "ocr_payload": payload,
@@ -485,6 +499,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             "ocr_detector": ocr_detector,
             "classification": classification,
             "extraction": extraction,
+            "verification": verification,
         }
 
     entering = _render_pdf_loading_if_pending(
@@ -499,6 +514,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             laboratory=laboratory,
             ocr_detector=ocr_detector,
             extraction=extraction,
+            verification=verification,
             workspace_view=workspace_view,
         )
 
@@ -695,6 +711,7 @@ def _render_report(
     if workspace_view == "Laboratoire":
         _render_extraction_laboratory(
             report.extraction,
+            verification=report.extraction_verification,
             recognized_text=_read_ocr_markdown(report, output_dir),
         )
         return
@@ -724,6 +741,7 @@ def _render_ocr_demo_report(
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
     extraction: DocumentExtraction | None,
+    verification: ExtractionVerification | None,
     workspace_view: str,
 ) -> None:
     finding = ocr_detector.findings[0] if ocr_detector.findings else None
@@ -734,7 +752,11 @@ def _render_ocr_demo_report(
         _render_indicator_glossary(categories=("content_consistency",))
         return
     if workspace_view == "Laboratoire":
-        _render_extraction_laboratory(extraction, recognized_text=markdown)
+        _render_extraction_laboratory(
+            extraction,
+            verification=verification,
+            recognized_text=markdown,
+        )
         return
 
     document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
@@ -893,6 +915,7 @@ EXTRACTION_ROW_ROLE_LABELS = {
 def _render_extraction_laboratory(
     extraction: DocumentExtraction | None,
     *,
+    verification: ExtractionVerification | None = None,
     recognized_text: str = "",
 ) -> None:
     st.markdown(
@@ -1032,12 +1055,97 @@ def _render_extraction_laboratory(
             unsafe_allow_html=True,
         )
 
+    _render_extraction_verification(verification)
+
     if recognized_text:
         st.markdown('<h3 class="subsection-title">Texte reconnu</h3>', unsafe_allow_html=True)
         _render_recognized_text(recognized_text, compact=True)
 
     with st.expander("JSON final de l'extraction", expanded=False):
-        st.json(extraction.to_dict())
+        st.json(
+            {
+                "extraction": extraction.to_dict(),
+                "verification": verification.to_dict() if verification is not None else None,
+            }
+        )
+
+
+def _render_extraction_verification(
+    verification: ExtractionVerification | None,
+) -> None:
+    if verification is None:
+        st.markdown(
+            """
+            <section class="verification-summary unavailable">
+              <strong>Vérification indépendante non exécutée</strong>
+              <span>L'extraction affichée reste le résultat initial du modèle.</span>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    attention_reviews = tuple(
+        review for review in verification.reviews if review.verdict in {"ambiguous", "contradicted"}
+    )
+    plausible_count = sum(review.verdict == "plausible" for review in verification.reviews)
+    if verification.status == "clean":
+        title = "Aucune contradiction concrète relevée"
+        detail = (
+            f"{verification.reviewed_targets} élément(s) contrôlé(s), dont "
+            f"{plausible_count} normalisation(s) ou correction(s) OCR jugée(s) plausible(s)."
+        )
+    elif verification.status == "incomplete":
+        title = "Vérification partielle"
+        detail = (
+            f"{verification.reviewed_targets} élément(s) contrôlé(s) sur "
+            f"{verification.expected_targets}. L'extraction initiale n'a pas été modifiée."
+        )
+    else:
+        title = "Points à contrôler dans l'extraction"
+        detail = (
+            f"{len(attention_reviews)} interprétation(s) discutée(s) et "
+            f"{len(verification.omissions)} omission(s) possible(s)."
+        )
+    st.markdown(
+        f"""
+        <section class="verification-summary {verification.status}">
+          <strong>{_html(title)}</strong>
+          <span>{_html(detail)}</span>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    issue_cards = []
+    for review in attention_reviews:
+        label = "Contradiction étayée" if review.verdict == "contradicted" else "Ambiguïté"
+        suggestion = (
+            f"<small>Proposition : {_html(review.suggested_value)}</small>"
+            if review.suggested_value
+            else ""
+        )
+        issue_cards.append(
+            '<article class="verification-issue">'
+            f"<span>{_html(label)} · {_html(review.target_id)}</span>"
+            f"<strong>{_html(review.explanation)}</strong>"
+            f"<small>Solidité du contrôle : {review.confidence:.0%}</small>"
+            f"{suggestion}</article>"
+        )
+    for omission in verification.omissions:
+        value = f" · {_html(omission.proposed_value)}" if omission.proposed_value else ""
+        issue_cards.append(
+            '<article class="verification-issue omission">'
+            f"<span>Omission possible{value}</span>"
+            f"<strong>{_html(omission.description)}</strong>"
+            f"<small>Solidité du contrôle : {omission.confidence:.0%}</small>"
+            "</article>"
+        )
+    if issue_cards:
+        st.markdown(
+            '<section class="verification-issues">' + "".join(issue_cards) + "</section>",
+            unsafe_allow_html=True,
+        )
 
 
 LAB_STATE_LABELS = {
@@ -2671,6 +2779,63 @@ def _inject_styles() -> None:
           margin-top: .8rem;
           border-left-color: var(--amber);
           background: #211d16;
+        }
+        .verification-summary {
+          display: flex;
+          flex-direction: column;
+          gap: .22rem;
+          margin-top: .85rem;
+          padding: .75rem .8rem;
+          border: 1px solid #28583d;
+          border-left: 5px solid var(--green);
+          border-radius: 6px;
+          background: #142019;
+        }
+        .verification-summary.attention,
+        .verification-summary.incomplete {
+          border-color: #665527;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .verification-summary.unavailable {
+          border-color: var(--line);
+          border-left-color: #77747d;
+          background: #19191d;
+        }
+        .verification-summary span {
+          color: var(--muted);
+          font-size: .7rem;
+        }
+        .verification-issues {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: .45rem;
+          margin-top: .45rem;
+        }
+        .verification-issue {
+          display: flex;
+          flex-direction: column;
+          gap: .24rem;
+          min-width: 0;
+          padding: .65rem;
+          border: 1px solid #69424a;
+          border-left: 4px solid var(--coral);
+          border-radius: 5px;
+          background: #26191d;
+        }
+        .verification-issue.omission {
+          border-color: #665527;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .verification-issue span,
+        .verification-issue small {
+          color: var(--muted);
+          font-size: .62rem;
+        }
+        .verification-issue strong {
+          font-size: .75rem;
+          overflow-wrap: anywhere;
         }
         .extraction-overview {
           display: grid;

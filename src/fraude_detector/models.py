@@ -17,6 +17,8 @@ LaboratoryState = Literal[
 ]
 EvidenceStrength = Literal["strong", "moderate", "weak", "informational"]
 NormalizationStatus = Literal["normalized", "ambiguous", "raw_only"]
+VerificationVerdict = Literal["supported", "plausible", "ambiguous", "contradicted"]
+VerificationStatus = Literal["clean", "attention", "incomplete"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +210,58 @@ class DocumentExtraction:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtractionReview:
+    """Independent assessment of one extracted fact, field or table."""
+
+    target_id: str
+    target_type: str
+    verdict: VerificationVerdict
+    confidence: float
+    explanation: str
+    source_region_ids: tuple[str, ...] = ()
+    suggested_value: str | None = None
+    suggested_field_code: str | None = None
+    suggested_role: str | None = None
+    problematic_row_indexes: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionOmission:
+    """Material OCR information that may be absent from the extraction."""
+
+    description: str
+    proposed_field_code: str | None
+    proposed_role: str | None
+    proposed_value: str | None
+    confidence: float
+    source_region_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionVerification:
+    """Non-destructive, independent review of one structured extraction."""
+
+    schema_version: str
+    status: VerificationStatus
+    expected_targets: int
+    reviewed_targets: int
+    reviews: tuple[ExtractionReview, ...]
+    omissions: tuple[ExtractionOmission, ...]
+    limitations: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisReport:
     schema_version: str
     analyzed_at: str
@@ -219,6 +273,7 @@ class AnalysisReport:
     limitations: tuple[str, ...]
     classification: DocumentClassification | None = None
     extraction: DocumentExtraction | None = None
+    extraction_verification: ExtractionVerification | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -236,6 +291,7 @@ class ImageAnalysisReport:
     limitations: tuple[str, ...]
     classification: DocumentClassification | None = None
     extraction: DocumentExtraction | None = None
+    extraction_verification: ExtractionVerification | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

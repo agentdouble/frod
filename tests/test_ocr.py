@@ -14,6 +14,7 @@ from fraude_detector.models import (
     DocumentClassification,
     DocumentExtraction,
     ExtractionCoverage,
+    ExtractionVerification,
 )
 from fraude_detector.pipeline import AnalysisPipeline
 
@@ -193,12 +194,35 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
         return extraction
 
     monkeypatch.setattr("fraude_detector.pipeline.extract_document", fake_extract)
+    verification = ExtractionVerification(
+        schema_version="0.1-experimental",
+        status="clean",
+        expected_targets=0,
+        reviewed_targets=0,
+        reviews=(),
+        omissions=(),
+    )
+    verifier_calls: list[
+        tuple[Any, DocumentExtraction, DocumentClassification | None, AnalysisConfig]
+    ] = []
+
+    def fake_verify(
+        payload: Any,
+        extracted: DocumentExtraction,
+        classification: DocumentClassification | None,
+        verification_config: AnalysisConfig,
+    ) -> ExtractionVerification:
+        verifier_calls.append((payload, extracted, classification, verification_config))
+        return verification
+
+    monkeypatch.setattr("fraude_detector.pipeline.verify_extraction", fake_verify)
     config = AnalysisConfig(
         render_dpi=72,
         max_pages=1,
         ocr_enabled=True,
         classification_enabled=True,
         extraction_enabled=True,
+        verification_enabled=True,
     )
     output = tmp_path / "classification-analysis"
     report = AnalysisPipeline(config=config).analyze(vector_pdf, output)
@@ -210,12 +234,18 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
     assert extractor_calls[0][1] == report.classification
     assert extractor_calls[0][2] == config
     assert report.extraction == extraction
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][1] == extraction
+    assert verifier_calls[0][2] == report.classification
+    assert verifier_calls[0][3] == config
+    assert report.extraction_verification == verification
     assert "classification" not in report.artifacts
     assert "extraction" not in report.artifacts
     assert all(isinstance(paths, tuple) for paths in report.artifacts.values())
     serialized = json.loads((output / "report.json").read_text(encoding="utf-8"))
     assert serialized["classification"]["reliability"] == 0.82
     assert serialized["extraction"]["coverage"]["accounted_regions"] == 1
+    assert serialized["extraction_verification"]["status"] == "clean"
 
 
 def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(

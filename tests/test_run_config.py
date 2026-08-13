@@ -86,6 +86,15 @@ extraction:
   max_tokens: 7000
   temperature: 0.05
   coverage_retry: false
+verification:
+  enabled: true
+  url: "http://verify.internal:8030"
+  model: "minimax-verify"
+  timeout_seconds: 210
+  max_input_chars: 70000
+  max_tokens: 5500
+  temperature: 0.02
+  issue_min_confidence: 0.88
 models:
   gapl:
     enabled: false
@@ -134,6 +143,14 @@ laboratory:
     assert config.analysis.extraction_max_tokens == 7000
     assert config.analysis.extraction_temperature == 0.05
     assert config.analysis.extraction_coverage_retry is False
+    assert config.analysis.verification_enabled is True
+    assert config.analysis.verification_url == "http://verify.internal:8030"
+    assert config.analysis.verification_model == "minimax-verify"
+    assert config.analysis.verification_timeout_seconds == 210
+    assert config.analysis.verification_max_input_chars == 70000
+    assert config.analysis.verification_max_tokens == 5500
+    assert config.analysis.verification_temperature == 0.02
+    assert config.analysis.verification_issue_min_confidence == 0.88
     assert config.gapl.enabled is False
     assert config.gapl.device == "cpu"
     assert config.gapl.weights_path == (tmp_path / "weights/gapl.pt").resolve()
@@ -169,6 +186,8 @@ models:
             "FROD_EXTRACTION_URL": "http://extract:8030",
             "FROD_EXTRACTION_MODEL": "minimax-extract-test",
             "FROD_EXTRACTION_COVERAGE_RETRY": "false",
+            "FROD_VERIFICATION_URL": "http://verify:8030",
+            "FROD_VERIFICATION_MODEL": "minimax-verify-test",
             "FROD_GAPL_ENABLED": "false",
             "FROD_AI_ANALYZE_PDF_IMAGES": "true",
             "FROD_TRUFOR_MAX_PIXELS": "600000",
@@ -185,6 +204,9 @@ models:
     assert config.analysis.extraction_url == "http://extract:8030"
     assert config.analysis.extraction_model == "minimax-extract-test"
     assert config.analysis.extraction_coverage_retry is False
+    assert config.analysis.verification_enabled is True
+    assert config.analysis.verification_url == "http://verify:8030"
+    assert config.analysis.verification_model == "minimax-verify-test"
     assert config.gapl.enabled is False
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.trufor.max_pixels == 600000
