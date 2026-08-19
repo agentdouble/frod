@@ -271,6 +271,28 @@ class ExtractionVerification:
 
 
 @dataclass(frozen=True, slots=True)
+class SynthesisStatement:
+    """One short synthesis statement grounded in known evidence identifiers."""
+
+    text: str
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisSynthesis:
+    """Concise, non-decisional summary generated after all analysis passes."""
+
+    schema_version: str
+    document_summary: SynthesisStatement
+    review_summary: SynthesisStatement
+    highlights: tuple[SynthesisStatement, ...]
+    prompt_version: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisReport:
     schema_version: str
     analyzed_at: str

@@ -124,6 +124,19 @@ verification:
   # Seuls les doutes ou omissions au-dessus de ce seuil deviennent des alertes visibles.
   issue_min_confidence: 0.80
 
+synthesis:
+  # Résumé métier final, généré après tous les contrôles et sans effet sur le score.
+  enabled: false
+  # Cette passe peut partager le serveur et le modèle des autres traitements sémantiques.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 90
+  # Seul un condensé des preuves est transmis, jamais la totalité de l'OCR.
+  max_input_chars: 24000
+  # Une sortie courte limite le temps d'inférence et garde la synthèse lisible.
+  max_tokens: 450
+  temperature: 0.0
+
 models:
   gapl:
     # Détection locale de caractéristiques compatibles avec une image générée par IA.

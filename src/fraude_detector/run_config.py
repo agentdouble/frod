@@ -106,6 +106,7 @@ def load_run_config(
             "classification",
             "extraction",
             "verification",
+            "synthesis",
             "models",
             "laboratory",
         },
@@ -228,6 +229,7 @@ def _load_analysis(
     classification = _section(config, "classification", source)
     extraction = _section(config, "extraction", source)
     verification = _section(config, "verification", source)
+    synthesis = _section(config, "synthesis", source)
 
     _reject_unknown(rendering, {"dpi"}, source, "analysis.rendering")
     _reject_unknown(
@@ -324,6 +326,20 @@ def _load_analysis(
         },
         source,
         "verification",
+    )
+    _reject_unknown(
+        synthesis,
+        {
+            "enabled",
+            "url",
+            "model",
+            "timeout_seconds",
+            "max_input_chars",
+            "max_tokens",
+            "temperature",
+        },
+        source,
+        "synthesis",
     )
 
     ocr_url_override = _env_text(environ, "FROD_OCR_URL")
@@ -499,6 +515,49 @@ def _load_analysis(
         source,
         "verification.issue_min_confidence",
     )
+    synthesis_url_override = _env_text(environ, "FROD_SYNTHESIS_URL")
+    synthesis_enabled_override = _env_bool(environ, "FROD_SYNTHESIS_ENABLED")
+    synthesis_enabled = (
+        synthesis_enabled_override
+        if synthesis_enabled_override is not None
+        else bool(synthesis_url_override)
+        or _boolean(synthesis.get("enabled", False), source, "synthesis.enabled")
+    )
+    synthesis_url = synthesis_url_override or _text(
+        synthesis.get("url", "http://127.0.0.1:8030"),
+        source,
+        "synthesis.url",
+    )
+    synthesis_model = _env_text(environ, "FROD_SYNTHESIS_MODEL") or _text(
+        synthesis.get("model", "minimax_m2_1"),
+        source,
+        "synthesis.model",
+    )
+    synthesis_timeout_override = _env_int(environ, "FROD_SYNTHESIS_TIMEOUT_SECONDS")
+    synthesis_timeout = (
+        synthesis_timeout_override
+        if synthesis_timeout_override is not None
+        else _integer(
+            synthesis.get("timeout_seconds", 90),
+            source,
+            "synthesis.timeout_seconds",
+        )
+    )
+    synthesis_max_input_chars = _integer(
+        synthesis.get("max_input_chars", 24_000),
+        source,
+        "synthesis.max_input_chars",
+    )
+    synthesis_max_tokens = _integer(
+        synthesis.get("max_tokens", 450),
+        source,
+        "synthesis.max_tokens",
+    )
+    synthesis_temperature = _number(
+        synthesis.get("temperature", 0.0),
+        source,
+        "synthesis.temperature",
+    )
     ai_pdf_override = _env_bool(environ, "FROD_AI_ANALYZE_PDF_IMAGES")
 
     try:
@@ -640,6 +699,13 @@ def _load_analysis(
             verification_max_tokens=verification_max_tokens,
             verification_temperature=verification_temperature,
             verification_issue_min_confidence=verification_issue_min_confidence,
+            synthesis_enabled=synthesis_enabled,
+            synthesis_url=synthesis_url,
+            synthesis_model=synthesis_model,
+            synthesis_timeout_seconds=synthesis_timeout,
+            synthesis_max_input_chars=synthesis_max_input_chars,
+            synthesis_max_tokens=synthesis_max_tokens,
+            synthesis_temperature=synthesis_temperature,
         )
     except ValueError as error:
         raise RunConfigError(f"Configuration d'analyse invalide: {error}") from error

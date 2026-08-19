@@ -121,6 +121,13 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
         '<section class="indicator-sequence"' in element.value for element in app.markdown
     )
 
+    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+
+    assert not app.exception
+    assert app.segmented_control[0].value == "Laboratoire"
+    assert [selectbox.label for selectbox in app.selectbox] == ["Vue affichée"]
+    assert "Zones à revoir - page 1" in app.selectbox[0].options
+
 
 def test_ocr_results_are_integrated_into_the_review_workspace(
     monkeypatch,
@@ -220,11 +227,11 @@ def test_extraction_laboratory_has_a_business_readable_empty_state(
 
     assert not app.exception
     assert app.segmented_control[0].value == "Laboratoire"
-    assert "Extraction structurée expérimentale" in markdown
+    assert "OCR - Relevé bancaire à anomalies" in markdown
     assert "Aucune extraction disponible" in markdown
     assert "Texte reconnu" in markdown
     assert "TRANSACTION SUMMARY" in markdown
-    assert not app.expander
+    assert [expander.label for expander in app.expander] == ["Texte reconnu par OCR"]
 
 
 def test_extraction_laboratory_exposes_final_json_on_demand(
@@ -237,6 +244,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     monkeypatch.setenv("FROD_CLASSIFICATION_URL", "http://extract.test:8030")
     monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
     monkeypatch.setenv("FROD_VERIFICATION_URL", "http://extract.test:8030")
+    monkeypatch.setenv("FROD_SYNTHESIS_URL", "http://extract.test:8030")
     calls: list[list[str]] = []
 
     def fake_post(url: str, **kwargs: Any) -> _Response:
@@ -259,6 +267,19 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
             result = {
                 "issues": [],
                 "possible_omissions": [],
+            }
+            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
+        if "<evidence_inventory>" in prompt:
+            result = {
+                "document_summary": {
+                    "text": "Ce document présente une déclaration de sinistre.",
+                    "evidence_ids": ["E002"],
+                },
+                "review_summary": {
+                    "text": "Les contrôles affichés ne relèvent pas de contradiction matérielle.",
+                    "evidence_ids": ["E001"],
+                },
+                "highlights": [],
             }
             return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
@@ -293,8 +314,14 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     markdown = "\n".join(markdown_blocks)
 
     assert not app.exception
-    assert [expander.label for expander in app.expander] == ["JSON final de l'extraction"]
+    assert [expander.label for expander in app.expander] == [
+        "Pourquoi ce classement ?",
+        "Texte reconnu par OCR",
+        "JSON final de l'extraction",
+    ]
     assert "Aucune contradiction concrète relevée" in markdown
+    assert "Ce document présente une déclaration de sinistre." in markdown
+    assert "Les contrôles affichés ne relèvent pas de contradiction matérielle." in markdown
     classification_index = next(
         index for index, value in enumerate(markdown_blocks) if "Type de document reconnu" in value
     )
@@ -305,6 +332,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     )
     assert classification_index < extraction_index
     assert calls == [
+        ["system", "user"],
         ["system", "user"],
         ["system", "user"],
         ["system", "user"],
@@ -344,8 +372,10 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert '"verification": verification.to_dict()' in laboratory_view
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
-    assert source.count("st.expander(") == 1
+    assert source.count("st.expander(") == 4
     assert "JSON final de l'extraction" in laboratory_view
+    assert "Pourquoi ce classement ?" in source
+    assert "Texte reconnu par OCR" in laboratory_view
     assert "_render_classification(classification)" in laboratory_view
     assert "_render_classification(report.classification)" not in report_view
     assert "raw_response" not in source

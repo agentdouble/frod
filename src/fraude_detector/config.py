@@ -59,6 +59,13 @@ class AnalysisConfig:
     verification_max_tokens: int = 2_000
     verification_temperature: float = 0.0
     verification_issue_min_confidence: float = 0.80
+    synthesis_enabled: bool = False
+    synthesis_url: str = "http://127.0.0.1:8030"
+    synthesis_model: str = "minimax_m2_1"
+    synthesis_timeout_seconds: int = 90
+    synthesis_max_input_chars: int = 24_000
+    synthesis_max_tokens: int = 450
+    synthesis_temperature: float = 0.0
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -151,3 +158,15 @@ class AnalysisConfig:
             raise ValueError("verification_temperature must be between 0 and 2")
         if not 0 <= self.verification_issue_min_confidence <= 1:
             raise ValueError("verification_issue_min_confidence must be between 0 and 1")
+        if self.synthesis_enabled and not self.synthesis_url.strip():
+            raise ValueError("synthesis_url must not be empty when synthesis is enabled")
+        if self.synthesis_enabled and not self.synthesis_model.strip():
+            raise ValueError("synthesis_model must not be empty when synthesis is enabled")
+        if self.synthesis_timeout_seconds < 1:
+            raise ValueError("synthesis_timeout_seconds must be at least 1")
+        if self.synthesis_max_input_chars < 1_000:
+            raise ValueError("synthesis_max_input_chars must be at least 1000")
+        if self.synthesis_max_tokens < 100:
+            raise ValueError("synthesis_max_tokens must be at least 100")
+        if not 0 <= self.synthesis_temperature <= 2:
+            raise ValueError("synthesis_temperature must be between 0 and 2")

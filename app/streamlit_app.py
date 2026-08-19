@@ -33,9 +33,11 @@ from fraude_detector.laboratory import (
 from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
 from fraude_detector.llm_classifier import classify_document
 from fraude_detector.llm_extractor import extract_document
+from fraude_detector.llm_synthesizer import summarize_analysis
 from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     AnalysisReport,
+    AnalysisSynthesis,
     DetectorResult,
     DocumentClassification,
     DocumentExtraction,
@@ -226,12 +228,21 @@ def main() -> None:
     if cached is not None and cached.get("key") == current_key:
         report = cached["report"]
         laboratory = cached.get("laboratory")
+        synthesis = cached.get("synthesis")
+        synthesis_error = cached.get("synthesis_error")
         output_dir = cached["output_dir"]
         source_path = cached["source_path"]
     else:
         _render_analysis_progress(progress, 0.0, "Préparation de l'analyse")
         try:
-            report, laboratory, output_dir, source_path = _run_analysis(
+            (
+                report,
+                laboratory,
+                synthesis,
+                synthesis_error,
+                output_dir,
+                source_path,
+            ) = _run_analysis(
                 file_name=uploaded_file.name,
                 file_bytes=file_bytes,
                 file_hash=file_hash,
@@ -256,6 +267,8 @@ def main() -> None:
             "key": current_key,
             "report": report,
             "laboratory": laboratory,
+            "synthesis": synthesis,
+            "synthesis_error": synthesis_error,
             "output_dir": output_dir,
             "source_path": source_path,
         }
@@ -269,10 +282,12 @@ def main() -> None:
         _render_report(
             report,
             laboratory,
+            synthesis,
             output_dir,
             source_path,
             document_name=uploaded_file.name,
             workspace_view=workspace_view,
+            synthesis_error=synthesis_error,
         )
     _render_pending_scroll_reset()
 
@@ -452,6 +467,8 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         classification = cached.get("classification")
         extraction = cached.get("extraction")
         verification = cached.get("verification")
+        synthesis = cached.get("synthesis")
+        synthesis_error = cached.get("synthesis_error")
     else:
         try:
             payload = json.loads(json_bytes)
@@ -473,6 +490,8 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         classification = None
         extraction = None
         verification = None
+        synthesis = None
+        synthesis_error = None
         if PROJECT_CONFIG.analysis.classification_enabled:
             try:
                 classification = classify_document(markdown, PROJECT_CONFIG.analysis)
@@ -494,6 +513,20 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
                 extraction, verification = reconcile_extraction(extraction, verification)
             except Exception:
                 verification = None
+        if PROJECT_CONFIG.analysis.synthesis_enabled:
+            synthesis, synthesis_error = _safe_synthesis(
+                classification=classification,
+                extraction=extraction,
+                verification=verification,
+                findings=ocr_detector.findings,
+                detectors=(ocr_detector,),
+                laboratory=laboratory,
+                config=PROJECT_CONFIG.analysis,
+                assessment_score=round(
+                    max((finding.risk_points for finding in ocr_detector.findings), default=0)
+                ),
+                assessment_label=None,
+            )
         st.session_state["analysis"] = {
             "key": current_key,
             "ocr_payload": payload,
@@ -503,6 +536,8 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             "classification": classification,
             "extraction": extraction,
             "verification": verification,
+            "synthesis": synthesis,
+            "synthesis_error": synthesis_error,
         }
 
     entering = _render_pdf_loading_if_pending(
@@ -519,6 +554,8 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             classification=classification,
             extraction=extraction,
             verification=verification,
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
             workspace_view=workspace_view,
         )
 
@@ -537,6 +574,8 @@ def _run_analysis(
 ) -> tuple[
     AnalysisReport | ImageAnalysisReport,
     LaboratoryReport | None,
+    AnalysisSynthesis | None,
+    str | None,
     Path,
     Path,
 ]:
@@ -576,7 +615,7 @@ def _run_analysis(
     if _is_pdf_bytes(file_bytes):
 
         def pipeline_progress(value: float, text: str) -> None:
-            report_progress(0.12 + 0.62 * value, text)
+            report_progress(0.12 + 0.55 * value, text)
 
         report = AnalysisPipeline(
             config=config,
@@ -593,7 +632,7 @@ def _run_analysis(
                 output_dir,
                 config=config,
                 progress_callback=lambda value, text: report_progress(
-                    0.74 + 0.26 * value,
+                    0.67 + 0.23 * value,
                     text,
                 ),
             )
@@ -601,10 +640,16 @@ def _run_analysis(
             else _empty_laboratory_report()
         )
         laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
-        return report, laboratory, output_dir, source
+        synthesis, synthesis_error = _summarize_report(
+            report,
+            laboratory,
+            config,
+            progress_callback=report_progress,
+        )
+        return report, laboratory, synthesis, synthesis_error, output_dir, source
 
     def pipeline_progress(value: float, text: str) -> None:
-        report_progress(0.12 + 0.60 * value, text)
+        report_progress(0.12 + 0.53 * value, text)
 
     report = ImageAnalysisPipeline(
         config=config,
@@ -623,7 +668,7 @@ def _run_analysis(
             trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
             trufor_timeout_seconds=PROJECT_CONFIG.trufor.timeout_seconds,
             progress_callback=lambda value, text: report_progress(
-                0.72 + 0.28 * value,
+                0.65 + 0.25 * value,
                 text,
             ),
         )
@@ -631,7 +676,68 @@ def _run_analysis(
         else _empty_laboratory_report()
     )
     laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
-    return report, laboratory, output_dir, source
+    synthesis, synthesis_error = _summarize_report(
+        report,
+        laboratory,
+        config,
+        progress_callback=report_progress,
+    )
+    return report, laboratory, synthesis, synthesis_error, output_dir, source
+
+
+def _summarize_report(
+    report: AnalysisReport | ImageAnalysisReport,
+    laboratory: LaboratoryReport,
+    config: AnalysisConfig,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> tuple[AnalysisSynthesis | None, str | None]:
+    if not config.synthesis_enabled:
+        return None, None
+    if progress_callback is not None:
+        progress_callback(0.92, "Synthèse de l'analyse")
+    return _safe_synthesis(
+        classification=report.classification,
+        extraction=report.extraction,
+        verification=report.extraction_verification,
+        findings=report.findings,
+        detectors=report.detectors,
+        laboratory=laboratory,
+        config=config,
+        assessment_score=report.assessment.score,
+        assessment_label=report.assessment.label,
+    )
+
+
+def _safe_synthesis(
+    *,
+    classification: DocumentClassification | None,
+    extraction: DocumentExtraction | None,
+    verification: ExtractionVerification | None,
+    findings: tuple[Finding, ...],
+    detectors: tuple[DetectorResult, ...],
+    laboratory: LaboratoryReport,
+    config: AnalysisConfig,
+    assessment_score: int | None,
+    assessment_label: str | None,
+) -> tuple[AnalysisSynthesis | None, str | None]:
+    try:
+        return (
+            summarize_analysis(
+                classification=classification,
+                extraction=extraction,
+                verification=verification,
+                findings=findings,
+                detectors=detectors,
+                laboratory=laboratory,
+                config=config,
+                assessment_score=assessment_score,
+                assessment_label=assessment_label,
+            ),
+            None,
+        )
+    except Exception:
+        return None, "La synthèse assistée n'a pas pu être produite pour ce document."
 
 
 def _empty_laboratory_report() -> LaboratoryReport:
@@ -696,11 +802,13 @@ def _render_empty_state() -> None:
 def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
+    synthesis: AnalysisSynthesis | None,
     output_dir: Path,
     source_path: Path,
     *,
     document_name: str,
     workspace_view: str,
+    synthesis_error: str | None = None,
 ) -> None:
     findings = sorted(
         report.findings,
@@ -720,6 +828,14 @@ def _render_report(
             classification=report.classification,
             verification=report.extraction_verification,
             recognized_text=_read_ocr_markdown(report, output_dir),
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
+            report=report,
+            laboratory=laboratory,
+            output_dir=output_dir,
+            source_path=source_path,
+            layout_images=layout_images,
+            document_name=document_name,
         )
         return
 
@@ -749,6 +865,8 @@ def _render_ocr_demo_report(
     classification: DocumentClassification | None,
     extraction: DocumentExtraction | None,
     verification: ExtractionVerification | None,
+    synthesis: AnalysisSynthesis | None,
+    synthesis_error: str | None,
     workspace_view: str,
 ) -> None:
     finding = ocr_detector.findings[0] if ocr_detector.findings else None
@@ -764,6 +882,9 @@ def _render_ocr_demo_report(
             classification=classification,
             verification=verification,
             recognized_text=markdown,
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
+            document_name=name,
         )
         return
 
@@ -927,12 +1048,46 @@ def _render_extraction_laboratory(
     classification: DocumentClassification | None = None,
     verification: ExtractionVerification | None = None,
     recognized_text: str = "",
+    synthesis: AnalysisSynthesis | None = None,
+    synthesis_error: str | None = None,
+    report: AnalysisReport | ImageAnalysisReport | None = None,
+    laboratory: LaboratoryReport | None = None,
+    output_dir: Path | None = None,
+    source_path: Path | None = None,
+    layout_images: list[Path] | None = None,
+    document_name: str = "Document analysé",
 ) -> None:
-    st.markdown(
-        '<h2 class="workspace-title">Extraction structurée expérimentale</h2>',
-        unsafe_allow_html=True,
+    _render_laboratory_synthesis(synthesis, synthesis_error=synthesis_error)
+
+    has_visual_workspace = (
+        report is not None and output_dir is not None and source_path is not None
     )
-    _render_classification(classification)
+    if has_visual_workspace:
+        document_column, context_column = st.columns([0.56, 0.44], gap="large")
+        with document_column:
+            _render_document_view(
+                report=report,
+                laboratory=laboratory,
+                output_dir=output_dir,
+                source_path=source_path,
+                layout_images=layout_images or [],
+                document_name=document_name,
+            )
+        with context_column, st.container(key="laboratory_context"):
+            _render_classification(classification)
+            if extraction is not None:
+                _render_extraction_overview(extraction)
+            _render_extraction_verification(verification)
+    else:
+        st.markdown(
+            f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
+            unsafe_allow_html=True,
+        )
+        _render_classification(classification)
+        if extraction is not None:
+            _render_extraction_overview(extraction)
+        _render_extraction_verification(verification)
+
     if extraction is None:
         st.markdown(
             """
@@ -944,30 +1099,11 @@ def _render_extraction_laboratory(
             unsafe_allow_html=True,
         )
         if recognized_text:
-            _render_recognized_text(recognized_text)
+            with st.expander("Texte reconnu par OCR", expanded=False):
+                _render_recognized_text(recognized_text)
         return
 
     coverage = extraction.coverage
-    coverage_tone = "clear" if coverage.ratio >= 0.95 else "attention"
-    facts_count = len(extraction.facts)
-    extra_count = len(extraction.additional_fields)
-    table_count = len(extraction.tables)
-    st.markdown(
-        f"""
-        <section class="extraction-overview">
-          <article class="extraction-coverage {coverage_tone}">
-            <div><strong>{coverage.ratio:.0%}</strong><span>Couverture des zones OCR</span></div>
-            <i><b style="width:{coverage.ratio:.1%}"></b></i>
-            <small>{coverage.accounted_regions} zone(s) comptabilisée(s)
-              sur {coverage.total_regions}</small>
-          </article>
-          <article><strong>{facts_count}</strong><span>Faits comparables</span></article>
-          <article><strong>{extra_count}</strong><span>Informations additionnelles</span></article>
-          <article><strong>{table_count}</strong><span>Tableaux conservés</span></article>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
 
     if extraction.facts:
         rows = []
@@ -1079,11 +1215,9 @@ def _render_extraction_laboratory(
             unsafe_allow_html=True,
         )
 
-    _render_extraction_verification(verification)
-
     if recognized_text:
-        st.markdown('<h3 class="subsection-title">Texte reconnu</h3>', unsafe_allow_html=True)
-        _render_recognized_text(recognized_text, compact=True)
+        with st.expander("Texte reconnu par OCR", expanded=False):
+            _render_recognized_text(recognized_text, compact=True)
 
     with st.expander("JSON final de l'extraction", expanded=False):
         st.json(
@@ -1092,6 +1226,66 @@ def _render_extraction_laboratory(
                 "verification": verification.to_dict() if verification is not None else None,
             }
         )
+
+
+def _render_laboratory_synthesis(
+    synthesis: AnalysisSynthesis | None,
+    *,
+    synthesis_error: str | None,
+) -> None:
+    if synthesis is None:
+        if synthesis_error:
+            st.markdown(
+                f"""
+                <section class="laboratory-synthesis unavailable">
+                  <span>Synthèse de l'analyse</span>
+                  <strong>Synthèse indisponible</strong>
+                  <p>{_html(synthesis_error)}</p>
+                </section>
+                """,
+                unsafe_allow_html=True,
+            )
+        return
+
+    highlights = "".join(
+        f"<li>{_html(statement.text)}</li>" for statement in synthesis.highlights
+    )
+    highlight_block = f"<ul>{highlights}</ul>" if highlights else ""
+    st.markdown(
+        f"""
+        <section class="laboratory-synthesis">
+          <span>Synthèse de l'analyse</span>
+          <strong>{_html(synthesis.document_summary.text)}</strong>
+          <p>{_html(synthesis.review_summary.text)}</p>
+          {highlight_block}
+          <small>Résumé fondé uniquement sur les contrôles et informations affichés.</small>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_extraction_overview(extraction: DocumentExtraction) -> None:
+    coverage = extraction.coverage
+    coverage_tone = "clear" if coverage.ratio >= 0.95 else "attention"
+    st.markdown(
+        f"""
+        <section class="extraction-overview">
+          <article class="extraction-coverage {coverage_tone}">
+            <div><strong>{coverage.ratio:.0%}</strong><span>Couverture des zones OCR</span></div>
+            <i><b style="width:{coverage.ratio:.1%}"></b></i>
+            <small>{coverage.accounted_regions} zone(s) comptabilisée(s)
+              sur {coverage.total_regions}</small>
+          </article>
+          <article><strong>{len(extraction.facts)}</strong><span>Faits comparables</span></article>
+          <article><strong>{len(extraction.additional_fields)}</strong>
+            <span>Informations additionnelles</span></article>
+          <article><strong>{len(extraction.tables)}</strong>
+            <span>Tableaux conservés</span></article>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_extraction_verification(
@@ -1551,13 +1745,14 @@ def _render_classification(classification: DocumentClassification | None) -> Non
     )
 
     if classification.evidence:
-        st.markdown(
-            '<div class="classification-evidence-title">Éléments ayant guidé le classement</div>',
-            unsafe_allow_html=True,
-        )
-        for excerpt in classification.evidence:
+        with st.expander("Pourquoi ce classement ?", expanded=False):
             st.markdown(
-                f'<blockquote class="classification-evidence">{_html(excerpt)}</blockquote>',
+                '<div class="classification-evidence-title">'
+                "Éléments ayant guidé le classement</div>"
+                + "".join(
+                    f'<blockquote class="classification-evidence">{_html(excerpt)}</blockquote>'
+                    for excerpt in classification.evidence
+                ),
                 unsafe_allow_html=True,
             )
 
@@ -1718,6 +1913,7 @@ def _content_progress_markup(label: str, progress: float) -> str:
         ("classification", "Classement", config.classification_enabled),
         ("extraction", "Extraction", config.extraction_enabled),
         ("verification", "Vérification", config.verification_enabled),
+        ("synthesis", "Synthèse", config.synthesis_enabled),
     ]
     enabled_stages = tuple((key, title) for key, title, enabled in stages if enabled)
     if not enabled_stages:
@@ -1757,6 +1953,8 @@ def _content_progress_markup(label: str, progress: float) -> str:
 
 def _content_stage_from_label(label: str) -> str | None:
     lowered = label.casefold()
+    if "synthèse" in lowered or "synthese" in lowered:
+        return "synthesis"
     if "vérification" in lowered or "verification" in lowered:
         return "verification"
     if "extraction" in lowered:
@@ -2947,6 +3145,76 @@ def _inject_styles() -> None:
           color: var(--muted);
           font-size: .7rem;
         }
+        .laboratory-synthesis {
+          position: relative;
+          overflow: hidden;
+          margin: .35rem 0 1rem;
+          padding: 1rem 1.1rem 1rem 1.2rem;
+          border: 1px solid #31526d;
+          border-left: 6px solid var(--cyan);
+          border-radius: 7px;
+          background: #161d24;
+        }
+        .laboratory-synthesis::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 5px;
+          height: 100%;
+          background: var(--blue);
+          opacity: .8;
+        }
+        .laboratory-synthesis.unavailable {
+          border-color: var(--line);
+          border-left-color: #77747d;
+          background: #19191d;
+        }
+        .laboratory-synthesis > span,
+        .laboratory-synthesis > strong,
+        .laboratory-synthesis > small {
+          display: block;
+        }
+        .laboratory-synthesis > span {
+          margin-bottom: .35rem;
+          color: var(--cyan);
+          font-size: .67rem;
+          font-weight: 850;
+          text-transform: uppercase;
+        }
+        .laboratory-synthesis > strong {
+          max-width: 1100px;
+          font-size: 1.02rem;
+          line-height: 1.35;
+        }
+        .laboratory-synthesis p {
+          max-width: 1180px;
+          margin: .45rem 0 0;
+          color: #d0ccc5;
+          font-size: .82rem;
+          line-height: 1.5;
+        }
+        .laboratory-synthesis ul {
+          display: flex;
+          flex-wrap: wrap;
+          gap: .35rem;
+          padding: 0;
+          margin: .65rem 0 0;
+          list-style: none;
+        }
+        .laboratory-synthesis li {
+          padding: .32rem .46rem;
+          border: 1px solid #3c5965;
+          border-radius: 4px;
+          background: #17252b;
+          color: #cdeff4;
+          font-size: .68rem;
+        }
+        .laboratory-synthesis > small {
+          margin-top: .65rem;
+          color: var(--muted);
+          font-size: .64rem;
+        }
         .verification-issues {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2983,6 +3251,16 @@ def _inject_styles() -> None:
           grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(130px, 1fr));
           gap: .55rem;
           margin-bottom: .85rem;
+        }
+        .st-key-laboratory_context .extraction-overview {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          margin-top: .75rem;
+        }
+        .st-key-laboratory_context .extraction-overview > article {
+          min-height: 92px;
+        }
+        .st-key-laboratory_context .verification-summary {
+          margin-top: .65rem;
         }
         .extraction-overview > article {
           min-height: 105px;
