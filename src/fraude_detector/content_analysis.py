@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import warnings
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +20,8 @@ from fraude_detector.models import (
     ExtractionVerification,
     OcrReport,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +73,7 @@ def analyze_document_content(
         try:
             classification = classify_document(ocr_report.markdown, config)
         except Exception as error:
-            warnings.warn(f"Classification failed: {error}", stacklevel=2)
+            logger.warning("Classification failed: %s", error)
     report_progress(0.48, "Classification terminée")
 
     if config.extraction_enabled:
@@ -83,7 +85,7 @@ def analyze_document_content(
                 config,
             )
         except Exception as error:
-            warnings.warn(f"Extraction failed: {error}", stacklevel=2)
+            logger.warning("Extraction failed: %s", error)
     report_progress(0.78, "Extraction terminée")
 
     if config.verification_enabled and extraction is not None:
@@ -97,7 +99,7 @@ def analyze_document_content(
             )
             extraction, verification = reconcile_extraction(extraction, verification)
         except Exception as error:
-            warnings.warn(f"Extraction verification failed: {error}", stacklevel=2)
+            logger.warning("Extraction verification failed: %s", error)
 
     report_progress(1.0, "Analyse du contenu terminée")
     return ContentAnalysisResult(

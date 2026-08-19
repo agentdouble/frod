@@ -36,6 +36,7 @@ from fraude_detector.models import (
     OcrReport,
 )
 from fraude_detector.parallel_progress import ParallelProgress
+from fraude_detector.pdf_logging import suppress_pypdf_recovery_messages
 from fraude_detector.pdf_revisions import find_valid_revision_end_offsets
 from fraude_detector.rendering import create_review_overlays, render_input_pages
 from fraude_detector.scoring import assess_risk
@@ -246,13 +247,14 @@ class AnalysisPipeline:
     @staticmethod
     def _open_reader(raw_pdf: bytes, password: str | None) -> PdfReader:
         try:
-            reader = PdfReader(io.BytesIO(raw_pdf), strict=False)
-            if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
-                raise AnalysisError(
-                    "encrypted_pdf",
-                    "Le PDF est chiffre; fournissez un mot de passe valide.",
-                )
-            _ = len(reader.pages)
+            with suppress_pypdf_recovery_messages():
+                reader = PdfReader(io.BytesIO(raw_pdf), strict=False)
+                if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
+                    raise AnalysisError(
+                        "encrypted_pdf",
+                        "Le PDF est chiffre; fournissez un mot de passe valide.",
+                    )
+                _ = len(reader.pages)
             return reader
         except AnalysisError:
             raise

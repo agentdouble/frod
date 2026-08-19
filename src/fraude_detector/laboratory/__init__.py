@@ -19,6 +19,7 @@ from fraude_detector.laboratory.revisions import analyze_all_revisions
 from fraude_detector.laboratory.signatures import analyze_pdf_signatures
 from fraude_detector.laboratory.two_d_doc import analyze_two_d_doc
 from fraude_detector.models import LaboratoryCheck, LaboratoryReport
+from fraude_detector.pdf_logging import suppress_pypdf_recovery_messages
 from fraude_detector.pdf_revisions import find_valid_revision_end_offsets
 
 
@@ -36,9 +37,11 @@ def analyze_pdf_laboratory(
     destination = Path(output_dir).expanduser().resolve() / "laboratory"
     destination.mkdir(parents=True, exist_ok=True)
     raw_pdf = source.read_bytes()
-    reader = PdfReader(io.BytesIO(raw_pdf), strict=False)
-    if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
-        raise ValueError("Le laboratoire ne peut pas ouvrir ce PDF chiffre.")
+    with suppress_pypdf_recovery_messages():
+        reader = PdfReader(io.BytesIO(raw_pdf), strict=False)
+        if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
+            raise ValueError("Le laboratoire ne peut pas ouvrir ce PDF chiffre.")
+        _ = len(reader.pages)
     pdfium_document = pypdfium2.PdfDocument(raw_pdf, password=password)
 
     def progress(value: float, label: str) -> None:
