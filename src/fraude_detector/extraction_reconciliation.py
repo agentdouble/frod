@@ -31,15 +31,23 @@ def reconcile_extraction(
                     current = facts[index]
                     field_code = review.suggested_field_code or current.field_code
                     role = review.suggested_role or current.role
-                    raw_value = review.suggested_value or current.raw_value
-                    if (field_code, role, raw_value) != (
+                    current_value = current.corrected_value or current.raw_value
+                    corrected_value = current.corrected_value
+                    if review.suggested_value is not None:
+                        corrected_value = (
+                            review.suggested_value
+                            if review.suggested_value != current.raw_value
+                            else None
+                        )
+                    effective_value = corrected_value or current.raw_value
+                    if (field_code, role, effective_value) != (
                         current.field_code,
                         current.role,
-                        current.raw_value,
+                        current_value,
                     ):
                         normalized_value, normalization_status = normalize_extracted_value(
                             field_code,
-                            raw_value,
+                            effective_value,
                             extraction.language,
                             extraction.country,
                         )
@@ -47,14 +55,14 @@ def reconcile_extraction(
                             current,
                             field_code=field_code,
                             role=role,
-                            raw_value=raw_value,
+                            corrected_value=corrected_value,
                             normalized_value=normalized_value,
                             normalization_status=normalization_status,
                         )
                         applied_review = replace(
                             review,
                             correction_applied=True,
-                            original_value=current.raw_value,
+                            original_value=current_value,
                             original_field_code=current.field_code,
                             original_role=current.role,
                         )
@@ -62,15 +70,20 @@ def reconcile_extraction(
                 index = _target_index(review.target_id, "additional", len(additional_fields))
                 if index is not None and review.suggested_value is not None:
                     current = additional_fields[index]
-                    if review.suggested_value != current.raw_value:
+                    current_value = current.corrected_value or current.raw_value
+                    if review.suggested_value != current_value:
                         additional_fields[index] = replace(
                             current,
-                            raw_value=review.suggested_value,
+                            corrected_value=(
+                                review.suggested_value
+                                if review.suggested_value != current.raw_value
+                                else None
+                            ),
                         )
                         applied_review = replace(
                             review,
                             correction_applied=True,
-                            original_value=current.raw_value,
+                            original_value=current_value,
                         )
         reviews.append(applied_review)
 

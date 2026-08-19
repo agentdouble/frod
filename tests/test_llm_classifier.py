@@ -65,6 +65,10 @@ def test_classification_accepts_paraphrased_reasons(monkeypatch: Any) -> None:
     assert calls[0]["json"]["messages"][0]["role"] == "system"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
     assert '"model_confidence": "confidence"' in calls[0]["json"]["messages"][1]["content"]
+    assert (
+        "Rédige category_evidence et country_evidence en français"
+        in calls[0]["json"]["messages"][1]["content"]
+    )
     schema_properties = calls[0]["json"]["response_format"]["json_schema"]["schema"]["properties"]
     assert set(schema_properties) == {
         "category",

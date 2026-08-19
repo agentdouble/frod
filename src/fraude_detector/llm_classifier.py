@@ -103,7 +103,9 @@ si une autre famille reste raisonnablement possible. Ne présente jamais cette c
 probabilité de fraude.
 
 Toutes les clés JSON et valeurs d'énumération doivent être en anglais exactement comme dans le
-format ci-dessous. Les courtes justifications peuvent rester dans la langue du document.
+format ci-dessous. Rédige category_evidence et country_evidence en français, même si le document
+est dans une autre langue; conserve seulement les noms propres et courtes valeurs sources dans
+leur graphie documentaire.
 
 Format JSON exact:
 {{

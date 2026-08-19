@@ -102,15 +102,16 @@ extraction:
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
   timeout_seconds: 180
-  # Les régions OCR sont regroupées sans couper les champs courts ni les lignes de tableau.
-  max_input_chars: 16000
-  max_tokens: 6000
+  # Un contexte plus large évite de multiplier les appels pour les documents de plusieurs pages.
+  max_input_chars: 48000
+  # Les tableaux sont reconstruits depuis l'OCR et ne consomment plus la sortie du modèle.
+  max_tokens: 4000
   temperature: 0.0
   # Une seconde passe limitée tente de comptabiliser uniquement les régions oubliées.
   coverage_retry: true
 
 verification:
-  # Troisième appel expérimental, indépendant et sans modification de l'extraction initiale.
+  # Troisième appel expérimental et indépendant; seules les anomalies sont renvoyées.
   enabled: false
   # Le même serveur MiniMax peut être utilisé; chaque vérification ouvre une nouvelle conversation.
   url: "http://127.0.0.1:8030"
@@ -118,7 +119,7 @@ verification:
   timeout_seconds: 180
   # La vérification reçoit les régions OCR et l'extraction structurée dans un seul contexte.
   max_input_chars: 80000
-  max_tokens: 6000
+  max_tokens: 2000
   temperature: 0.0
   # Seuls les doutes ou omissions au-dessus de ce seuil deviennent des alertes visibles.
   issue_min_confidence: 0.80

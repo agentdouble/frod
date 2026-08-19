@@ -19,7 +19,17 @@ from fraude_detector.models import (
     ExtractionCoverage,
     NormalizationStatus,
 )
+from fraude_detector.ocr_tables import table_from_regions
 from fraude_detector.structured_llm import StructuredLlmError, request_json_object
+from fraude_detector.structured_ocr import (
+    StructuredOcrRegion,
+    extract_structured_ocr_regions,
+    format_structured_ocr_region,
+)
+
+EXTRACTION_SCHEMA_VERSION = "0.3-experimental"
+EXTRACTION_PROMPT_VERSION = "extraction-compact-2026-08-19-v1"
+EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-19-v1"
 
 FIELD_CODES = (
     "person_name",
@@ -132,6 +142,99 @@ TABLE_ROW_ROLES = (
 
 REGION_DISPOSITIONS = ("boilerplate", "unstructured", "unreadable")
 
+ADDITIONAL_FIELD_HINTS = (
+    "document_status",
+    "payment_terms",
+    "coverage_detail",
+    "claim_detail",
+    "medical_detail",
+    "banking_detail",
+    "regulatory_detail",
+    "other_material",
+)
+
+FIELD_CODE_GUIDANCE = {
+    "person_name": "nom d'une personne explicitement identifiée",
+    "organization_name": "nom d'une organisation, banque, assureur ou établissement",
+    "address": "adresse postale ou lieu explicitement qualifié",
+    "phone_number": "numéro de téléphone",
+    "email_address": "adresse électronique",
+    "document_number": "référence principale d'un document sans code plus précis",
+    "invoice_number": "numéro de facture ou de reçu",
+    "contract_number": "numéro de contrat, police ou convention",
+    "claim_number": "numéro de dossier ou de sinistre",
+    "account_number": "numéro de compte autre qu'un IBAN",
+    "tax_identifier": "identifiant fiscal ou numéro de TVA",
+    "professional_identifier": "identifiant d'un professionnel réglementé",
+    "registration_identifier": "numéro d'enregistrement d'une organisation ou d'un véhicule",
+    "other_identifier": "identifiant matériel sans code canonique plus précis",
+    "iban": "IBAN explicitement présenté comme tel",
+    "bic": "BIC ou SWIFT explicitement présenté comme tel",
+    "payment_card_number": "numéro de carte de paiement complet ou masqué",
+    "date": "date ponctuelle; le role en précise la fonction",
+    "date_period": "période comprenant un début et une fin",
+    "monetary_amount": "montant avec sa devise lorsqu'elle est visible",
+    "quantity": "quantité d'un produit, service ou acte",
+    "percentage": "taux ou pourcentage",
+    "service_description": "description d'une prestation ou d'un acte",
+    "service_code": "code de prestation ou d'acte",
+    "product_description": "description d'un produit ou bien",
+    "product_code": "code de produit",
+    "transaction_description": "libellé d'un mouvement financier individuel",
+}
+
+ROLE_GUIDANCE = {
+    "issuer": "entité qui émet le document",
+    "recipient": "destinataire du document",
+    "customer": "client",
+    "patient": "patient",
+    "practitioner": "professionnel de santé ou prescripteur",
+    "provider": "prestataire de service",
+    "beneficiary": "bénéficiaire d'un paiement, soin ou droit",
+    "payer": "personne ou entité qui paie",
+    "account_holder": "titulaire du compte",
+    "bank": "établissement bancaire",
+    "insurer": "assureur",
+    "employer": "employeur",
+    "supplier": "fournisseur",
+    "document": "document lui-même",
+    "invoice": "facture ou reçu",
+    "contract": "contrat ou police",
+    "claim": "dossier ou sinistre",
+    "transaction": "mouvement financier individuel",
+    "line_item": "ligne détaillée facturée",
+    "subtotal": "sous-total",
+    "tax": "taxe ou TVA",
+    "total": "total général ou de section",
+    "opening_balance": "solde au début de la période",
+    "closing_balance": "solde à la fin de la période",
+    "debit": "montant débité",
+    "credit": "montant crédité",
+    "unit_price": "prix unitaire",
+    "issue": "date d'émission",
+    "due": "date d'échéance",
+    "payment": "date de paiement effectué",
+    "service": "date ou information liée à la prestation",
+    "start": "début d'une période",
+    "end": "fin d'une période",
+    "birth": "date de naissance",
+    "expiry": "date d'expiration",
+    "other": "rôle matériel non couvert plus précisément",
+}
+
+_OBVIOUS_BOILERPLATE_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:please|think)\b.{0,40}\benvironment\b.{0,40}\b(?:print|printing)\b",
+        r"\b(?:pensez|penser)\b.{0,40}\benvironnement\b.{0,40}\bimprim",
+        r"\b(?:respectez|préservez|protegez|protégez)\b.{0,30}\benvironnement\b",
+        r"\bbitte\b.{0,40}\bumwelt\b.{0,40}\bdruck",
+        r"\bpiens[ae]\b.{0,40}\bmedio ambiente\b.{0,40}\bimprim",
+        r"\b(?:follow us|suivez-nous)\b",
+        r"\b(?:facebook|instagram|linkedin|x\.com)\.com/",
+    )
+)
+
 FAMILY_GUIDANCE = {
     "facture_recu": (
         "Identifie émetteur et client, numéro de facture ou reçu, dates d'émission, d'échéance "
@@ -225,14 +328,6 @@ class ExtractionError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class _OcrRegion:
-    region_id: str
-    page: int
-    label: str
-    content: str
-
-
-@dataclass(frozen=True, slots=True)
 class _RawExtraction:
     facts: tuple[Mapping[str, Any], ...]
     additional_fields: tuple[Mapping[str, Any], ...]
@@ -257,7 +352,7 @@ class LLMDocumentExtractor:
         ocr_json: Any,
         classification: DocumentClassification | None,
     ) -> DocumentExtraction:
-        regions = _ocr_regions(ocr_json)
+        regions = extract_structured_ocr_regions(ocr_json)
         family = classification.family if classification else "autre"
         family_reliability = classification.reliability if classification else 0.0
         language = classification.language if classification else None
@@ -306,7 +401,7 @@ class LLMDocumentExtractor:
 
     def _extract_chunk(
         self,
-        regions: tuple[_OcrRegion, ...],
+        regions: tuple[StructuredOcrRegion, ...],
         family: str,
         family_reliability: float,
         language: str | None,
@@ -355,7 +450,7 @@ def extract_document(
 
 
 def _extraction_prompt(
-    regions: tuple[_OcrRegion, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     *,
     family: str,
     family_reliability: float,
@@ -363,10 +458,12 @@ def _extraction_prompt(
     country: str | None,
     coverage_pass: bool,
 ) -> str:
-    region_text = "\n".join(
-        f'<region id="{region.region_id}" page="{region.page}" label="{region.label}">\n'
-        f"{region.content}\n</region>"
-        for region in regions
+    region_text = "\n".join(format_structured_ocr_region(region) for region in regions)
+    field_guidance = "\n".join(
+        f"- {code}: {description}" for code, description in FIELD_CODE_GUIDANCE.items()
+    )
+    role_guidance = "\n".join(
+        f"- {role}: {description}" for role, description in ROLE_GUIDANCE.items()
     )
     generic_guidance = FAMILY_GUIDANCE["autre"]
     family_guidance = FAMILY_GUIDANCE.get(family, generic_guidance)
@@ -380,7 +477,10 @@ def _extraction_prompt(
         "Il s'agit d'une passe de couverture sur des régions non comptabilisées. Pour chacune, "
         "extrais l'information manquante ou indique explicitement sa disposition."
         if coverage_pass
-        else "Effectue l'inventaire complet de toutes les régions fournies."
+        else (
+            "Comptabilise toutes les régions fournies, mais n'extrais comme données que "
+            "les informations matériellement utiles au document."
+        )
     )
     return f"""Contexte proposé:
 - famille: {family}
@@ -401,10 +501,17 @@ Règles:
    tableaux avant d'extraire. Retourne chaque information comparable dans facts avec un
    field_code et un role autorisés.
 2. Une valeur importante répétée avec un rôle différent doit produire plusieurs faits.
-3. Place toute information utile sans code adapté dans additional_fields; ne la jette pas.
-4. Préserve les tableaux avec leurs en-têtes et toutes leurs lignes, sans résumé.
-   Associe chaque en-tête à un column_role canonique dans le même ordre et chaque ligne à
-   un row_role canonique dans le même ordre que rows.
+3. Utilise additional_fields uniquement pour une information spécifique à ce document,
+   matériellement utile à une revue, une comparaison future ou une règle métier, mais sans code
+   canonique adapté. Un message environnemental, une publicité, un slogan, une invitation à
+   suivre un réseau social, une formule de politesse, une navigation, un pied de page générique
+   ou une mention légale générique n'est jamais une information additionnelle: classe sa région
+   en boilerplate. Le texte OCR reste conservé séparément, il n'est donc pas perdu.
+4. Pour chaque tableau, référence sa région OCR mais ne recopie jamais ses en-têtes ni ses
+   cellules: Frod les reconstruit directement depuis le HTML ou Markdown source. Retourne seulement
+   column_roles dans l'ordre des colonnes, un default_row_role applicable à la majorité des lignes,
+   puis row_role_overrides uniquement pour les indices de lignes qui ont un rôle différent.
+   row_index commence à 0 sur la première ligne de données située après l'en-tête.
    Dans un relevé, transaction désigne uniquement un mouvement individuel. Un ancien solde,
    un nouveau solde, un sous-total, un total ou une ligne annonçant une carte ne sont jamais
    des transactions. Utilise opening_balance, closing_balance, subtotal, total ou
@@ -415,16 +522,30 @@ Règles:
    réorganiser la sortie pour restituer leur relation, mais tu ne peux ni inventer une valeur ni
    déplacer arbitrairement un montant lorsque la source reste ambiguë.
 7. Chaque fait, champ ou tableau doit référencer uniquement les region_ids fournis.
-8. Pour toute région sans extraction, ajoute une disposition: boilerplate, unstructured ou
-   unreadable.
+8. Pour toute région sans extraction, ajoute son identifiant dans le groupe approprié de
+   region_dispositions: boilerplate pour le contenu décoratif, promotionnel, répétitif ou générique;
+   unstructured pour une information métier utile mais impossible à structurer; unreadable pour
+   une lecture insuffisante. Ne génère aucune explication pour les régions ainsi comptabilisées.
 9. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure.
 10. confidence mesure uniquement la confiance de lecture et d'association du champ. Réduis-la
     si le libellé, la valeur, la colonne ou le rôle sont ambigus; elle est comprise entre 0 et 1.
 11. Pour field_code=date, distingue précisément issue (date d'émission), due (date d'échéance),
     payment (date à laquelle le paiement a été effectué) et expiry (date d'expiration).
+12. Utilise bbox_2d, order, label et native_label pour restituer l'ordre de lecture, rapprocher
+    un libellé de sa valeur et comprendre les colonnes. bbox_2d est normalisée de 0 à 1000.
+13. Une région table contient son tableau local en HTML ou Markdown. Utilise les régions voisines
+    seulement pour son titre ou son contexte, sans dupliquer les cellules dans facts ou
+    additional_fields sauf pour une information clé du document autorisée par la règle 5.
+14. Choisis toujours le field_code et le role les plus précis selon les définitions ci-dessous.
+    N'utilise other ou other_identifier que si aucune définition plus précise ne convient.
 
-field_code autorisés: {", ".join(FIELD_CODES)}
-role autorisés: {", ".join(FACT_ROLES)}
+Définitions stables des field_code:
+{field_guidance}
+
+Définitions stables des role:
+{role_guidance}
+
+semantic_hint autorisés pour additional_fields: {", ".join(ADDITIONAL_FIELD_HINTS)}
 semantic_type de tableau: {", ".join(TABLE_TYPES)}
 column_role de tableau: {", ".join(TABLE_COLUMN_ROLES)}
 row_role de tableau: {", ".join(TABLE_ROW_ROLES)}
@@ -477,7 +598,10 @@ def _response_format() -> dict[str, Any]:
                             "properties": {
                                 "raw_label": {"type": "string"},
                                 "raw_value": {"type": "string"},
-                                "semantic_hint": {"type": ["string", "null"]},
+                                "semantic_hint": {
+                                    "type": ["string", "null"],
+                                    "enum": [*ADDITIONAL_FIELD_HINTS, None],
+                                },
                                 **source_fields,
                             },
                             "required": [
@@ -497,31 +621,37 @@ def _response_format() -> dict[str, Any]:
                             "properties": {
                                 "title": {"type": ["string", "null"]},
                                 "semantic_type": {"type": "string", "enum": list(TABLE_TYPES)},
-                                "headers": {"type": "array", "items": {"type": "string"}},
                                 "column_roles": {
                                     "type": "array",
                                     "items": {"type": "string", "enum": list(TABLE_COLUMN_ROLES)},
                                 },
-                                "rows": {
+                                "default_row_role": {
+                                    "type": "string",
+                                    "enum": list(TABLE_ROW_ROLES),
+                                },
+                                "row_role_overrides": {
                                     "type": "array",
                                     "items": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
+                                        "type": "object",
+                                        "properties": {
+                                            "row_index": {"type": "integer", "minimum": 0},
+                                            "role": {
+                                                "type": "string",
+                                                "enum": list(TABLE_ROW_ROLES),
+                                            },
+                                        },
+                                        "required": ["row_index", "role"],
+                                        "additionalProperties": False,
                                     },
-                                },
-                                "row_roles": {
-                                    "type": "array",
-                                    "items": {"type": "string", "enum": list(TABLE_ROW_ROLES)},
                                 },
                                 **source_fields,
                             },
                             "required": [
                                 "title",
                                 "semantic_type",
-                                "headers",
                                 "column_roles",
-                                "rows",
-                                "row_roles",
+                                "default_row_role",
+                                "row_role_overrides",
                                 "confidence",
                                 "region_ids",
                             ],
@@ -529,20 +659,16 @@ def _response_format() -> dict[str, Any]:
                         },
                     },
                     "region_dispositions": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "region_id": {"type": "string"},
-                                "disposition": {
-                                    "type": "string",
-                                    "enum": list(REGION_DISPOSITIONS),
-                                },
-                                "reason": {"type": "string"},
-                            },
-                            "required": ["region_id", "disposition", "reason"],
-                            "additionalProperties": False,
+                        "type": "object",
+                        "properties": {
+                            disposition: {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                            for disposition in REGION_DISPOSITIONS
                         },
+                        "required": list(REGION_DISPOSITIONS),
+                        "additionalProperties": False,
                     },
                 },
                 "required": ["facts", "additional_fields", "tables", "region_dispositions"],
@@ -552,50 +678,15 @@ def _response_format() -> dict[str, Any]:
     }
 
 
-def _ocr_regions(payload: Any) -> tuple[_OcrRegion, ...]:
-    pages: list[Any]
-    if isinstance(payload, list):
-        pages = payload
-    elif isinstance(payload, dict) and isinstance(payload.get("pages"), list):
-        pages = payload["pages"]
-    else:
-        return ()
-
-    regions: list[_OcrRegion] = []
-    for page_index, page in enumerate(pages, start=1):
-        if isinstance(page, list):
-            page_regions = page
-        elif isinstance(page, dict):
-            page_regions = page.get("regions", [])
-        else:
-            page_regions = []
-        if not isinstance(page_regions, list):
-            continue
-        for region_index, region in enumerate(page_regions):
-            if not isinstance(region, dict):
-                continue
-            content = str(region.get("content", "")).strip()
-            label = str(region.get("label", "unknown")).strip() or "unknown"
-            regions.append(
-                _OcrRegion(
-                    region_id=f"p{page_index:03d}-r{region_index:03d}",
-                    page=page_index,
-                    label=label[:40],
-                    content=content or "[aucun contenu textuel reconnu]",
-                )
-            )
-    return tuple(regions)
-
-
 def _chunk_regions(
-    regions: tuple[_OcrRegion, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     max_chars: int,
-) -> tuple[tuple[_OcrRegion, ...], ...]:
-    chunks: list[tuple[_OcrRegion, ...]] = []
-    current: list[_OcrRegion] = []
+) -> tuple[tuple[StructuredOcrRegion, ...], ...]:
+    chunks: list[tuple[StructuredOcrRegion, ...]] = []
+    current: list[StructuredOcrRegion] = []
     current_size = 0
     for region in regions:
-        overhead = len(region.region_id) + len(region.label) + 80
+        overhead = len(format_structured_ocr_region(region)) - len(region.content)
         if len(region.content) + overhead > max_chars:
             if current:
                 chunks.append(tuple(current))
@@ -605,10 +696,13 @@ def _chunk_regions(
             for start in range(0, len(region.content), part_size):
                 chunks.append(
                     (
-                        _OcrRegion(
+                        StructuredOcrRegion(
                             region_id=region.region_id,
                             page=region.page,
+                            reading_order=region.reading_order,
                             label=region.label,
+                            native_label=region.native_label,
+                            bbox_2d=region.bbox_2d,
                             content=region.content[start : start + part_size],
                         ),
                     )
@@ -630,7 +724,7 @@ def _raw_extraction(payload: Mapping[str, Any]) -> _RawExtraction:
         facts=_mapping_items(payload.get("facts")),
         additional_fields=_mapping_items(payload.get("additional_fields")),
         tables=_mapping_items(payload.get("tables")),
-        dispositions=_mapping_items(payload.get("region_dispositions")),
+        dispositions=_disposition_items(payload.get("region_dispositions")),
     )
 
 
@@ -638,6 +732,19 @@ def _mapping_items(value: object) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, list):
         return ()
     return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _disposition_items(value: object) -> tuple[Mapping[str, Any], ...]:
+    if isinstance(value, list):
+        return _mapping_items(value)
+    if not isinstance(value, Mapping):
+        return ()
+    return tuple(
+        {"region_id": str(region_id), "disposition": disposition}
+        for disposition in REGION_DISPOSITIONS
+        for region_id in value.get(disposition, ())
+        if isinstance(region_id, str)
+    )
 
 
 def _combine_raw(results: Iterable[_RawExtraction]) -> _RawExtraction:
@@ -655,7 +762,7 @@ def _combine_raw(results: Iterable[_RawExtraction]) -> _RawExtraction:
 
 def _validated_extraction(
     raw: _RawExtraction,
-    regions: tuple[_OcrRegion, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     *,
     family: str,
     language: str | None,
@@ -668,7 +775,7 @@ def _validated_extraction(
     tables = _validated_tables(raw.tables, region_by_id)
     coverage = _coverage(raw, regions, facts, additional, tables)
     return DocumentExtraction(
-        schema_version="0.1-experimental",
+        schema_version=EXTRACTION_SCHEMA_VERSION,
         family=family,
         language=language,
         country=country,
@@ -677,6 +784,8 @@ def _validated_extraction(
         tables=tables,
         coverage=coverage,
         passes=passes,
+        prompt_version=EXTRACTION_PROMPT_VERSION,
+        vocabulary_version=EXTRACTION_VOCABULARY_VERSION,
         limitations=(
             "Les champs sont proposés par un modèle local et ne constituent pas "
             "des vérités vérifiées.",
@@ -689,7 +798,7 @@ def _validated_extraction(
 
 def _validated_facts(
     candidates: tuple[Mapping[str, Any], ...],
-    region_by_id: Mapping[str, _OcrRegion],
+    region_by_id: Mapping[str, StructuredOcrRegion],
     language: str | None,
     country: str | None,
 ) -> tuple[ExtractedFact, ...]:
@@ -728,7 +837,7 @@ def _validated_facts(
 
 def _validated_additional(
     candidates: tuple[Mapping[str, Any], ...],
-    region_by_id: Mapping[str, _OcrRegion],
+    region_by_id: Mapping[str, StructuredOcrRegion],
 ) -> tuple[AdditionalExtractionField, ...]:
     fields: list[AdditionalExtractionField] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
@@ -738,6 +847,13 @@ def _validated_additional(
         if not raw_label or not raw_value:
             continue
         region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
+        candidate_text = f"{raw_label} {raw_value}"
+        source_regions = tuple(region_by_id[item] for item in region_ids)
+        if _is_obvious_boilerplate(candidate_text) or (
+            source_regions
+            and all(_is_obvious_boilerplate(region.content) for region in source_regions)
+        ):
+            continue
         key = (raw_label.casefold(), raw_value.casefold(), region_ids)
         if key in seen:
             continue
@@ -749,7 +865,7 @@ def _validated_additional(
             AdditionalExtractionField(
                 raw_label=raw_label,
                 raw_value=raw_value,
-                semantic_hint=_optional_text(candidate.get("semantic_hint"), maximum=100),
+                semantic_hint=_additional_field_hint(candidate.get("semantic_hint")),
                 confidence=confidence,
                 page=_first_page(region_ids, region_by_id),
                 region_ids=region_ids,
@@ -760,7 +876,7 @@ def _validated_additional(
 
 def _validated_tables(
     candidates: tuple[Mapping[str, Any], ...],
-    region_by_id: Mapping[str, _OcrRegion],
+    region_by_id: Mapping[str, StructuredOcrRegion],
 ) -> tuple[ExtractedTable, ...]:
     tables: list[ExtractedTable] = []
     seen: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
@@ -768,7 +884,18 @@ def _validated_tables(
         semantic_type = str(candidate.get("semantic_type", "generic"))
         if semantic_type not in TABLE_TYPES:
             semantic_type = "generic"
-        headers = _string_sequence(candidate.get("headers"), maximum_items=40, maximum_length=200)
+        region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
+        source_regions = tuple(region_by_id[item] for item in region_ids)
+        parsed_table = table_from_regions(source_regions)
+        if parsed_table is not None:
+            headers = parsed_table.headers[:40]
+            rows = tuple(row[:40] for row in parsed_table.rows[:2000])
+        else:
+            # Compatibility with extractions produced by the previous experimental schema.
+            headers = _string_sequence(
+                candidate.get("headers"), maximum_items=40, maximum_length=200
+            )
+            rows = _table_rows(candidate.get("rows"), maximum_rows=2000, maximum_columns=40)
         column_roles = tuple(
             role if role in TABLE_COLUMN_ROLES else "other"
             for role in _string_sequence(
@@ -781,20 +908,30 @@ def _validated_tables(
             missing_roles = len(headers) - len(column_roles)
             column_roles = (*column_roles, *("other" for _ in range(missing_roles)))
         column_roles = column_roles[: len(headers)]
-        rows = _table_rows(candidate.get("rows"), maximum_rows=2000, maximum_columns=40)
-        row_roles = tuple(
-            role if role in TABLE_ROW_ROLES else "other"
-            for role in _string_sequence(
-                candidate.get("row_roles"),
-                maximum_items=2000,
-                maximum_length=40,
-            )
+        default_row_role = str(candidate.get("default_row_role", "other"))
+        if default_row_role not in TABLE_ROW_ROLES:
+            default_row_role = "other"
+        row_roles = [default_row_role] * len(rows)
+        overrides = candidate.get("row_role_overrides", [])
+        if isinstance(overrides, list):
+            for override in overrides:
+                if not isinstance(override, Mapping):
+                    continue
+                index = override.get("row_index")
+                role = str(override.get("role", ""))
+                if (
+                    isinstance(index, int)
+                    and 0 <= index < len(row_roles)
+                    and role in TABLE_ROW_ROLES
+                ):
+                    row_roles[index] = role
+        legacy_row_roles = _string_sequence(
+            candidate.get("row_roles"),
+            maximum_items=2000,
+            maximum_length=40,
         )
-        if len(row_roles) < len(rows):
-            missing_roles = len(rows) - len(row_roles)
-            row_roles = (*row_roles, *("other" for _ in range(missing_roles)))
-        row_roles = row_roles[: len(rows)]
-        region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
+        for index, role in enumerate(legacy_row_roles[: len(row_roles)]):
+            row_roles[index] = role if role in TABLE_ROW_ROLES else "other"
         if not headers and not rows:
             continue
         key = (semantic_type, headers, region_ids)
@@ -812,7 +949,7 @@ def _validated_tables(
                 headers=headers,
                 column_roles=column_roles,
                 rows=rows,
-                row_roles=row_roles,
+                row_roles=tuple(row_roles),
                 confidence=confidence,
                 pages=pages,
                 region_ids=region_ids,
@@ -823,7 +960,7 @@ def _validated_tables(
 
 def _coverage(
     raw: _RawExtraction,
-    regions: tuple[_OcrRegion, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     facts: tuple[ExtractedFact, ...],
     additional: tuple[AdditionalExtractionField, ...],
     tables: tuple[ExtractedTable, ...],
@@ -833,6 +970,9 @@ def _coverage(
     mapped.update(item for field in additional for item in field.region_ids)
     table_regions = {item for table in tables for item in table.region_ids}
     disposition_by_region: dict[str, str] = {}
+    for region in regions:
+        if _is_obvious_boilerplate(region.content):
+            disposition_by_region[region.region_id] = "boilerplate"
     for disposition in raw.dispositions:
         region_id = str(disposition.get("region_id", ""))
         state = str(disposition.get("disposition", ""))
@@ -855,11 +995,11 @@ def _coverage(
 
 
 def _uncovered_region_ids(
-    regions: tuple[_OcrRegion, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     raw: _RawExtraction,
 ) -> set[str]:
     valid = {region.region_id for region in regions}
-    referenced: set[str] = set()
+    referenced = {region.region_id for region in regions if _is_obvious_boilerplate(region.content)}
     for item in (*raw.facts, *raw.additional_fields, *raw.tables):
         referenced.update(_raw_region_ids(item.get("region_ids")) & valid)
     for item in raw.dispositions:
@@ -986,7 +1126,7 @@ def _comparison_text(value: str) -> str:
 
 def _valid_region_ids(
     value: object,
-    region_by_id: Mapping[str, _OcrRegion],
+    region_by_id: Mapping[str, StructuredOcrRegion],
 ) -> tuple[str, ...]:
     return tuple(dict.fromkeys(item for item in _raw_region_ids(value) if item in region_by_id))
 
@@ -999,7 +1139,7 @@ def _raw_region_ids(value: object) -> set[str]:
 
 def _first_page(
     region_ids: tuple[str, ...],
-    region_by_id: Mapping[str, _OcrRegion],
+    region_by_id: Mapping[str, StructuredOcrRegion],
 ) -> int | None:
     return region_by_id[region_ids[0]].page if region_ids else None
 
@@ -1060,7 +1200,7 @@ def _empty_extraction(
     country: str | None,
 ) -> DocumentExtraction:
     return DocumentExtraction(
-        schema_version="0.1-experimental",
+        schema_version=EXTRACTION_SCHEMA_VERSION,
         family=family,
         language=language,
         country=country,
@@ -1078,4 +1218,18 @@ def _empty_extraction(
         ),
         passes=0,
         limitations=("Aucune région OCR exploitable.",),
+        prompt_version=EXTRACTION_PROMPT_VERSION,
+        vocabulary_version=EXTRACTION_VOCABULARY_VERSION,
     )
+
+
+def _additional_field_hint(value: object) -> str:
+    hint = _clean_text(value, maximum=100)
+    return hint if hint in ADDITIONAL_FIELD_HINTS else "other_material"
+
+
+def _is_obvious_boilerplate(value: str) -> bool:
+    text = " ".join(value.split())
+    if not text or len(text) > 600:
+        return False
+    return any(pattern.search(text) for pattern in _OBVIOUS_BOILERPLATE_PATTERNS)

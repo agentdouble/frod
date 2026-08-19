@@ -17,9 +17,16 @@ from fraude_detector.models import (
     ExtractionVerification,
 )
 from fraude_detector.structured_llm import StructuredLlmError, request_json_object
+from fraude_detector.structured_ocr import (
+    StructuredOcrRegion,
+    extract_structured_ocr_regions,
+    format_structured_ocr_region,
+)
 
-TARGET_TYPES = ("fact", "additional_field", "table")
-VERDICTS = ("supported", "plausible", "ambiguous", "contradicted")
+ISSUE_TARGET_TYPES = ("fact", "additional_field")
+ISSUE_VERDICTS = ("ambiguous", "contradicted")
+VERIFICATION_SCHEMA_VERSION = "0.3-experimental"
+VERIFICATION_PROMPT_VERSION = "verification-differential-2026-08-19-v1"
 
 _SYSTEM_PROMPT = """Tu contrôles la fidélité d'une extraction documentaire.
 Tu es un auditeur conservateur, pas un correcteur créatif. L'hypothèse de départ est que
@@ -31,14 +38,6 @@ Retourne uniquement l'objet JSON demandé."""
 
 class VerificationError(RuntimeError):
     """The optional verification service did not return a usable result."""
-
-
-@dataclass(frozen=True, slots=True)
-class _Region:
-    region_id: str
-    page: int
-    label: str
-    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +65,7 @@ class LLMExtractionVerifier:
         extraction: DocumentExtraction,
         classification: DocumentClassification | None,
     ) -> ExtractionVerification:
-        regions = _ocr_regions(ocr_json)
+        regions = extract_structured_ocr_regions(ocr_json)
         targets = _extraction_targets(extraction)
         prompt = _verification_prompt(regions, targets, classification)
         if len(prompt) > self.max_input_chars:
@@ -113,17 +112,13 @@ def verify_extraction(
 
 
 def _verification_prompt(
-    regions: tuple[_Region, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     targets: tuple[_Target, ...],
     classification: DocumentClassification | None,
 ) -> str:
     family = classification.family if classification else "autre"
     reliability = classification.reliability if classification else 0.0
-    source = "\n".join(
-        f'<region id="{region.region_id}" page="{region.page}" label="{region.label}">\n'
-        f"{region.content}\n</region>"
-        for region in regions
-    )
+    source = "\n".join(format_structured_ocr_region(region) for region in regions)
     target_payload = [
         {
             "target_id": target.target_id,
@@ -141,38 +136,39 @@ def _verification_prompt(
   expiry = expiration
 
 Objectif:
-Évalue la fidélité de chaque objet extrait par rapport aux régions OCR. Ce contrôle ne recherche
-pas la fraude et ne doit pas améliorer le style de la sortie.
+Évalue la fidélité de tous les objets extraits par rapport aux régions OCR. Ce contrôle ne
+recherche pas la fraude et ne doit pas améliorer le style de la sortie. La réponse est strictement
+différentielle: ne retourne aucun avis pour un objet correct ou raisonnablement plausible.
 
 Principe conservateur obligatoire:
-0. Toutes les clés JSON, valeurs d'énumération, explications et descriptions générées doivent être
-   en anglais. Les valeurs documentaires proposées doivent conserver leur graphie source.
-1. Utilise supported lorsque la valeur et son rôle sont raisonnablement soutenus par le contexte.
-2. Utilise plausible lorsqu'une normalisation ou une correction OCR raisonnable a été appliquée.
-   plausible est un résultat positif, pas une anomalie.
-3. La casse, les accents, espaces, tirets, slashs, ponctuation, formats de date, séparateurs de
+0. Toutes les clés JSON et valeurs d'énumération doivent être en anglais. Les explications et
+   descriptions générées doivent être rédigées en français. Les valeurs documentaires proposées
+   doivent conserver leur graphie source.
+1. Un objet raisonnablement soutenu, y compris après une normalisation ou une correction OCR
+   plausible, doit être totalement absent de issues. Ne génère ni confirmation ni explication.
+2. La casse, les accents, espaces, tirets, slashs, ponctuation, formats de date, séparateurs de
    milliers, codes de devise et normalisations usuelles ne sont jamais des erreurs à eux seuls.
-4. Une correction d'un caractère OCR manifestement confondu peut être plausible si le contexte ou
+3. Une correction d'un caractère OCR manifestement confondu peut être plausible si le contexte ou
    un format structuré la soutient. N'exige jamais une égalité textuelle stricte.
-5. Utilise ambiguous uniquement si au moins deux interprétations matériellement différentes sont
+4. Utilise ambiguous uniquement si au moins deux interprétations matériellement différentes sont
    réellement soutenues par la source et changent le sens métier.
-6. Utilise contradicted uniquement pour un fait ou un champ additionnel lorsqu'une région OCR
+5. Utilise contradicted uniquement pour un fait ou un champ additionnel lorsqu'une région OCR
    apporte une contradiction concrète ET qu'une correction structurée est clairement démontrée.
    Pour un fait, null signifie « conserver la propriété actuelle » dans suggested_value,
    suggested_field_code ou suggested_role; au moins une propriété non nulle doit être différente.
    Pour un champ additionnel, seule suggested_value est applicable. Ne déduis pas une correction
    depuis l'explication libre.
-7. Si la correction nécessiterait un field_code ou un role absent des valeurs autorisées par le
-   schéma, ne crée pas de contradiction ou d'ambiguïté: utilise plausible et laisse les suggestions
-   à null. Une limite du vocabulaire n'est pas une erreur du document.
-8. Les tableaux ne peuvent pas être corrigés par ce contrat. Ne signale donc pas leurs problèmes
-   d'interprétation comme contradicted ou ambiguous; utilise plausible.
-9. Ne signale une omission que pour une information métier explicite, importante et absente de
+6. Si la correction nécessiterait un field_code ou un role absent des valeurs autorisées par le
+   schéma, ne crée pas d'issue. Une limite du vocabulaire n'est pas une erreur du document.
+7. Les tableaux ne peuvent pas être corrigés par ce contrat. Ne crée donc aucune issue de tableau.
+8. Ne signale une omission que pour une information métier explicite, importante et absente de
    tous les faits, champs additionnels et tableaux. Une cellule déjà conservée dans un tableau
    n'est pas omise. Ne transforme pas du texte décoratif en champ.
-10. Examine chaque target_id exactement une fois. Il est parfaitement valide que tous les verdicts
-   soient supported ou plausible et que possible_omissions soit vide.
-11. confidence mesure la solidité de ton contrôle, pas une probabilité de fraude.
+9. Examine bien tous les target_id, mais place dans issues uniquement les anomalies concrètes.
+    Si tout est cohérent, issues et possible_omissions doivent être deux listes vides.
+10. confidence mesure la solidité de ton contrôle, pas une probabilité de fraude.
+11. Utilise bbox_2d, order, label et native_label pour contrôler les associations spatiales,
+    l'ordre de lecture et les colonnes. bbox_2d est normalisée de 0 à 1000.
 
 Objets extraits à contrôler:
 <extraction_targets>
@@ -197,14 +193,20 @@ def _response_format() -> dict[str, Any]:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "reviews": {
+                    "issues": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "target_id": {"type": "string"},
-                                "target_type": {"type": "string", "enum": list(TARGET_TYPES)},
-                                "verdict": {"type": "string", "enum": list(VERDICTS)},
+                                "target_type": {
+                                    "type": "string",
+                                    "enum": list(ISSUE_TARGET_TYPES),
+                                },
+                                "verdict": {
+                                    "type": "string",
+                                    "enum": list(ISSUE_VERDICTS),
+                                },
                                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                                 "explanation": {"type": "string"},
                                 "source_region_ids": {
@@ -214,10 +216,6 @@ def _response_format() -> dict[str, Any]:
                                 "suggested_value": nullable_text,
                                 "suggested_field_code": nullable_field_code,
                                 "suggested_role": nullable_role,
-                                "problematic_row_indexes": {
-                                    "type": "array",
-                                    "items": {"type": "integer", "minimum": 0},
-                                },
                             },
                             "required": [
                                 "target_id",
@@ -229,7 +227,6 @@ def _response_format() -> dict[str, Any]:
                                 "suggested_value",
                                 "suggested_field_code",
                                 "suggested_role",
-                                "problematic_row_indexes",
                             ],
                             "additionalProperties": False,
                         },
@@ -261,7 +258,7 @@ def _response_format() -> dict[str, Any]:
                         },
                     },
                 },
-                "required": ["reviews", "possible_omissions"],
+                "required": ["issues", "possible_omissions"],
                 "additionalProperties": False,
             },
         },
@@ -271,57 +268,57 @@ def _response_format() -> dict[str, Any]:
 def _extraction_targets(extraction: DocumentExtraction) -> tuple[_Target, ...]:
     targets: list[_Target] = []
     for index, fact in enumerate(extraction.facts, start=1):
-        targets.append(_Target(f"fact-{index:04d}", "fact", _as_mapping(fact)))
-    for index, field in enumerate(extraction.additional_fields, start=1):
-        targets.append(_Target(f"additional-{index:04d}", "additional_field", _as_mapping(field)))
-    for index, table in enumerate(extraction.tables, start=1):
-        targets.append(_Target(f"table-{index:04d}", "table", _as_mapping(table)))
-    return tuple(targets)
-
-
-def _as_mapping(value: Any) -> Mapping[str, Any]:
-    if hasattr(value, "__dataclass_fields__"):
-        from dataclasses import asdict
-
-        return asdict(value)
-    return {}
-
-
-def _ocr_regions(payload: Any) -> tuple[_Region, ...]:
-    if isinstance(payload, list):
-        pages = payload
-    elif isinstance(payload, dict):
-        pages = payload.get("pages", [])
-    else:
-        pages = []
-    regions: list[_Region] = []
-    for page_index, page in enumerate(pages, start=1):
-        if isinstance(page, list):
-            page_regions = page
-        elif isinstance(page, dict):
-            page_regions = page.get("regions", [])
-        else:
-            page_regions = []
-        if not isinstance(page_regions, list):
-            continue
-        for region_index, region in enumerate(page_regions):
-            if not isinstance(region, Mapping):
-                continue
-            regions.append(
-                _Region(
-                    region_id=f"p{page_index:03d}-r{region_index:03d}",
-                    page=page_index,
-                    label=str(region.get("label", "unknown"))[:40],
-                    content=str(region.get("content", "")).strip(),
-                )
+        targets.append(
+            _Target(
+                f"fact-{index:04d}",
+                "fact",
+                {
+                    "field_code": fact.field_code,
+                    "role": fact.role,
+                    "raw_label": fact.raw_label,
+                    "raw_value": fact.raw_value,
+                    "corrected_value": fact.corrected_value,
+                    "normalized_value": fact.normalized_value,
+                    "region_ids": fact.region_ids,
+                },
             )
-    return tuple(regions)
+        )
+    for index, field in enumerate(extraction.additional_fields, start=1):
+        targets.append(
+            _Target(
+                f"additional-{index:04d}",
+                "additional_field",
+                {
+                    "raw_label": field.raw_label,
+                    "raw_value": field.raw_value,
+                    "corrected_value": field.corrected_value,
+                    "semantic_hint": field.semantic_hint,
+                    "region_ids": field.region_ids,
+                },
+            )
+        )
+    for index, table in enumerate(extraction.tables, start=1):
+        targets.append(
+            _Target(
+                f"table-{index:04d}",
+                "table",
+                {
+                    "title": table.title,
+                    "semantic_type": table.semantic_type,
+                    "headers": table.headers,
+                    "column_roles": table.column_roles,
+                    "row_count": len(table.rows),
+                    "region_ids": table.region_ids,
+                },
+            )
+        )
+    return tuple(targets)
 
 
 def _validated_verification(
     payload: Mapping[str, Any],
     *,
-    regions: tuple[_Region, ...],
+    regions: tuple[StructuredOcrRegion, ...],
     targets: tuple[_Target, ...],
     issue_min_confidence: float,
 ) -> ExtractionVerification:
@@ -329,7 +326,7 @@ def _validated_verification(
     valid_regions = {region.region_id for region in regions}
     reviews: list[ExtractionReview] = []
     seen: set[str] = set()
-    candidates = payload.get("reviews", [])
+    candidates = payload.get("issues", [])
     if isinstance(candidates, list):
         for candidate in candidates:
             if not isinstance(candidate, Mapping):
@@ -343,14 +340,12 @@ def _validated_verification(
                 continue
             seen.add(target_id)
             confidence = _bounded_float(candidate.get("confidence"))
-            verdict = str(candidate.get("verdict", "supported"))
-            if verdict not in VERDICTS:
-                verdict = "supported"
+            verdict = str(candidate.get("verdict", ""))
+            if verdict not in ISSUE_VERDICTS:
+                continue
             source_region_ids = _valid_region_ids(candidate.get("source_region_ids"), valid_regions)
-            if verdict in {"ambiguous", "contradicted"} and (
-                confidence < issue_min_confidence or not source_region_ids
-            ):
-                verdict = "plausible"
+            if confidence < issue_min_confidence or not source_region_ids:
+                continue
             suggested_value = None
             suggested_field_code = None
             suggested_role = None
@@ -366,12 +361,9 @@ def _validated_verification(
                     suggested_field_code=suggested_field_code,
                     suggested_role=suggested_role,
                 ):
-                    verdict = "plausible"
-                    suggested_value = None
-                    suggested_field_code = None
-                    suggested_role = None
-            elif verdict == "ambiguous" and target_type == "table":
-                verdict = "plausible"
+                    continue
+            if target_type == "table":
+                continue
             reviews.append(
                 ExtractionReview(
                     target_id=target_id,
@@ -383,11 +375,7 @@ def _validated_verification(
                     suggested_value=suggested_value,
                     suggested_field_code=suggested_field_code,
                     suggested_role=suggested_role,
-                    problematic_row_indexes=(
-                        _non_negative_integers(candidate.get("problematic_row_indexes"))
-                        if verdict in {"ambiguous", "contradicted"}
-                        else ()
-                    ),
+                    problematic_row_indexes=(),
                 )
             )
 
@@ -415,25 +403,25 @@ def _validated_verification(
                 )
             )
 
-    incomplete = len(reviews) != len(targets)
-    has_attention = any(
-        review.verdict in {"ambiguous", "contradicted"} for review in reviews
-    ) or bool(omissions)
-    status = "incomplete" if incomplete else "attention" if has_attention else "clean"
+    has_attention = bool(reviews) or bool(omissions)
+    status = "attention" if has_attention else "clean"
     return ExtractionVerification(
-        schema_version="0.1-experimental",
+        schema_version=VERIFICATION_SCHEMA_VERSION,
         status=status,
         expected_targets=len(targets),
-        reviewed_targets=len(reviews),
+        reviewed_targets=len(targets),
         reviews=tuple(reviews),
         omissions=tuple(omissions),
         limitations=(
             "La vérification utilise une nouvelle conversation mais le même modèle "
             "que l'extraction.",
+            "La sortie différentielle ne conserve que les anomalies et omissions suffisamment "
+            "étayées; les objets sans retour sont considérés comme contrôlés sans anomalie.",
             "Elle ne modifie pas directement l'extraction et ne voit que le contenu fourni "
             "par l'OCR; seules ses corrections structurées peuvent être réconciliées ensuite.",
             "Une absence de contradiction ne garantit pas l'exactitude du document ou de l'OCR.",
         ),
+        prompt_version=VERIFICATION_PROMPT_VERSION,
     )
 
 
@@ -467,18 +455,25 @@ def _actionable_correction(
     suggested_role: str | None,
 ) -> bool:
     if target.target_type == "fact":
+        current_value = str(
+            target.payload.get("corrected_value") or target.payload.get("raw_value", "")
+        )
         return any(
-            suggestion is not None and suggestion != str(target.payload.get(field, ""))
-            for field, suggestion in (
-                ("raw_value", suggested_value),
-                ("field_code", suggested_field_code),
-                ("role", suggested_role),
+            (
+                suggested_value is not None and suggested_value != current_value,
+                suggested_field_code is not None
+                and suggested_field_code != str(target.payload.get("field_code", "")),
+                suggested_role is not None
+                and suggested_role != str(target.payload.get("role", "")),
             )
         )
     if target.target_type == "additional_field":
+        current_value = str(
+            target.payload.get("corrected_value") or target.payload.get("raw_value", "")
+        )
         return (
             suggested_value is not None
-            and suggested_value != str(target.payload.get("raw_value", ""))
+            and suggested_value != current_value
             and suggested_field_code is None
             and suggested_role is None
         )
@@ -489,9 +484,3 @@ def _valid_region_ids(value: object, valid: set[str]) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
     return tuple(dict.fromkeys(str(item) for item in value if str(item) in valid))
-
-
-def _non_negative_integers(value: object) -> tuple[int, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(dict.fromkeys(item for item in value if isinstance(item, int) and item >= 0))

@@ -29,15 +29,25 @@ def _chat_response(content: dict[str, Any]) -> _Response:
 
 
 def _region(content: str, label: str = "text") -> dict[str, Any]:
-    return {"label": label, "content": content, "bbox_2d": [0, 0, 100, 100]}
+    return {
+        "index": 7,
+        "label": label,
+        "native_label": "paragraph",
+        "content": content,
+        "bbox_2d": [10, 20, 300, 120],
+    }
 
 
-def _empty_result() -> dict[str, list[Any]]:
+def _empty_result() -> dict[str, Any]:
     return {
         "facts": [],
         "additional_fields": [],
         "tables": [],
-        "region_dispositions": [],
+        "region_dispositions": {
+            "boilerplate": [],
+            "unstructured": [],
+            "unreadable": [],
+        },
     }
 
 
@@ -52,7 +62,12 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
         [
             _region("Facture N° FAC-2026-0042"),
             _region("Total TTC : 1 234,50 EUR"),
-            _region("Date | Désignation | Montant", "table"),
+            _region(
+                "<table><thead><tr><th>Date</th><th>Désignation</th><th>Montant</th></tr>"
+                "</thead><tbody><tr><td>12/08/2026</td><td>Consultation</td>"
+                "<td>80,00 EUR</td></tr></tbody></table>",
+                "table",
+            ),
             _region("Merci pour votre confiance", "footer"),
         ]
     ]
@@ -80,21 +95,18 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
             {
                 "title": "Prestations",
                 "semantic_type": "invoice_lines",
-                "headers": ["Date", "Désignation", "Montant"],
                 "column_roles": ["transaction_date", "description", "line_total"],
-                "rows": [["12/08/2026", "Consultation", "80,00 EUR"]],
-                "row_roles": ["line_item"],
+                "default_row_role": "line_item",
+                "row_role_overrides": [],
                 "confidence": 0.91,
                 "region_ids": ["p001-r002"],
             }
         ],
-        "region_dispositions": [
-            {
-                "region_id": "p001-r003",
-                "disposition": "boilerplate",
-                "reason": "Formule de politesse",
-            }
-        ],
+        "region_dispositions": {
+            "boilerplate": ["p001-r003"],
+            "unstructured": [],
+            "unreadable": [],
+        },
     }
     calls: list[dict[str, Any]] = []
 
@@ -116,9 +128,18 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert len(calls) == 1
     assert calls[0]["url"] == "http://llm.internal:8030/v1/chat/completions"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
+    schema_properties = calls[0]["json"]["response_format"]["json_schema"]["schema"]["properties"]
+    table_properties = schema_properties["tables"]["items"]["properties"]
+    assert "rows" not in table_properties
+    assert "headers" not in table_properties
+    assert "default_row_role" in table_properties
+    assert schema_properties["region_dispositions"]["type"] == "object"
     assert "famille: facture_recu" in calls[0]["json"]["messages"][1]["content"]
     assert "Toutes les clés JSON" in calls[0]["json"]["messages"][1]["content"]
     assert "doivent être en anglais" in calls[0]["json"]["messages"][1]["content"]
+    assert 'order="7"' in calls[0]["json"]["messages"][1]["content"]
+    assert 'native_label="paragraph"' in calls[0]["json"]["messages"][1]["content"]
+    assert 'bbox_2d="10,20,300,120"' in calls[0]["json"]["messages"][1]["content"]
     assert extraction.family == "facture_recu"
     assert extraction.facts[1].raw_value == "1 234,50 EUR"
     assert extraction.facts[1].normalized_value == "1234.50 EUR"
@@ -134,6 +155,9 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert extraction.coverage.table_regions == 1
     assert extraction.coverage.boilerplate_regions == 1
     assert extraction.passes == 1
+    assert extraction.schema_version == "0.3-experimental"
+    assert extraction.prompt_version.startswith("extraction-")
+    assert extraction.vocabulary_version.startswith("document-fields-")
 
 
 def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> None:
@@ -154,7 +178,7 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
         {
             "raw_label": "Champ libre",
             "raw_value": "CHAMP_BETA",
-            "semantic_hint": "information spécifique",
+            "semantic_hint": "other_material",
             "confidence": 0.8,
             "region_ids": ["p001-r001"],
         }
@@ -182,17 +206,45 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
     assert extraction.passes == 2
     assert extraction.coverage.ratio == 1
     assert extraction.additional_fields[0].raw_value == "CHAMP_BETA"
+    assert extraction.additional_fields[0].semantic_hint == "other_material"
+
+
+def test_obvious_decorative_message_is_not_kept_as_additional_information(
+    monkeypatch: Any,
+) -> None:
+    result = _empty_result()
+    result["additional_fields"] = [
+        {
+            "raw_label": "Message",
+            "raw_value": "Please think about the environment before printing this email.",
+            "semantic_hint": "other_material",
+            "confidence": 0.99,
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    calls = 0
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        nonlocal calls
+        del url, kwargs
+        calls += 1
+        return _chat_response(result)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Please think about the environment before printing this email.")]],
+        None,
+    )
+
+    assert calls == 1
+    assert extraction.additional_fields == ()
+    assert extraction.coverage.boilerplate_regions == 1
+    assert extraction.coverage.ratio == 1
 
 
 def test_uncertain_classification_keeps_generic_extraction_as_priority(monkeypatch: Any) -> None:
     result = _empty_result()
-    result["region_dispositions"] = [
-        {
-            "region_id": "p001-r000",
-            "disposition": "unstructured",
-            "reason": "Contenu non structuré",
-        }
-    ]
+    result["region_dispositions"]["unstructured"] = ["p001-r000"]
     prompts: list[str] = []
 
     def fake_post(url: str, **kwargs: Any) -> _Response:
@@ -226,13 +278,7 @@ def test_extractor_retains_json_mode_when_vllm_rejects_json_schema(monkeypatch: 
         if len(calls) == 1:
             return _Response({}, status_code=400)
         result = _empty_result()
-        result["region_dispositions"] = [
-            {
-                "region_id": "p001-r000",
-                "disposition": "unstructured",
-                "reason": "Texte libre",
-            }
-        ]
+        result["region_dispositions"]["unstructured"] = ["p001-r000"]
         return _chat_response(result)
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -253,13 +299,7 @@ def test_extractor_retries_a_non_json_generation_with_constrained_output(
 ) -> None:
     calls: list[dict[str, Any]] = []
     valid = _empty_result()
-    valid["region_dispositions"] = [
-        {
-            "region_id": "p001-r000",
-            "disposition": "unstructured",
-            "reason": "Free text",
-        }
-    ]
+    valid["region_dispositions"]["unstructured"] = ["p001-r000"]
     responses = iter(
         (
             _Response({"choices": [{"message": {"content": "analysis..."}}]}),
@@ -296,13 +336,7 @@ def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: A
             "region_ids": ["unknown-region"],
         }
     ]
-    result["region_dispositions"] = [
-        {
-            "region_id": "p001-r000",
-            "disposition": "unreadable",
-            "reason": "Aucune association",
-        }
-    ]
+    result["region_dispositions"]["unreadable"] = ["p001-r000"]
     monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
 
     extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
@@ -332,21 +366,13 @@ def test_bank_prompt_requires_summary_rows_to_be_separated_from_transactions(
         {
             "title": "Opérations carte VISA",
             "semantic_type": "transactions",
-            "headers": ["Libellé", "Montant"],
             "column_roles": ["description", "amount"],
-            "rows": [
-                ["Total ancien solde", ""],
-                ["OPERATIONS CARTE VISA NUMERO 4697", "-2500"],
-                ["Voyages Arosa", "-2500"],
-                ["TOTAL CARTE", "-2500"],
-                ["TOTAL NOUVEAU SOLDE", "-2500"],
-            ],
-            "row_roles": [
-                "opening_balance",
-                "section_header",
-                "transaction",
-                "total",
-                "closing_balance",
+            "default_row_role": "transaction",
+            "row_role_overrides": [
+                {"row_index": 0, "role": "opening_balance"},
+                {"row_index": 1, "role": "section_header"},
+                {"row_index": 3, "role": "total"},
+                {"row_index": 4, "role": "closing_balance"},
             ],
             "confidence": 0.92,
             "region_ids": ["p001-r000"],

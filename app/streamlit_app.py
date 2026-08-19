@@ -975,11 +975,17 @@ def _render_extraction_laboratory(
             field_label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
             role_label = EXTRACTION_ROLE_LABELS.get(fact.role, fact.role)
             normalized = fact.normalized_value or "Non normalisée"
+            displayed_value = fact.corrected_value or fact.raw_value
+            source_value = (
+                f"<span>Lecture OCR : {_html(fact.raw_value)}</span>"
+                if fact.corrected_value is not None
+                else ""
+            )
             page = f"Page {fact.page}" if fact.page is not None else "Source non localisée"
             rows.append(
                 "<tr>"
                 f"<td><strong>{_html(field_label)}</strong><span>{_html(role_label)}</span></td>"
-                f"<td>{_html(fact.raw_value)}</td>"
+                f"<td><strong>{_html(displayed_value)}</strong>{source_value}</td>"
                 f"<td>{_html(normalized)}</td>"
                 f"<td>{fact.confidence:.0%}</td>"
                 f"<td>{_html(page)}</td>"
@@ -999,10 +1005,17 @@ def _render_extraction_laboratory(
         cards = []
         for field in extraction.additional_fields:
             page = f"Page {field.page}" if field.page is not None else "Source non localisée"
+            displayed_value = field.corrected_value or field.raw_value
+            source_value = (
+                f"<small>Lecture OCR : {_html(field.raw_value)}</small>"
+                if field.corrected_value is not None
+                else ""
+            )
             cards.append(
                 '<article class="additional-extraction">'
                 f"<span>{_html(field.raw_label)}</span>"
-                f"<strong>{_html(field.raw_value)}</strong>"
+                f"<strong>{_html(displayed_value)}</strong>"
+                f"{source_value}"
                 f"<small>{_html(page)} · Fiabilité {field.confidence:.0%}</small>"
                 "</article>"
             )
@@ -1101,7 +1114,6 @@ def _render_extraction_verification(
         for review in verification.reviews
         if review.verdict in {"ambiguous", "contradicted"} and not review.correction_applied
     )
-    plausible_count = sum(review.verdict == "plausible" for review in verification.reviews)
     corrected_count = sum(review.correction_applied for review in verification.reviews)
     if verification.status == "clean":
         if corrected_count:
@@ -1112,10 +1124,7 @@ def _render_extraction_verification(
             )
         else:
             title = "Aucune contradiction concrète relevée"
-            detail = (
-                f"{verification.reviewed_targets} élément(s) contrôlé(s), dont "
-                f"{plausible_count} normalisation(s) ou correction(s) OCR jugée(s) plausible(s)."
-            )
+            detail = f"{verification.reviewed_targets} élément(s) contrôlé(s)."
     elif verification.status == "incomplete":
         title = "Vérification partielle"
         detail = (
@@ -1682,6 +1691,7 @@ def _render_recognized_text(markdown: str, *, compact: bool = False) -> None:
 def _render_analysis_progress(target: Any, value: float, label: str) -> None:
     bounded = min(1.0, max(0.0, value))
     percentage = round(bounded * 100)
+    content_progress = _content_progress_markup(label, bounded)
     target.markdown(
         f"""
         <div class="analysis-progress">
@@ -1692,10 +1702,72 @@ def _render_analysis_progress(target: Any, value: float, label: str) -> None:
           <div class="analysis-progress-track">
             <i style="width:{percentage}%"></i>
           </div>
+          {content_progress}
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _content_progress_markup(label: str, progress: float) -> str:
+    config = PROJECT_CONFIG.analysis
+    if not config.ocr_enabled:
+        return ""
+    stages = [
+        ("ocr", "OCR", True),
+        ("classification", "Classement", config.classification_enabled),
+        ("extraction", "Extraction", config.extraction_enabled),
+        ("verification", "Vérification", config.verification_enabled),
+    ]
+    enabled_stages = tuple((key, title) for key, title, enabled in stages if enabled)
+    if not enabled_stages:
+        return ""
+
+    state_key = "_analysis_content_progress_stage"
+    if progress <= 0.02:
+        st.session_state[state_key] = -1
+    detected = _content_stage_from_label(label)
+    if detected is not None:
+        detected_index = next(
+            (index for index, (key, _) in enumerate(enabled_stages) if key == detected),
+            None,
+        )
+        if detected_index is not None:
+            st.session_state[state_key] = max(
+                int(st.session_state.get(state_key, -1)),
+                detected_index,
+            )
+    if progress >= 1:
+        current_index = len(enabled_stages)
+    else:
+        current_index = int(st.session_state.get(state_key, -1))
+
+    items = []
+    for index, (_, title) in enumerate(enabled_stages):
+        state = "completed" if index < current_index else "active" if index == current_index else ""
+        items.append(
+            f'<span class="content-progress-stage {state}"><b>{_html(title)}</b><i></i></span>'
+        )
+    return (
+        '<div class="content-progress" aria-label="Progression de l’analyse du contenu">'
+        + "".join(items)
+        + "</div>"
+    )
+
+
+def _content_stage_from_label(label: str) -> str | None:
+    lowered = label.casefold()
+    if "vérification" in lowered or "verification" in lowered:
+        return "verification"
+    if "extraction" in lowered:
+        return "extraction"
+    if "classification" in lowered:
+        return "classification"
+    if "reconnaissance" in lowered or "contenu reconnu" in lowered:
+        return "ocr"
+    if "analyse du contenu terminée" in lowered:
+        return "verification"
+    return None
 
 
 @st.cache_resource(show_spinner=False)
@@ -2156,6 +2228,51 @@ def _inject_styles() -> None:
           border-radius: inherit;
           transition: width .18s ease;
         }
+        .content-progress {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+          gap: .5rem;
+          margin-top: .65rem;
+        }
+        .content-progress-stage {
+          display: grid;
+          gap: .28rem;
+          min-width: 0;
+          color: #77747d;
+          font-size: .63rem;
+          font-weight: 750;
+        }
+        .content-progress-stage b {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .content-progress-stage i {
+          position: relative;
+          display: block;
+          height: 3px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: #323137;
+        }
+        .content-progress-stage.completed {
+          color: #b8b5af;
+        }
+        .content-progress-stage.completed i {
+          background: #4d8fa0;
+        }
+        .content-progress-stage.active {
+          color: var(--ink);
+        }
+        .content-progress-stage.active i::after {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: 42%;
+          border-radius: inherit;
+          background: var(--cyan);
+          animation: content-progress-active 1.25s ease-in-out infinite alternate;
+        }
         .pdf-loading-stage {
           display: flex;
           align-items: center;
@@ -2520,6 +2637,10 @@ def _inject_styles() -> None:
         }
         @keyframes indicator-score-reveal {
           to { opacity: 1; }
+        }
+        @keyframes content-progress-active {
+          from { transform: translateX(0); opacity: .55; }
+          to { transform: translateX(138%); opacity: 1; }
         }
         @keyframes pdf-loading-spin {
           to { transform: rotate(360deg); }

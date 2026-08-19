@@ -129,6 +129,7 @@ class ExtractedFact:
     confidence: float
     page: int | None
     region_ids: tuple[str, ...] = ()
+    corrected_value: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 1:
@@ -145,6 +146,7 @@ class AdditionalExtractionField:
     confidence: float
     page: int | None
     region_ids: tuple[str, ...] = ()
+    corrected_value: str | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.confidence <= 1:
@@ -204,6 +206,8 @@ class DocumentExtraction:
     coverage: ExtractionCoverage
     passes: int
     limitations: tuple[str, ...] = ()
+    prompt_version: str = "unknown"
+    vocabulary_version: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -260,6 +264,7 @@ class ExtractionVerification:
     reviews: tuple[ExtractionReview, ...]
     omissions: tuple[ExtractionOmission, ...]
     limitations: tuple[str, ...] = ()
+    prompt_version: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

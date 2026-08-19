@@ -67,7 +67,8 @@ def test_corrected_value_is_normalized_again() -> None:
 
     resolved, reviewed = reconcile_extraction(extraction, verification)
 
-    assert resolved.facts[0].raw_value == "19/07/2026"
+    assert resolved.facts[0].raw_value == "18/07/2026"
+    assert resolved.facts[0].corrected_value == "19/07/2026"
     assert resolved.facts[0].normalized_value == "2026-07-19"
     assert resolved.facts[0].normalization_status == "normalized"
     assert reviewed.reviews[0].correction_applied is True

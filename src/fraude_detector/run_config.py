@@ -424,12 +424,12 @@ def _load_analysis(
         )
     )
     extraction_max_input_chars = _integer(
-        extraction.get("max_input_chars", 16_000),
+        extraction.get("max_input_chars", 48_000),
         source,
         "extraction.max_input_chars",
     )
     extraction_max_tokens = _integer(
-        extraction.get("max_tokens", 6_000),
+        extraction.get("max_tokens", 4_000),
         source,
         "extraction.max_tokens",
     )
@@ -485,7 +485,7 @@ def _load_analysis(
         "verification.max_input_chars",
     )
     verification_max_tokens = _integer(
-        verification.get("max_tokens", 6_000),
+        verification.get("max_tokens", 2_000),
         source,
         "verification.max_tokens",
     )

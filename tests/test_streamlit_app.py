@@ -257,20 +257,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
             return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         if "<extraction_targets>" in prompt:
             result = {
-                "reviews": [
-                    {
-                        "target_id": "fact-0001",
-                        "target_type": "fact",
-                        "verdict": "supported",
-                        "confidence": 0.98,
-                        "explanation": "La valeur est soutenue par la région OCR.",
-                        "source_region_ids": ["p001-r000"],
-                        "suggested_value": None,
-                        "suggested_field_code": None,
-                        "suggested_role": None,
-                        "problematic_row_indexes": [],
-                    }
-                ],
+                "issues": [],
                 "possible_omissions": [],
             }
             return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
@@ -288,14 +275,11 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
             ],
             "additional_fields": [],
             "tables": [],
-            "region_dispositions": [
-                {
-                    "region_id": region_id,
-                    "disposition": "unstructured",
-                    "reason": "Conservé comme texte OCR",
-                }
-                for region_id in region_ids
-            ],
+            "region_dispositions": {
+                "boilerplate": [],
+                "unstructured": region_ids,
+                "unreadable": [],
+            },
         }
         return _Response(
             {"choices": [{"message": {"content": json.dumps(result)}}]},

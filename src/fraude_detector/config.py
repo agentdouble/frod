@@ -47,8 +47,8 @@ class AnalysisConfig:
     extraction_url: str = "http://127.0.0.1:8030"
     extraction_model: str = "minimax_m2_1"
     extraction_timeout_seconds: int = 180
-    extraction_max_input_chars: int = 16_000
-    extraction_max_tokens: int = 6_000
+    extraction_max_input_chars: int = 48_000
+    extraction_max_tokens: int = 4_000
     extraction_temperature: float = 0.0
     extraction_coverage_retry: bool = True
     verification_enabled: bool = False
@@ -56,7 +56,7 @@ class AnalysisConfig:
     verification_model: str = "minimax_m2_1"
     verification_timeout_seconds: int = 180
     verification_max_input_chars: int = 80_000
-    verification_max_tokens: int = 6_000
+    verification_max_tokens: int = 2_000
     verification_temperature: float = 0.0
     verification_issue_min_confidence: float = 0.80
 
