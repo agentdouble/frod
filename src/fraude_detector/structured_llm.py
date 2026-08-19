@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,51 @@ class StructuredLlmError(RuntimeError):
     def __init__(self, message: str, *, truncated: bool = False) -> None:
         super().__init__(message)
         self.truncated = truncated
+
+
+def request_text_completion(
+    *,
+    endpoint: str,
+    model: str,
+    messages: list[dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+    timeout_seconds: int,
+    operation: str,
+) -> str:
+    """Return the final plain-text answer from one local vLLM request."""
+
+    response = _post(
+        endpoint,
+        {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
+        timeout_seconds,
+        operation,
+    )
+    try:
+        response.raise_for_status()
+        envelope = response.json()
+        choice = envelope["choices"][0]
+        message = choice["message"]
+        content = message.get("content")
+        finish_reason = choice.get("finish_reason")
+    except (KeyError, IndexError, TypeError, ValueError, requests.RequestException) as error:
+        raise StructuredLlmError(f"{operation}: invalid vLLM response envelope: {error}") from error
+
+    text = content.strip() if isinstance(content, str) else ""
+    # This also supports a MiniMax server started without its reasoning parser.
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+    if not text:
+        truncated = str(finish_reason) in {"length", "max_tokens"}
+        detail = "final answer missing after reasoning"
+        if truncated:
+            detail += " (token limit reached)"
+        raise StructuredLlmError(f"{operation}: {detail}", truncated=truncated)
+    return text
 
 
 @dataclass(frozen=True, slots=True)

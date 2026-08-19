@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -57,8 +56,10 @@ def _laboratory() -> LaboratoryReport:
     )
 
 
-def _response(content: dict[str, Any]) -> _Response:
-    return _Response({"choices": [{"message": {"content": json.dumps(content)}}]})
+def _response(content: str, *, finish_reason: str = "stop") -> _Response:
+    return _Response(
+        {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
+    )
 
 
 def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> None:
@@ -67,22 +68,9 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     def fake_post(url: str, **kwargs: Any) -> _Response:
         calls.append({"url": url, **kwargs})
         return _response(
-            {
-                "document_summary": {
-                    "text": "Ce document est classé comme une facture.",
-                    "evidence_ids": ["E002"],
-                },
-                "review_summary": {
-                    "text": "Un logiciel d'édition est mentionné et mérite une revue ciblée.",
-                    "evidence_ids": ["E003"],
-                },
-                "highlights": [
-                    {
-                        "text": "Aucune signature électronique n'est présente.",
-                        "evidence_ids": ["E004"],
-                    }
-                ],
-            }
+            "DOCUMENT: Ce document est classé comme une facture.\n"
+            "REVUE: Un logiciel d'édition est mentionné et mérite une revue ciblée.\n"
+            "POINTS: Logiciel d'édition mentionné | Signature électronique absente"
         )
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -107,15 +95,44 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
         assessment_label="Faible",
     )
 
-    assert result.document_summary.evidence_ids == ("E002",)
-    assert result.review_summary.evidence_ids == ("E003",)
-    assert result.highlights[0].evidence_ids == ("E004",)
+    assert result.document_summary.text == "Ce document est classé comme une facture."
+    assert result.review_summary.text.startswith("Un logiciel d'édition")
+    assert [item.text for item in result.highlights] == [
+        "Logiciel d'édition mentionné",
+        "Signature électronique absente",
+    ]
+    assert result.document_summary.evidence_ids
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     payload = calls[0]["json"]
-    assert payload["max_tokens"] == 450
-    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["max_tokens"] == 1_200
+    assert "response_format" not in payload
     assert "n'emploie jamais les mots" in payload["messages"][1]["content"]
+    assert "sans JSON" in payload["messages"][1]["content"]
     assert "EDITING_SOFTWARE" not in payload["messages"][1]["content"]
+
+
+def test_synthesis_accepts_plain_sentences_when_labels_are_missing(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: _response(
+            "Ce document contient un relevé d'opérations. "
+            "Un logiciel d'édition est mentionné et demande une revue ciblée."
+        ),
+    )
+
+    result = summarize_analysis(
+        classification=None,
+        extraction=None,
+        verification=None,
+        findings=(_finding(),),
+        detectors=(),
+        laboratory=None,
+        config=AnalysisConfig(synthesis_enabled=True),
+    )
+
+    assert result.document_summary.text == "Ce document contient un relevé d'opérations."
+    assert result.review_summary.text.startswith("Un logiciel d'édition")
 
 
 @pytest.mark.parametrize(
@@ -131,46 +148,13 @@ def test_synthesis_rejects_a_verdict(monkeypatch: Any, review_summary: str) -> N
         requests,
         "post",
         lambda *args, **kwargs: _response(
-            {
-                "document_summary": {
-                    "text": "Le document contient un relevé d'opérations.",
-                    "evidence_ids": ["E001"],
-                },
-                "review_summary": {"text": review_summary, "evidence_ids": ["E001"]},
-                "highlights": [],
-            }
+            "DOCUMENT: Le document contient un relevé d'opérations.\n"
+            f"REVUE: {review_summary}\n"
+            "POINTS: Aucun"
         ),
     )
 
-    with pytest.raises(SynthesisError, match="reliée aux preuves"):
-        summarize_analysis(
-            classification=None,
-            extraction=None,
-            verification=None,
-            findings=(_finding(),),
-            detectors=(),
-            laboratory=None,
-            config=AnalysisConfig(synthesis_enabled=True),
-        )
-
-
-def test_synthesis_rejects_unknown_evidence_references(monkeypatch: Any) -> None:
-    monkeypatch.setattr(
-        requests,
-        "post",
-        lambda *args, **kwargs: _response(
-            {
-                "document_summary": {"text": "Une facture est présentée.", "evidence_ids": ["X"]},
-                "review_summary": {
-                    "text": "Un indice matériel est affiché.",
-                    "evidence_ids": ["X"],
-                },
-                "highlights": [],
-            }
-        ),
-    )
-
-    with pytest.raises(SynthesisError, match="reliée aux preuves"):
+    with pytest.raises(SynthesisError, match="verdict"):
         summarize_analysis(
             classification=None,
             extraction=None,

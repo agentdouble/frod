@@ -413,7 +413,6 @@ class LLMDocumentExtractor:
         country: str | None,
         *,
         coverage_pass: bool,
-        split_depth: int = 0,
     ) -> _RawExtraction:
         prompt = _extraction_prompt(
             regions,
@@ -423,34 +422,7 @@ class LLMDocumentExtractor:
             country=country,
             coverage_pass=coverage_pass,
         )
-        try:
-            return _raw_extraction(self._call_llm(prompt))
-        except ExtractionError as error:
-            if not error.truncated or len(regions) < 2 or split_depth >= 4:
-                raise
-            left, right = _split_region_chunk(regions)
-            return _combine_raw(
-                (
-                    self._extract_chunk(
-                        left,
-                        family,
-                        family_reliability,
-                        language,
-                        country,
-                        coverage_pass=coverage_pass,
-                        split_depth=split_depth + 1,
-                    ),
-                    self._extract_chunk(
-                        right,
-                        family,
-                        family_reliability,
-                        language,
-                        country,
-                        coverage_pass=coverage_pass,
-                        split_depth=split_depth + 1,
-                    ),
-                )
-            )
+        return _raw_extraction(self._call_llm(prompt))
 
     def _call_llm(self, prompt: str) -> Mapping[str, Any]:
         endpoint = f"{self.url}/v1/chat/completions"
@@ -757,23 +729,6 @@ def _chunk_regions(
     if current:
         chunks.append(tuple(current))
     return tuple(chunks)
-
-
-def _split_region_chunk(
-    regions: tuple[StructuredOcrRegion, ...],
-) -> tuple[tuple[StructuredOcrRegion, ...], tuple[StructuredOcrRegion, ...]]:
-    """Split a truncated multi-region request near half of its serialized size."""
-
-    sizes = [len(format_structured_ocr_region(region)) for region in regions]
-    midpoint = sum(sizes) / 2
-    consumed = 0
-    split_at = 1
-    for index, size in enumerate(sizes[:-1], start=1):
-        consumed += size
-        split_at = index
-        if consumed >= midpoint:
-            break
-    return regions[:split_at], regions[split_at:]
 
 
 def _raw_extraction(payload: Mapping[str, Any]) -> _RawExtraction:

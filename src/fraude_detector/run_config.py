@@ -462,7 +462,7 @@ def _load_analysis(
         extraction_coverage_retry_override
         if extraction_coverage_retry_override is not None
         else _boolean(
-            extraction.get("coverage_retry", True),
+            extraction.get("coverage_retry", False),
             source,
             "extraction.coverage_retry",
         )
@@ -549,7 +549,7 @@ def _load_analysis(
         "synthesis.max_input_chars",
     )
     synthesis_max_tokens = _integer(
-        synthesis.get("max_tokens", 450),
+        synthesis.get("max_tokens", 1_200),
         source,
         "synthesis.max_tokens",
     )

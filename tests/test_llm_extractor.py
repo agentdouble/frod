@@ -192,7 +192,9 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
         return next(responses)
 
     monkeypatch.setattr(requests, "post", fake_post)
-    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+    extraction = LLMDocumentExtractor(
+        AnalysisConfig(extraction_enabled=True, extraction_coverage_retry=True)
+    ).extract(
         payload,
         None,
     )
@@ -322,60 +324,6 @@ def test_extractor_retries_a_non_json_generation_with_constrained_output(
     assert len(calls) == 2
     assert all(call["response_format"]["type"] == "json_schema" for call in calls)
     assert calls[1]["max_tokens"] == calls[0]["max_tokens"] * 2
-
-
-def test_extractor_splits_a_multi_region_chunk_only_after_confirmed_truncation(
-    monkeypatch: Any,
-) -> None:
-    calls: list[dict[str, Any]] = []
-    left = _empty_result()
-    left["region_dispositions"]["unstructured"] = ["p001-r000"]
-    right = _empty_result()
-    right["region_dispositions"]["unstructured"] = ["p001-r001"]
-    responses = iter(
-        (
-            _Response(
-                {
-                    "choices": [
-                        {
-                            "message": {"content": '{"facts":['},
-                            "finish_reason": "length",
-                        }
-                    ]
-                }
-            ),
-            _Response(
-                {
-                    "choices": [
-                        {
-                            "message": {"content": '{"facts":['},
-                            "finish_reason": "length",
-                        }
-                    ]
-                }
-            ),
-            _chat_response(left),
-            _chat_response(right),
-        )
-    )
-
-    def fake_post(url: str, **kwargs: Any) -> _Response:
-        del url
-        calls.append(kwargs["json"])
-        return next(responses)
-
-    monkeypatch.setattr(requests, "post", fake_post)
-    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
-        [[_region("Première information"), _region("Deuxième information")]],
-        None,
-    )
-
-    assert len(calls) == 4
-    assert extraction.coverage.ratio == 1
-    assert extraction.coverage.unstructured_regions == 2
-    assert "Première information" in calls[2]["messages"][1]["content"]
-    assert "Deuxième information" not in calls[2]["messages"][1]["content"]
-    assert "Deuxième information" in calls[3]["messages"][1]["content"]
 
 
 def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: Any) -> None:

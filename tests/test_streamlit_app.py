@@ -270,18 +270,12 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
             }
             return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         if "<evidence_inventory>" in prompt:
-            result = {
-                "document_summary": {
-                    "text": "Ce document présente une déclaration de sinistre.",
-                    "evidence_ids": ["E002"],
-                },
-                "review_summary": {
-                    "text": "Les contrôles affichés ne relèvent pas de contradiction matérielle.",
-                    "evidence_ids": ["E001"],
-                },
-                "highlights": [],
-            }
-            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
+            result = (
+                "DOCUMENT: Ce document présente une déclaration de sinistre.\n"
+                "REVUE: Les contrôles affichés ne relèvent pas de contradiction matérielle.\n"
+                "POINTS: Aucun"
+            )
+            return _Response({"choices": [{"message": {"content": result}}]})
         region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
         result = {
             "facts": [

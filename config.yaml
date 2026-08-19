@@ -107,8 +107,8 @@ extraction:
   # Les tableaux sont reconstruits depuis l'OCR et ne consomment plus la sortie du modèle.
   max_tokens: 4000
   temperature: 0.0
-  # Une seconde passe limitée tente de comptabiliser uniquement les régions oubliées.
-  coverage_retry: true
+  # Désactivée par défaut: cette seconde passe peut presque doubler le temps d'extraction.
+  coverage_retry: false
 
 verification:
   # Troisième appel expérimental et indépendant; seules les anomalies sont renvoyées.
@@ -126,15 +126,15 @@ verification:
 
 synthesis:
   # Résumé métier final, généré après tous les contrôles et sans effet sur le score.
-  enabled: false
+  enabled: true
   # Cette passe peut partager le serveur et le modèle des autres traitements sémantiques.
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
   timeout_seconds: 90
   # Seul un condensé des preuves est transmis, jamais la totalité de l'OCR.
   max_input_chars: 24000
-  # Une sortie courte limite le temps d'inférence et garde la synthèse lisible.
-  max_tokens: 450
+  # MiniMax utilise une partie de ce budget pour son raisonnement avant la réponse courte.
+  max_tokens: 1200
   temperature: 0.0
 
 models:

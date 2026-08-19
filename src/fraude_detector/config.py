@@ -50,7 +50,7 @@ class AnalysisConfig:
     extraction_max_input_chars: int = 48_000
     extraction_max_tokens: int = 4_000
     extraction_temperature: float = 0.0
-    extraction_coverage_retry: bool = True
+    extraction_coverage_retry: bool = False
     verification_enabled: bool = False
     verification_url: str = "http://127.0.0.1:8030"
     verification_model: str = "minimax_m2_1"
@@ -64,7 +64,7 @@ class AnalysisConfig:
     synthesis_model: str = "minimax_m2_1"
     synthesis_timeout_seconds: int = 90
     synthesis_max_input_chars: int = 24_000
-    synthesis_max_tokens: int = 450
+    synthesis_max_tokens: int = 1_200
     synthesis_temperature: float = 0.0
 
     def __post_init__(self) -> None:
