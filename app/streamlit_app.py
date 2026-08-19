@@ -1247,17 +1247,11 @@ def _render_laboratory_synthesis(
             )
         return
 
-    highlights = "".join(
-        f"<li>{_html(statement.text)}</li>" for statement in synthesis.highlights
-    )
-    highlight_block = f"<ul>{highlights}</ul>" if highlights else ""
     st.markdown(
         f"""
         <section class="laboratory-synthesis">
           <span>Synthèse de l'analyse</span>
-          <strong>{_html(synthesis.document_summary.text)}</strong>
-          <p>{_html(synthesis.review_summary.text)}</p>
-          {highlight_block}
+          <p>{_html(synthesis.document_summary.text)}</p>
           <small>Résumé fondé uniquement sur les contrôles et informations affichés.</small>
         </section>
         """,

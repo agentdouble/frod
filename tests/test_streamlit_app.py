@@ -271,9 +271,9 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
             return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
         if "<evidence_inventory>" in prompt:
             result = (
-                "DOCUMENT: Ce document présente une déclaration de sinistre.\n"
-                "REVUE: Les contrôles affichés ne relèvent pas de contradiction matérielle.\n"
-                "POINTS: Aucun"
+                "Ce document présente une déclaration de sinistre. Les contrôles affichés "
+                "ne relèvent pas de contradiction matérielle et le score ne déclenche pas "
+                "de revue automatique."
             )
             return _Response({"choices": [{"message": {"content": result}}]})
         region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
@@ -315,7 +315,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     ]
     assert "Aucune contradiction concrète relevée" in markdown
     assert "Ce document présente une déclaration de sinistre." in markdown
-    assert "Les contrôles affichés ne relèvent pas de contradiction matérielle." in markdown
+    assert "Les contrôles affichés ne relèvent pas de contradiction matérielle" in markdown
     classification_index = next(
         index for index, value in enumerate(markdown_blocks) if "Type de document reconnu" in value
     )

@@ -68,9 +68,9 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     def fake_post(url: str, **kwargs: Any) -> _Response:
         calls.append({"url": url, **kwargs})
         return _response(
-            "DOCUMENT: Ce document est classé comme une facture.\n"
-            "REVUE: Un logiciel d'édition est mentionné et mérite une revue ciblée.\n"
-            "POINTS: Logiciel d'édition mentionné | Signature électronique absente"
+            "Ce document est classé comme une facture et obtient un score de 8 sur 100. "
+            "Ce niveau ne déclenche pas de revue automatique. Un logiciel d'édition est "
+            "néanmoins mentionné et peut être contrôlé avec le document source."
         )
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -95,23 +95,23 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
         assessment_label="Faible",
     )
 
-    assert result.document_summary.text == "Ce document est classé comme une facture."
-    assert result.review_summary.text.startswith("Un logiciel d'édition")
-    assert [item.text for item in result.highlights] == [
-        "Logiciel d'édition mentionné",
-        "Signature électronique absente",
-    ]
+    assert result.document_summary.text.startswith("Ce document est classé comme une facture")
+    assert "ne déclenche pas de revue automatique" in result.document_summary.text
+    assert result.review_summary.text == ""
+    assert result.highlights == ()
     assert result.document_summary.evidence_ids
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     payload = calls[0]["json"]
-    assert payload["max_tokens"] == 1_200
+    assert payload["max_tokens"] == 8_000
     assert "response_format" not in payload
-    assert "n'emploie jamais les mots" in payload["messages"][1]["content"]
-    assert "sans JSON" in payload["messages"][1]["content"]
+    assert "ne décides jamais" in payload["messages"][0]["content"]
+    assert "sans JSON" in payload["messages"][0]["content"]
+    assert "de 30 à 69" in payload["messages"][1]["content"]
+    assert "revue manuelle" in payload["messages"][1]["content"]
     assert "EDITING_SOFTWARE" not in payload["messages"][1]["content"]
 
 
-def test_synthesis_accepts_plain_sentences_when_labels_are_missing(monkeypatch: Any) -> None:
+def test_synthesis_keeps_the_model_note_without_imposing_sections(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         requests,
         "post",
@@ -131,8 +131,11 @@ def test_synthesis_accepts_plain_sentences_when_labels_are_missing(monkeypatch: 
         config=AnalysisConfig(synthesis_enabled=True),
     )
 
-    assert result.document_summary.text == "Ce document contient un relevé d'opérations."
-    assert result.review_summary.text.startswith("Un logiciel d'édition")
+    assert result.document_summary.text == (
+        "Ce document contient un relevé d'opérations. "
+        "Un logiciel d'édition est mentionné et demande une revue ciblée."
+    )
+    assert result.review_summary.text == ""
 
 
 @pytest.mark.parametrize(
