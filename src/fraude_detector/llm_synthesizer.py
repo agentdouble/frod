@@ -121,59 +121,68 @@ def build_evidence_digest(
             records.append(EvidenceRecord(f"E{len(records) + 1:03d}", source, cleaned))
 
     if assessment_score is not None:
-        label = f", niveau {assessment_label}" if assessment_label else ""
-        add("score", f"Score global calculé: {assessment_score}/100{label}.")
+        if assessment_score >= 70:
+            decision = (
+                "Revue manuelle obligatoire: plusieurs familles de signaux actives se corroborent."
+            )
+        elif assessment_score >= 30:
+            decision = "Revue manuelle nécessaire: au moins un signal actif doit être contrôlé."
+        else:
+            decision = (
+                "Pas de revue automatique déclenchée: aucun signal actif ne dépasse le seuil "
+                "opérationnel, sans garantie sur l'intégrité du document."
+            )
+        add("review_decision", decision)
 
     if classification is not None:
-        details = [
-            f"famille={classification.family}",
-            f"fiabilité={classification.reliability:.0%}",
-        ]
-        if classification.language:
-            details.append(f"langue={classification.language}")
-        if classification.country:
-            details.append(f"pays={classification.country}")
-        add("classification", "Classement du document: " + ", ".join(details) + ".")
-        for reason in classification.evidence[:3]:
-            add("classification", f"Justification du classement: {reason}")
+        add("classification", f"Famille documentaire estimée: {classification.family}.")
 
-    finding_items = tuple(findings)
-    for finding in finding_items[:40]:
+    scored_findings = sorted(
+        (finding for finding in findings if finding.risk_points > 0),
+        key=lambda finding: (finding.risk_points, finding.confidence),
+        reverse=True,
+    )
+    minimum_relevant_points = (
+        max(10.0, scored_findings[0].risk_points * 0.25) if scored_findings else 10.0
+    )
+    active_findings = tuple(
+        finding
+        for finding in scored_findings
+        if finding.risk_points >= minimum_relevant_points
+    )
+    for finding in active_findings[:15]:
         page = f", page {finding.page}" if finding.page is not None else ""
         add(
-            "signal",
+            "active_signal",
             f"{finding.title}: {finding.description} "
-            f"(points={finding.risk_points:g}, confiance={finding.confidence:.0%}{page}).",
+            f"(solidité technique={finding.confidence:.0%}{page}).",
         )
 
     if verification is not None:
-        corrections = sum(item.correction_applied for item in verification.reviews)
-        pending_reviews = sum(not item.correction_applied for item in verification.reviews)
-        add(
-            "verification",
-            f"Vérification de l'extraction: statut={verification.status}, "
-            f"corrections appliquées={corrections}, "
-            f"points restant à contrôler={pending_reviews}, "
-            f"omissions possibles={len(verification.omissions)}.",
+        pending_reviews = tuple(
+            review for review in verification.reviews if not review.correction_applied
         )
-        for review in verification.reviews[:20]:
+        for review in pending_reviews[:10]:
             add(
-                "verification",
-                f"{review.target_id}: {review.explanation} "
-                f"(confiance={review.confidence:.0%}, correction={review.correction_applied}).",
+                "active_verification",
+                f"{review.explanation} (solidité technique={review.confidence:.0%}).",
             )
         for omission in verification.omissions[:10]:
             add(
-                "verification",
+                "active_verification",
                 f"Omission possible: {omission.description} "
                 f"(valeur={omission.proposed_value or 'non proposée'}, "
-                f"confiance={omission.confidence:.0%}).",
+                f"solidité technique={omission.confidence:.0%}).",
             )
 
     if laboratory is not None:
         for check in laboratory.checks[:30]:
+            if check.state not in {"attention", "detected"}:
+                continue
             add("laboratoire", f"{check.title}: état={check.state}. {check.summary}")
             for observation in check.observations[:8]:
+                if observation.state not in {"attention", "detected"}:
+                    continue
                 add(
                     "laboratoire",
                     f"{observation.title}: {observation.summary} "
@@ -181,13 +190,6 @@ def build_evidence_digest(
                 )
 
     if extraction is not None:
-        add(
-            "extraction",
-            f"Extraction structurée: couverture={extraction.coverage.ratio:.0%}, "
-            f"faits={len(extraction.facts)}, "
-            f"champs additionnels={len(extraction.additional_fields)}, "
-            f"tableaux={len(extraction.tables)}.",
-        )
         for fact in extraction.facts[:50]:
             value = fact.corrected_value or fact.raw_value
             normalized = (
@@ -215,13 +217,6 @@ def build_evidence_digest(
                 f"lignes={' // '.join(rows)}{suffix}.",
             )
 
-    for detector in tuple(detectors)[:30]:
-        notes = " ".join(detector.notes[:2])
-        add(
-            "detecteur",
-            f"{detector.name}: statut={detector.status}, signaux={len(detector.findings)}. {notes}",
-        )
-
     return tuple(records)
 
 
@@ -245,33 +240,29 @@ def _fit_evidence(
 
 def _user_prompt(evidence: tuple[EvidenceRecord, ...]) -> str:
     payload = [record.to_dict() for record in evidence]
-    return f"""Rédige une synthèse opérationnelle à partir de cet inventaire de preuves.
+    return f"""Rédige une synthèse opérationnelle pour la personne qui doit décider quoi vérifier.
 
-Contexte indispensable sur le score:
-- il s'agit d'un indice de priorité sur 100, jamais d'une probabilité;
-- de 0 à 29, aucun signal fort ne déclenche automatiquement une revue, mais cela ne garantit
-  ni l'origine ni l'intégrité du document;
-- de 30 à 69, au moins un signal technique justifie une revue manuelle;
-- de 70 à 100, plusieurs familles de signaux indépendantes se corroborent et une revue humaine
-  est obligatoire;
-- une seule famille de signaux ne peut pas, à elle seule, dépasser 69;
-- les points mesurent le poids d'un indice dans le score; la confiance indique la fiabilité
-  technique de ce constat et ne mesure pas un risque de fraude.
+L'inventaire est déjà filtré:
+- review_decision contient la décision opérationnelle calculée par le moteur;
+- active_signal contient uniquement les anomalies déterminantes, par importance décroissante;
+- active_verification contient uniquement les incohérences encore à contrôler;
+- laboratoire contient uniquement des observations actives;
+- classification et extraction servent seulement à comprendre la nature du document.
 
-Dans une note naturelle de trois à six phrases:
-- présente brièvement la nature et le contenu utile du document;
-- donne le score et explique concrètement son niveau avec les règles ci-dessus;
-- cite seulement les deux ou trois éléments les plus déterminants, en expliquant pourquoi ils
-  comptent et en distinguant un vrai signal d'une simple limitation ou indisponibilité;
-- indique clairement si le seuil impose une revue manuelle et pourquoi;
-- si le score est inférieur à 30, dis qu'aucune revue automatique n'est déclenchée, sans conclure
-  que le document est régulier;
-- si aucun score n'est présent dans l'inventaire, ne l'invente pas et indique seulement les
-  constats effectivement disponibles;
-- utilise éventuellement le mot « fraude » pour parler d'un risque ou d'un indice, mais ne dis
-  jamais que le document est frauduleux, authentique ou légitime;
-- n'ajoute aucun fait absent, aucun conseil générique et aucun détail technique inutile au métier;
-- reste sous 170 mots et ne montre pas ton raisonnement interne.
+Produis une note naturelle de deux à quatre phrases, idéalement sous 110 mots:
+- explique d'abord, en langage métier, si une revue manuelle est nécessaire;
+- justifie cette action par les deux ou trois anomalies actives les plus déterminantes et explique
+  concrètement ce qu'il faut confronter au document visible;
+- présente la nature du document uniquement si cela aide à comprendre ces contrôles;
+- ne cite jamais le score numérique, les points, les seuils, le barème ou les familles de scoring;
+- ne récite pas la langue, le pays supposé, la confiance de classification ou les métadonnées de
+  contexte, sauf si une incohérence active porte précisément sur cet élément;
+- ignore entièrement les contrôles absents, négatifs, faibles, à zéro, non applicables,
+  indisponibles ou sans effet sur la décision;
+- ne cite pas les noms internes des modèles ou détecteurs; traduis chaque signal en termes métier;
+- ne transforme jamais une limitation en anomalie et ne conclus jamais que le document est
+  frauduleux, authentique ou légitime;
+- n'invente aucun fait et ne montre pas ton raisonnement interne.
 
 Réponds uniquement par cette synthèse fluide, sans titre, rubrique, préfixe, liste ou Markdown.
 

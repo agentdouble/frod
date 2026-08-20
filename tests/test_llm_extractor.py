@@ -323,7 +323,7 @@ def test_extractor_retries_a_non_json_generation_with_constrained_output(
     assert extraction.coverage.ratio == 1
     assert len(calls) == 2
     assert all(call["response_format"]["type"] == "json_schema" for call in calls)
-    assert calls[1]["max_tokens"] == calls[0]["max_tokens"] * 2
+    assert calls[1]["max_tokens"] == 32_768
 
 
 def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: Any) -> None:

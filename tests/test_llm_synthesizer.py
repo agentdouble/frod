@@ -35,7 +35,7 @@ def _finding() -> Finding:
         category="metadata",
         title="Logiciel d'édition détecté",
         description="Le fichier mentionne un logiciel d'édition.",
-        risk_points=8,
+        risk_points=12,
         confidence=0.9,
         page=1,
     )
@@ -68,13 +68,22 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     def fake_post(url: str, **kwargs: Any) -> _Response:
         calls.append({"url": url, **kwargs})
         return _response(
-            "Ce document est classé comme une facture et obtient un score de 8 sur 100. "
-            "Ce niveau ne déclenche pas de revue automatique. Un logiciel d'édition est "
-            "néanmoins mentionné et peut être contrôlé avec le document source."
+            "Une revue manuelle est nécessaire car le fichier mentionne un logiciel d'édition. "
+            "L'analyste doit confronter cet historique technique au document visible et à sa "
+            "source afin de déterminer si cette intervention était attendue."
         )
 
     monkeypatch.setattr(requests, "post", fake_post)
     finding = _finding()
+    weak_finding = Finding(
+        detector="ai_generated",
+        code="AI_WEAK",
+        category="synthetic_media",
+        title="Faible ressemblance avec une image générée",
+        description="Le signal statistique reste faible.",
+        risk_points=0,
+        confidence=0.55,
+    )
     result = summarize_analysis(
         classification=DocumentClassification(
             family="facture_recu",
@@ -84,30 +93,33 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
         ),
         extraction=None,
         verification=None,
-        findings=(finding,),
+        findings=(finding, weak_finding),
         detectors=(DetectorResult(name="metadata", status="completed", findings=(finding,)),),
         laboratory=_laboratory(),
         config=AnalysisConfig(
             synthesis_enabled=True,
             synthesis_url="http://minimax.internal:8030",
         ),
-        assessment_score=8,
-        assessment_label="Faible",
+        assessment_score=30,
+        assessment_label="Revue manuelle nécessaire",
     )
 
-    assert result.document_summary.text.startswith("Ce document est classé comme une facture")
-    assert "ne déclenche pas de revue automatique" in result.document_summary.text
+    assert result.document_summary.text.startswith("Une revue manuelle est nécessaire")
     assert result.review_summary.text == ""
     assert result.highlights == ()
     assert result.document_summary.evidence_ids
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     payload = calls[0]["json"]
-    assert payload["max_tokens"] == 8_000
+    assert payload["max_tokens"] == 32_768
     assert "response_format" not in payload
     assert "ne décides jamais" in payload["messages"][0]["content"]
     assert "sans JSON" in payload["messages"][0]["content"]
-    assert "de 30 à 69" in payload["messages"][1]["content"]
-    assert "revue manuelle" in payload["messages"][1]["content"]
+    assert "ne cite jamais le score numérique" in payload["messages"][1]["content"]
+    assert "anomalies déterminantes" in payload["messages"][1]["content"]
+    assert "Score global calculé" not in payload["messages"][1]["content"]
+    assert "pays=LU" not in payload["messages"][1]["content"]
+    assert "Aucune signature électronique" not in payload["messages"][1]["content"]
+    assert "Faible ressemblance avec une image générée" not in payload["messages"][1]["content"]
     assert "EDITING_SOFTWARE" not in payload["messages"][1]["content"]
 
 

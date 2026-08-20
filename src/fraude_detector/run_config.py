@@ -391,7 +391,7 @@ def _load_analysis(
         classification_timeout_override
         if classification_timeout_override is not None
         else _integer(
-            classification.get("timeout_seconds", 300),
+            classification.get("timeout_seconds", 900),
             source,
             "classification.timeout_seconds",
         )
@@ -402,7 +402,7 @@ def _load_analysis(
         "classification.max_input_chars",
     )
     classification_max_tokens = _integer(
-        classification.get("max_tokens", 4_000),
+        classification.get("max_tokens", 32_768),
         source,
         "classification.max_tokens",
     )
@@ -434,7 +434,7 @@ def _load_analysis(
         extraction_timeout_override
         if extraction_timeout_override is not None
         else _integer(
-            extraction.get("timeout_seconds", 600),
+            extraction.get("timeout_seconds", 1_800),
             source,
             "extraction.timeout_seconds",
         )
@@ -445,7 +445,7 @@ def _load_analysis(
         "extraction.max_input_chars",
     )
     extraction_max_tokens = _integer(
-        extraction.get("max_tokens", 16_000),
+        extraction.get("max_tokens", 32_768),
         source,
         "extraction.max_tokens",
     )
@@ -490,7 +490,7 @@ def _load_analysis(
         verification_timeout_override
         if verification_timeout_override is not None
         else _integer(
-            verification.get("timeout_seconds", 600),
+            verification.get("timeout_seconds", 1_800),
             source,
             "verification.timeout_seconds",
         )
@@ -501,7 +501,7 @@ def _load_analysis(
         "verification.max_input_chars",
     )
     verification_max_tokens = _integer(
-        verification.get("max_tokens", 8_000),
+        verification.get("max_tokens", 32_768),
         source,
         "verification.max_tokens",
     )
@@ -538,7 +538,7 @@ def _load_analysis(
         synthesis_timeout_override
         if synthesis_timeout_override is not None
         else _integer(
-            synthesis.get("timeout_seconds", 300),
+            synthesis.get("timeout_seconds", 900),
             source,
             "synthesis.timeout_seconds",
         )
@@ -549,7 +549,7 @@ def _load_analysis(
         "synthesis.max_input_chars",
     )
     synthesis_max_tokens = _integer(
-        synthesis.get("max_tokens", 8_000),
+        synthesis.get("max_tokens", 32_768),
         source,
         "synthesis.max_tokens",
     )

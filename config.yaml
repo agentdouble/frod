@@ -89,10 +89,10 @@ classification:
   # Nom servi par vLLM, à adapter sur le poste qui héberge le modèle.
   model: "minimax_m2_1"
   # Limites destinées à éviter qu'un serveur indisponible bloque longtemps l'analyse.
-  timeout_seconds: 300
+  timeout_seconds: 900
   max_input_chars: 20000
   # MiniMax raisonne avant de produire son classement final.
-  max_tokens: 4000
+  max_tokens: 32768
   # Une température nulle favorise un classement reproductible.
   temperature: 0.0
 
@@ -102,11 +102,11 @@ extraction:
   # API locale vLLM; elle peut partager le serveur de classification.
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
-  timeout_seconds: 600
+  timeout_seconds: 1800
   # Un contexte plus large évite de multiplier les appels pour les documents de plusieurs pages.
   max_input_chars: 48000
   # Les tableaux sont reconstruits depuis l'OCR et ne consomment plus la sortie du modèle.
-  max_tokens: 16000
+  max_tokens: 32768
   temperature: 0.0
   # Désactivée par défaut: cette seconde passe peut presque doubler le temps d'extraction.
   coverage_retry: false
@@ -117,10 +117,10 @@ verification:
   # Le même serveur MiniMax peut être utilisé; chaque vérification ouvre une nouvelle conversation.
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
-  timeout_seconds: 600
+  timeout_seconds: 1800
   # La vérification reçoit les régions OCR et l'extraction structurée dans un seul contexte.
   max_input_chars: 80000
-  max_tokens: 8000
+  max_tokens: 32768
   temperature: 0.0
   # Seuls les doutes ou omissions au-dessus de ce seuil deviennent des alertes visibles.
   issue_min_confidence: 0.80
@@ -131,11 +131,11 @@ synthesis:
   # Cette passe peut partager le serveur et le modèle des autres traitements sémantiques.
   url: "http://127.0.0.1:8030"
   model: "minimax_m2_1"
-  timeout_seconds: 300
+  timeout_seconds: 900
   # Seul un condensé des preuves est transmis, jamais la totalité de l'OCR.
   max_input_chars: 24000
   # MiniMax utilise une partie importante de ce budget pour son raisonnement interne.
-  max_tokens: 8000
+  max_tokens: 32768
   temperature: 0.0
 
 models:
