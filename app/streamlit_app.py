@@ -2,43 +2,19 @@
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import html as html_lib
 import json
 import os
 import re
-from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, replace
-from functools import partial
+from dataclasses import dataclass
 from pathlib import Path
-from queue import Empty, SimpleQueue
-from threading import Event, Lock
 from typing import Any
-from uuid import uuid4
 
 import streamlit as st
 
-from fraude_detector.config import AnalysisConfig
-from fraude_detector.content_analysis import ContentAnalysisResult, analyze_recognized_content
+from fraude_detector.analysis_service import AnalysisRunHandle, AnalysisService
 from fraude_detector.errors import AnalysisError
-from fraude_detector.extraction_reconciliation import reconcile_extraction
-from fraude_detector.gapl import (
-    best_available_device,
-    create_gapl_adapter,
-)
-from fraude_detector.image_pipeline import ImageAnalysisPipeline
-from fraude_detector.laboratory import (
-    analyze_image_laboratory,
-    analyze_ocr_laboratory,
-    analyze_pdf_laboratory,
-)
-from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
-from fraude_detector.llm_classifier import classify_document
-from fraude_detector.llm_extractor import extract_document
-from fraude_detector.llm_synthesizer import summarize_analysis
-from fraude_detector.llm_verifier import verify_extraction
 from fraude_detector.models import (
     AnalysisReport,
     AnalysisSynthesis,
@@ -49,21 +25,13 @@ from fraude_detector.models import (
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
-    OcrReport,
 )
-from fraude_detector.ocr_consistency import build_ocr_content_result
-from fraude_detector.pipeline import AnalysisPipeline
-from fraude_detector.run_config import load_run_config
+from fraude_detector.run_config import RunConfig, load_run_config
 from fraude_detector.scoring import FAMILY_CAPS, assess_risk
 
 CONFIG_PATH = Path(os.environ.get("FROD_CONFIG", "config.yaml"))
 PROJECT_CONFIG = load_run_config(CONFIG_PATH)
 WORK_DIR = PROJECT_CONFIG.application.work_dir
-UPLOAD_DIR = WORK_DIR / "uploads"
-RUN_DIR = WORK_DIR / "runs"
-GAPL_WEIGHTS = PROJECT_CONFIG.gapl.weights_path
-TRUFOR_WEIGHTS = PROJECT_CONFIG.trufor.weights_path
-TRUFOR_PIXEL_BUDGET = PROJECT_CONFIG.trufor.max_pixels
 CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
 ANALYSIS_POLICY_VERSION = (
     f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
@@ -183,20 +151,6 @@ class OcrDemoDocument:
     fixture_dir: Path
 
 
-@dataclass(frozen=True, slots=True)
-class AiAnalysisResult:
-    report: AnalysisReport | ImageAnalysisReport
-    laboratory: LaboratoryReport
-    synthesis: AnalysisSynthesis | None
-    synthesis_error: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class AiProgressEvent:
-    value: float
-    label: str
-
-
 def _analysis_is_pending(state: object) -> bool:
     return isinstance(state, dict) and state.get("status") in {"core_running", "ai_running"}
 
@@ -204,12 +158,9 @@ def _analysis_is_pending(state: object) -> bool:
 def _cancel_analysis(state: object) -> None:
     if not isinstance(state, dict):
         return
-    cancel_event = state.get("ai_cancel_event")
-    if isinstance(cancel_event, Event):
-        cancel_event.set()
-    future = state.get("ai_future")
-    if isinstance(future, Future):
-        future.cancel()
+    handle = state.get("ai_handle")
+    if isinstance(handle, AnalysisRunHandle):
+        handle.cancel()
 
 
 @st.fragment(run_every=0.5)
@@ -222,20 +173,15 @@ def _poll_ai_analysis(current_key: tuple[str, str, str]) -> None:
     ):
         return
 
-    progress_queue = state.get("ai_progress_queue")
-    if isinstance(progress_queue, SimpleQueue):
-        while True:
-            try:
-                event = progress_queue.get_nowait()
-            except Empty:
-                break
+    handle = state.get("ai_handle")
+    if isinstance(handle, AnalysisRunHandle):
+        for event in handle.drain_progress():
             state["progress"] = max(float(state.get("progress", 0.0)), event.value)
             state["progress_label"] = event.label
 
-    future = state.get("ai_future")
-    if isinstance(future, Future) and future.done():
+    if isinstance(handle, AnalysisRunHandle) and handle.done():
         try:
-            result = future.result()
+            result = handle.result()
         except Exception as error:
             state.update(
                 status="ready",
@@ -256,8 +202,7 @@ def _poll_ai_analysis(current_key: tuple[str, str, str]) -> None:
                 progress=1.0,
                 progress_label="Analyse IA terminée",
             )
-        for key in ("ai_future", "ai_progress_queue", "ai_cancel_event"):
-            state.pop(key, None)
+        state.pop("ai_handle", None)
         st.session_state["analysis"] = state
         st.rerun()
 
@@ -307,7 +252,6 @@ def main() -> None:
 
     file_bytes = uploaded_file.data
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    config = _config_from_state()
 
     current_key = (
         ANALYSIS_POLICY_VERSION,
@@ -331,11 +275,10 @@ def main() -> None:
         progress = st.empty()
         _render_analysis_progress(progress, 0.0, "Préparation de l'analyse")
         try:
-            report, output_dir, source_path = _run_core_analysis(
+            core = _analysis_service(PROJECT_CONFIG).run_core(
                 file_name=uploaded_file.name,
                 file_bytes=file_bytes,
                 file_hash=file_hash,
-                config=config,
                 progress_callback=lambda value, text: _render_analysis_progress(
                     progress,
                     0.5 * value,
@@ -353,23 +296,18 @@ def main() -> None:
             cached.update(status="core_failed", error=message)
             st.error(message)
             return
-        job = _start_ai_analysis(
-            report=report,
-            output_dir=output_dir,
-            source_path=source_path,
-            config=config,
-        )
+        handle = _analysis_service(PROJECT_CONFIG).start_ai(core)
         cached.update(
             status="ai_running",
-            report=report,
+            report=core.report,
             laboratory=None,
             synthesis=None,
             synthesis_error=None,
-            output_dir=output_dir,
-            source_path=source_path,
+            output_dir=core.output_dir,
+            source_path=core.source_path,
             progress=0.0,
             progress_label="Préparation de l'analyse IA",
-            **job,
+            ai_handle=handle,
         )
         st.rerun()
 
@@ -609,58 +547,17 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         except json.JSONDecodeError as error:
             st.error(f"Fixture OCR invalide : {error}")
             return
-        laboratory = LaboratoryReport(
-            schema_version="0.1-experimental",
-            checks=analyze_ocr_laboratory(payload),
+        result = _analysis_service(PROJECT_CONFIG).analyze_ocr_fixture(
+            payload=payload,
+            markdown=markdown,
         )
-        ocr_detector = build_ocr_content_result(
-            OcrReport(
-                success=True,
-                error_message=None,
-                markdown=markdown,
-                json_result=payload,
-            )
-        )
-        classification = None
-        extraction = None
-        verification = None
-        synthesis = None
-        synthesis_error = None
-        if PROJECT_CONFIG.analysis.classification_enabled:
-            try:
-                classification = classify_document(markdown, PROJECT_CONFIG.analysis)
-            except Exception:
-                classification = None
-        if PROJECT_CONFIG.analysis.extraction_enabled:
-            try:
-                extraction = extract_document(payload, classification, PROJECT_CONFIG.analysis)
-            except Exception:
-                extraction = None
-        if PROJECT_CONFIG.analysis.verification_enabled and extraction is not None:
-            try:
-                verification = verify_extraction(
-                    payload,
-                    extraction,
-                    classification,
-                    PROJECT_CONFIG.analysis,
-                )
-                extraction, verification = reconcile_extraction(extraction, verification)
-            except Exception:
-                verification = None
-        if PROJECT_CONFIG.analysis.synthesis_enabled:
-            synthesis, synthesis_error = _safe_synthesis(
-                classification=classification,
-                extraction=extraction,
-                verification=verification,
-                findings=ocr_detector.findings,
-                detectors=(ocr_detector,),
-                laboratory=laboratory,
-                config=PROJECT_CONFIG.analysis,
-                assessment_score=round(
-                    max((finding.risk_points for finding in ocr_detector.findings), default=0)
-                ),
-                assessment_label=None,
-            )
+        laboratory = result.laboratory
+        ocr_detector = result.ocr_detector
+        classification = result.classification
+        extraction = result.extraction
+        verification = result.verification
+        synthesis = result.synthesis
+        synthesis_error = result.synthesis_error
         st.session_state["analysis"] = {
             "key": current_key,
             "ocr_payload": payload,
@@ -694,358 +591,13 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         )
 
 
-def _config_from_state() -> AnalysisConfig:
-    return PROJECT_CONFIG.analysis
-
-
-def _run_core_analysis(
-    *,
-    file_name: str,
-    file_bytes: bytes,
-    file_hash: str,
-    config: AnalysisConfig,
-    progress_callback: Callable[[float, str], None] | None = None,
-) -> tuple[AnalysisReport | ImageAnalysisReport, Path, Path]:
-    def report_progress(value: float, text: str) -> None:
-        if progress_callback is not None:
-            progress_callback(value, text)
-
-    report_progress(0.02, "Preparation du fichier")
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-
-    safe_name = _safe_filename(file_name)
-    source = UPLOAD_DIR / f"{file_hash[:16]}-{safe_name}"
-    source.write_bytes(file_bytes)
-
-    output_dir = RUN_DIR / f"{file_hash[:16]}-{uuid4().hex[:8]}"
-
-    adapter_loaders = ()
-    if PROJECT_CONFIG.gapl.enabled and GAPL_WEIGHTS.is_file():
-        report_progress(0.06, "Préparation de l'analyse des images")
-        device = (
-            best_available_device()
-            if PROJECT_CONFIG.gapl.device == "auto"
-            else PROJECT_CONFIG.gapl.device
-        )
-        weights_path = str(GAPL_WEIGHTS.resolve())
-        adapter_loaders = (
-            partial(
-                _load_gapl_adapter,
-                weights_path,
-                device,
-            ),
-        )
-
-    core_config = replace(
-        config,
-        classification_enabled=False,
-        extraction_enabled=False,
-        verification_enabled=False,
-    )
-
-    if _is_pdf_bytes(file_bytes):
-
-        def pipeline_progress(value: float, text: str) -> None:
-            report_progress(0.10 + 0.88 * value, text)
-
-        report = AnalysisPipeline(
-            config=core_config,
-            ai_image_adapter_loaders=adapter_loaders,
-        ).analyze(
-            source,
-            output_dir,
-            progress_callback=pipeline_progress,
-        )
-        report_progress(1.0, "Analyse principale terminée")
-        return report, output_dir, source
-
-    def pipeline_progress(value: float, text: str) -> None:
-        report_progress(0.10 + 0.88 * value, text)
-
-    report = ImageAnalysisPipeline(
-        config=core_config,
-        ai_image_adapter_loaders=adapter_loaders,
-    ).analyze(
-        source,
-        output_dir,
-        progress_callback=pipeline_progress,
-    )
-    _release_transient_memory()
-    report_progress(1.0, "Analyse principale terminée")
-    return report, output_dir, source
-
-
 @st.cache_resource(show_spinner=False)
-def _ai_analysis_executor() -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="frod-ai")
-
-
-def _start_ai_analysis(
-    *,
-    report: AnalysisReport | ImageAnalysisReport,
-    output_dir: Path,
-    source_path: Path,
-    config: AnalysisConfig,
-) -> dict[str, Any]:
-    progress_queue: SimpleQueue[AiProgressEvent] = SimpleQueue()
-    cancel_event = Event()
-    future = _ai_analysis_executor().submit(
-        _run_ai_analysis,
-        report,
-        output_dir,
-        source_path,
-        config,
-        progress_queue,
-        cancel_event,
-    )
-    return {
-        "ai_future": future,
-        "ai_progress_queue": progress_queue,
-        "ai_cancel_event": cancel_event,
-    }
-
-
-def _run_ai_analysis(
-    report: AnalysisReport | ImageAnalysisReport,
-    output_dir: Path,
-    source_path: Path,
-    config: AnalysisConfig,
-    progress_queue: SimpleQueue[AiProgressEvent],
-    cancel_event: Event,
-) -> AiAnalysisResult:
-    branch_values = {"semantic": 0.0, "laboratory": 0.0}
-    progress_lock = Lock()
-
-    def branch_progress(branch: str, value: float, label: str) -> None:
-        with progress_lock:
-            branch_values[branch] = max(branch_values[branch], min(1.0, max(0.0, value)))
-            combined = 0.75 * branch_values["semantic"] + 0.15 * branch_values["laboratory"]
-        progress_queue.put(AiProgressEvent(combined, label))
-
-    progress_queue.put(AiProgressEvent(0.0, "Préparation de l'analyse IA"))
-    ocr_report = _load_existing_ocr_report(report, output_dir)
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="frod-ai-stage") as executor:
-        semantic_future = executor.submit(
-            _run_semantic_analysis,
-            ocr_report,
-            config,
-            cancel_event,
-            lambda value, label: branch_progress("semantic", value, label),
-        )
-        laboratory_future = executor.submit(
-            _run_laboratory_analysis,
-            report,
-            output_dir,
-            source_path,
-            config,
-            cancel_event,
-            lambda value, label: branch_progress("laboratory", value, label),
-        )
-        semantic = semantic_future.result()
-        laboratory = laboratory_future.result()
-
-    if cancel_event.is_set():
-        raise RuntimeError("Analyse IA annulée")
-    completed_report = replace(
-        report,
-        classification=semantic.classification if semantic is not None else None,
-        extraction=semantic.extraction if semantic is not None else None,
-        extraction_verification=semantic.verification if semantic is not None else None,
-    )
-    progress_queue.put(AiProgressEvent(0.92, "Synthèse de l'analyse"))
-    synthesis, synthesis_error = _safe_synthesis(
-        classification=completed_report.classification,
-        extraction=completed_report.extraction,
-        verification=completed_report.extraction_verification,
-        findings=completed_report.findings,
-        detectors=completed_report.detectors,
-        laboratory=laboratory,
-        config=config,
-        assessment_score=completed_report.assessment.score,
-        assessment_label=completed_report.assessment.label,
-    )
-    _write_completed_report(completed_report, output_dir / "report.json")
-    progress_queue.put(AiProgressEvent(1.0, "Analyse IA terminée"))
-    return AiAnalysisResult(
-        report=completed_report,
-        laboratory=laboratory,
-        synthesis=synthesis,
-        synthesis_error=synthesis_error,
-    )
-
-
-def _run_semantic_analysis(
-    ocr_report: OcrReport | None,
-    config: AnalysisConfig,
-    cancel_event: Event,
-    progress_callback: Callable[[float, str], None],
-) -> ContentAnalysisResult | None:
-    if cancel_event.is_set() or ocr_report is None:
-        progress_callback(1.0, "Analyse sémantique non applicable")
-        return None
-    return analyze_recognized_content(
-        ocr_report,
-        config,
-        progress_callback=progress_callback,
-        cancel_callback=cancel_event.is_set,
-    )
-
-
-def _run_laboratory_analysis(
-    report: AnalysisReport | ImageAnalysisReport,
-    output_dir: Path,
-    source_path: Path,
-    config: AnalysisConfig,
-    cancel_event: Event,
-    progress_callback: Callable[[float, str], None],
-) -> LaboratoryReport:
-    if cancel_event.is_set():
-        return _empty_laboratory_report()
-    if isinstance(report, AnalysisReport):
-        laboratory = (
-            analyze_pdf_laboratory(
-                source_path,
-                output_dir,
-                config=config,
-                progress_callback=progress_callback,
-            )
-            if PROJECT_CONFIG.laboratory.pdf_enabled
-            else _empty_laboratory_report()
-        )
-    else:
-        laboratory = (
-            analyze_image_laboratory(
-                source_path,
-                output_dir,
-                trufor_weights=TRUFOR_WEIGHTS,
-                trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
-                trufor_timeout_seconds=PROJECT_CONFIG.trufor.timeout_seconds,
-                progress_callback=progress_callback,
-            )
-            if PROJECT_CONFIG.laboratory.image_enabled and PROJECT_CONFIG.trufor.enabled
-            else _empty_laboratory_report()
-        )
-    progress_callback(0.95, "Contrôles expérimentaux terminés")
-    laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source_path)
-    progress_callback(1.0, "Laboratoire terminé")
-    return laboratory
-
-
-def _load_existing_ocr_report(
-    report: AnalysisReport | ImageAnalysisReport,
-    output_dir: Path,
-) -> OcrReport | None:
-    json_paths = _existing_artifacts(output_dir, report.artifacts.get("ocr_json", ()))
-    markdown_paths = _existing_artifacts(output_dir, report.artifacts.get("ocr_markdown", ()))
-    if not json_paths or not markdown_paths:
-        return None
-    try:
-        payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-        markdown = markdown_paths[0].read_text(encoding="utf-8")
-    except (OSError, json.JSONDecodeError):
-        return None
-    return OcrReport(
-        success=True,
-        error_message=None,
-        markdown=markdown,
-        json_result=payload,
-        artifacts=tuple(
-            (
-                *report.artifacts.get("ocr_json", ()),
-                *report.artifacts.get("ocr_markdown", ()),
-            )
-        ),
-        layout_images=report.artifacts.get("ocr_layout", ()),
-    )
-
-
-def _write_completed_report(
-    report: AnalysisReport | ImageAnalysisReport,
-    path: Path,
-) -> None:
-    path.write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _safe_synthesis(
-    *,
-    classification: DocumentClassification | None,
-    extraction: DocumentExtraction | None,
-    verification: ExtractionVerification | None,
-    findings: tuple[Finding, ...],
-    detectors: tuple[DetectorResult, ...],
-    laboratory: LaboratoryReport,
-    config: AnalysisConfig,
-    assessment_score: int | None,
-    assessment_label: str | None,
-) -> tuple[AnalysisSynthesis | None, str | None]:
-    try:
-        return (
-            summarize_analysis(
-                classification=classification,
-                extraction=extraction,
-                verification=verification,
-                findings=findings,
-                detectors=detectors,
-                laboratory=laboratory,
-                config=config,
-                assessment_score=assessment_score,
-                assessment_label=assessment_label,
-            ),
-            None,
-        )
-    except Exception:
-        return None, "La synthèse assistée n'a pas pu être produite pour ce document."
+def _analysis_service(config: RunConfig) -> AnalysisService:
+    return AnalysisService(config)
 
 
 def _empty_laboratory_report() -> LaboratoryReport:
     return LaboratoryReport(schema_version="1.0", checks=())
-
-
-def _with_ocr_laboratory(
-    report: AnalysisReport | ImageAnalysisReport,
-    laboratory: LaboratoryReport,
-    output_dir: Path,
-    source_path: Path,
-) -> LaboratoryReport:
-    json_paths = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("ocr_json", ()),
-    )
-    if not json_paths:
-        return laboratory
-    try:
-        payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return laboratory
-    page_images = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("page_renders", ()),
-    )
-    if not page_images and isinstance(report, ImageAnalysisReport) and source_path.is_file():
-        page_images = [source_path]
-    visual_repetition = (
-        analyze_repeated_visual_regions(
-            payload,
-            tuple(page_images),
-            output_dir / "laboratory",
-            minimum_pages=PROJECT_CONFIG.laboratory.visual_repetition_min_pages,
-            minimum_similarity=PROJECT_CONFIG.laboratory.visual_repetition_similarity,
-        )
-        if PROJECT_CONFIG.laboratory.visual_repetition_enabled
-        else None
-    )
-    return LaboratoryReport(
-        schema_version=laboratory.schema_version,
-        checks=(
-            *laboratory.checks,
-            *analyze_ocr_laboratory(payload),
-            *((visual_repetition,) if visual_repetition is not None else ()),
-        ),
-    )
 
 
 def _render_empty_state() -> None:
@@ -2235,11 +1787,6 @@ def _content_stage_from_label(label: str) -> str | None:
     return None
 
 
-@st.cache_resource(show_spinner=False)
-def _load_gapl_adapter(weights_path: str, device: str) -> Any:
-    return create_gapl_adapter(weights_path=weights_path, device=device)
-
-
 def _render_score(
     report: AnalysisReport | ImageAnalysisReport,
 ) -> None:
@@ -2349,6 +1896,10 @@ def _existing_artifacts(output_dir: Path, relatives: tuple[str, ...]) -> list[Pa
     return paths
 
 
+def _is_pdf_bytes(file_bytes: bytes) -> bool:
+    return b"%PDF-" in file_bytes[:1024]
+
+
 def _tone_for_points(points: float, status: str) -> str:
     if points >= 45:
         return "danger"
@@ -2359,27 +1910,6 @@ def _tone_for_points(points: float, status: str) -> str:
     if status == "partial":
         return "partial"
     return "neutral"
-
-
-def _is_pdf_bytes(file_bytes: bytes) -> bool:
-    return b"%PDF-" in file_bytes[:1024]
-
-
-def _safe_filename(name: str) -> str:
-    clean = re.sub(r"[^a-zA-Z0-9_.-]+", "-", Path(name).name).strip("-")
-    return clean or "uploaded-file"
-
-
-def _release_transient_memory() -> None:
-    gc.collect()
-    try:
-        import ctypes
-
-        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
-        if malloc_trim is not None:
-            malloc_trim(0)
-    except (AttributeError, OSError):
-        pass
 
 
 def _friendly_artifact_caption(path: Path) -> str:

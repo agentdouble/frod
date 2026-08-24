@@ -112,7 +112,10 @@ def request_json_object(
         "response_format": response_format,
     }
     if reasoning_effort is not None:
-        payload["reasoning_effort"] = reasoning_effort
+        payload["chat_template_kwargs"] = {
+            "enable_thinking": True,
+            "reasoning_effort": reasoning_effort,
+        }
     response = _post(endpoint, payload, timeout_seconds, operation)
     if getattr(response, "status_code", 200) in {400, 422}:
         _terminal_rejected(response, "format JSON Schema refusé, nouvel essai en mode JSON")
@@ -159,7 +162,7 @@ def _post(
     body = dict(payload)
     template_kwargs = dict(body.get("chat_template_kwargs", {}))
     template_kwargs.pop("thinking_budget", None)
-    template_kwargs["enable_thinking"] = False
+    template_kwargs.setdefault("enable_thinking", False)
     body["chat_template_kwargs"] = template_kwargs
     body["stream"] = True
     _terminal_header(operation)

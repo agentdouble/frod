@@ -136,6 +136,29 @@ def test_streaming_prints_reasoning_and_final_content_with_ansi(
     assert "20 caractères" in terminal
 
 
+def test_reasoning_effort_is_forwarded_to_template_on_every_attempt(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    responses = iter((_Response('{"value":'), _Response('{"value":"complete"}')))
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        calls.append({"url": url, **kwargs})
+        return next(responses)
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    request = _request()
+    request["reasoning_effort"] = "low"
+
+    assert request_json_object(**request) == {"value": "complete"}
+    assert all("reasoning_effort" not in call["json"] for call in calls)
+    assert all(
+        call["json"]["chat_template_kwargs"]
+        == {"enable_thinking": True, "reasoning_effort": "low"}
+        for call in calls
+    )
+
+
 def test_no_attempt_ever_falls_back_to_free_text(monkeypatch: Any) -> None:
     calls: list[dict[str, Any]] = []
     responses = iter(

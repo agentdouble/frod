@@ -151,8 +151,11 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     assert verification.reviewed_targets == 2
     assert verification.reviews == ()
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
-    assert calls[0]["json"]["reasoning_effort"] == "low"
-    assert calls[0]["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning_effort" not in calls[0]["json"]
+    assert calls[0]["json"]["chat_template_kwargs"] == {
+        "enable_thinking": True,
+        "reasoning_effort": "low",
+    }
     messages = calls[0]["json"]["messages"]
     assert [message["role"] for message in messages] == ["system", "user"]
     assert "Il est normal et attendu" in messages[0]["content"]
