@@ -91,7 +91,7 @@ classification:
   # Limites destinées à éviter qu'un serveur indisponible bloque longtemps l'analyse.
   timeout_seconds: 900
   max_input_chars: 20000
-  # MiniMax raisonne avant de produire son classement final.
+  # Plafond de sortie; le raisonnement est désactivé par le client vLLM.
   max_tokens: 32768
   # Une température nulle favorise un classement reproductible.
   temperature: 0.0
@@ -134,7 +134,7 @@ synthesis:
   timeout_seconds: 900
   # Seul un condensé des preuves est transmis, jamais la totalité de l'OCR.
   max_input_chars: 24000
-  # MiniMax utilise une partie importante de ce budget pour son raisonnement interne.
+  # Plafond de sortie; le raisonnement est désactivé par le client vLLM.
   max_tokens: 32768
   temperature: 0.0
 

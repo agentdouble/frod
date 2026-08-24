@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -33,6 +34,24 @@ class _Response:
                 }
             ]
         }
+
+
+class _StreamingResponse:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
+    def __init__(self, chunks: list[dict[str, Any]]) -> None:
+        self.chunks = chunks
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self, *, decode_unicode: bool) -> list[str]:
+        assert decode_unicode is True
+        return [f"data: {json.dumps(chunk)}" for chunk in self.chunks] + ["data: [DONE]"]
+
+    def close(self) -> None:
+        return None
 
 
 SCHEMA = {
@@ -80,6 +99,37 @@ def test_invalid_json_is_retried_with_schema_and_more_output_tokens(monkeypatch:
     assert calls[1]["json"]["response_format"]["type"] == "json_schema"
     assert calls[1]["json"]["max_tokens"] == 2000
     assert "invalid or truncated" in calls[1]["json"]["messages"][0]["content"]
+    assert all(call["json"]["chat_template_kwargs"] == {"thinking_budget": 0} for call in calls)
+    assert all(call["json"]["stream"] is True for call in calls)
+    assert all(call["stream"] is True for call in calls)
+
+
+def test_streaming_prints_reasoning_and_final_content_with_ansi(
+    monkeypatch: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    response = _StreamingResponse(
+        [
+            {"choices": [{"delta": {"reasoning_content": "Vérification... "}}]},
+            {"choices": [{"delta": {"content": '{"value":'}}]},
+            {
+                "choices": [
+                    {"delta": {"content": '"complete"}'}, "finish_reason": "stop"}
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: response)
+
+    assert request_json_object(**_request()) == {"value": "complete"}
+
+    terminal = capsys.readouterr().out
+    assert "\033[1;36m━━ TEST OPERATION ━━" in terminal
+    assert "\033[3;90mVérification... " in terminal
+    assert '{"value":' in terminal
+    assert '"complete"}' in terminal
+    assert "\033[1;32m✓ test operation terminé en" in terminal
+    assert "20 caractères" in terminal
 
 
 def test_no_attempt_ever_falls_back_to_free_text(monkeypatch: Any) -> None:

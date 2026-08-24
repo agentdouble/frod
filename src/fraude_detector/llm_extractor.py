@@ -19,7 +19,7 @@ from fraude_detector.models import (
     ExtractionCoverage,
     NormalizationStatus,
 )
-from fraude_detector.ocr_tables import table_from_regions
+from fraude_detector.ocr_tables import infer_table_column_role, table_from_regions
 from fraude_detector.structured_llm import StructuredLlmError, request_json_object
 from fraude_detector.structured_ocr import (
     StructuredOcrRegion,
@@ -920,6 +920,10 @@ def _validated_tables(
             missing_roles = len(headers) - len(column_roles)
             column_roles = (*column_roles, *("other" for _ in range(missing_roles)))
         column_roles = column_roles[: len(headers)]
+        column_roles = tuple(
+            infer_table_column_role(header, semantic_type) if role == "other" else role
+            for header, role in zip(headers, column_roles, strict=True)
+        )
         default_row_role = str(candidate.get("default_row_role", "other"))
         if default_row_role not in TABLE_ROW_ROLES:
             default_row_role = "other"

@@ -16,6 +16,10 @@ def test_load_run_config_resolves_input_relative_to_yaml(tmp_path: Path) -> None
     assert config.input_path == (tmp_path / "documents/test.png").resolve()
     assert config.application.work_dir == (tmp_path / ".frod").resolve()
     assert config.analysis.render_dpi == 144
+    assert config.analysis.classification_model == "minimax_m2_1"
+    assert config.analysis.extraction_model == "minimax_m2_1"
+    assert config.analysis.verification_model == "minimax_m2_1"
+    assert config.analysis.synthesis_model == "minimax_m2_1"
 
 
 def test_load_run_config_accepts_legacy_pdf_path(tmp_path: Path) -> None:

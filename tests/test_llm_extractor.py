@@ -409,3 +409,38 @@ def test_bank_prompt_requires_summary_rows_to_be_separated_from_transactions(
     assert extraction.tables[0].row_roles.count("transaction") == 1
     assert "Un ancien solde" in prompts[0]
     assert "ne sont jamais\n   des transactions" in prompts[0]
+
+
+def test_explicit_headers_replace_only_other_column_roles(monkeypatch: Any) -> None:
+    table = (
+        "<table><thead><tr><th>Transaction Date</th><th>Particulars</th>"
+        "<th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>"
+        "<tbody><tr><td>12/08/2026</td><td>Consultation</td><td>80</td>"
+        "<td></td><td>120</td></tr></tbody></table>"
+    )
+    result = _empty_result()
+    result["tables"] = [
+        {
+            "title": "Operations",
+            "semantic_type": "transactions",
+            "column_roles": ["other", "other", "other", "other", "other"],
+            "default_row_role": "transaction",
+            "row_role_overrides": [],
+            "confidence": 0.9,
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region(table, "table")]],
+        None,
+    )
+
+    assert extraction.tables[0].column_roles == (
+        "transaction_date",
+        "description",
+        "debit_amount",
+        "credit_amount",
+        "balance",
+    )

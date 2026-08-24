@@ -1,4 +1,4 @@
-from fraude_detector.ocr_tables import parse_ocr_table
+from fraude_detector.ocr_tables import infer_table_column_role, parse_ocr_table
 
 
 def test_html_table_is_reconstructed_without_language_model_output() -> None:
@@ -28,3 +28,18 @@ def test_markdown_table_is_reconstructed() -> None:
 
 def test_plain_text_is_not_mistaken_for_a_table() -> None:
     assert parse_ocr_table("Date | Libellé | Montant") is None
+
+
+def test_explicit_multilingual_headers_have_deterministic_roles() -> None:
+    assert infer_table_column_role("Transaction Date", "transactions") == "transaction_date"
+    assert infer_table_column_role("Date de valeur", "transactions") == "value_date"
+    assert infer_table_column_role("Libellé", "transactions") == "description"
+    assert infer_table_column_role("Débit", "transactions") == "debit_amount"
+    assert infer_table_column_role("Crédit", "transactions") == "credit_amount"
+    assert infer_table_column_role("Solde", "transactions") == "balance"
+    assert infer_table_column_role("Prix unitaire", "invoice_lines") == "unit_price"
+    assert infer_table_column_role("Montant", "invoice_lines") == "line_total"
+
+
+def test_ambiguous_header_stays_other() -> None:
+    assert infer_table_column_role("Informations", "generic") == "other"

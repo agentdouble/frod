@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -19,6 +20,72 @@ class ParsedOcrTable:
 class _ParsedRow:
     cells: tuple[str, ...]
     contains_header: bool
+
+
+_COLUMN_ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "value_date",
+        (r"\bvalue date\b", r"\bdate (?:de )?valeur\b", r"\bvalutadatum\b"),
+    ),
+    (
+        "transaction_date",
+        (
+            r"\btransaction date\b",
+            r"\bbooking date\b",
+            r"\bdate (?:operation|transaction|comptable)\b",
+            r"\bbuchungsdatum\b",
+            r"\bdatum\b",
+            r"^date$",
+        ),
+    ),
+    (
+        "description",
+        (
+            r"\bdescription\b",
+            r"\blibelle\b",
+            r"\bdesignation\b",
+            r"\bparticulars?\b",
+            r"\bdetails?\b",
+            r"\bmerchant\b",
+            r"\bbeneficiaire\b",
+            r"\bverwendungszweck\b",
+            r"\bbeschreibung\b",
+        ),
+    ),
+    (
+        "debit_amount",
+        (r"\bdebits?\b", r"\bdebit amount\b", r"\bwithdrawals?\b", r"\bsoll\b"),
+    ),
+    (
+        "credit_amount",
+        (r"\bcredits?\b", r"\bcredit amount\b", r"\bdeposits?\b", r"\bhaben\b"),
+    ),
+    ("balance", (r"\bbalance\b", r"\bsolde\b", r"\bsaldo\b")),
+    ("currency", (r"\bcurrency\b", r"\bdevise\b", r"\bwaehrung\b")),
+    ("quantity", (r"\bquantity\b", r"\bquantite\b", r"\bqty\b", r"\bqte\b", r"\bmenge\b")),
+    (
+        "unit_price",
+        (
+            r"\bunit price\b",
+            r"\bprix unitaire\b",
+            r"\bprice per unit\b",
+            r"\beinzelpreis\b",
+        ),
+    ),
+    (
+        "tax_rate",
+        (r"\btax rate\b", r"\bvat rate\b", r"\btaux (?:de )?(?:tva|taxe)\b", r"\bmwst ?%"),
+    ),
+    (
+        "tax_amount",
+        (r"\btax amount\b", r"\bvat amount\b", r"\bmontant (?:de )?(?:tva|taxe)\b"),
+    ),
+    ("service_code", (r"\bservice code\b", r"\bcode (?:service|prestation|acte)\b")),
+    (
+        "product_code",
+        (r"\bproduct code\b", r"\bcode produit\b", r"\bproduct reference\b", r"\bsku\b"),
+    ),
+)
 
 
 class _TableParser(HTMLParser):
@@ -85,6 +152,32 @@ def table_from_regions(regions: tuple[StructuredOcrRegion, ...]) -> ParsedOcrTab
     return max(candidates, key=lambda table: sum(map(len, table.rows)) + len(table.headers))
 
 
+def infer_table_column_role(header: str, semantic_type: str) -> str:
+    """Infer a canonical role only when an OCR header is semantically explicit."""
+
+    normalized = _normalized_header(header)
+    if not normalized:
+        return "other"
+    for role, patterns in _COLUMN_ROLE_PATTERNS:
+        if any(re.search(pattern, normalized) for pattern in patterns):
+            return role
+    if re.search(r"\b(?:line total|total ligne|gesamtpreis)\b", normalized):
+        return "line_total"
+    if re.search(r"\b(?:amount|montant|betrag|value)\b", normalized):
+        return (
+            "line_total"
+            if semantic_type in {"invoice_lines", "services", "products"}
+            else "amount"
+        )
+    if normalized in {"total", "gesamt"}:
+        return (
+            "line_total"
+            if semantic_type in {"invoice_lines", "services", "products"}
+            else "amount"
+        )
+    return "other"
+
+
 def _parse_html_table(content: str) -> ParsedOcrTable | None:
     if "<table" not in content.casefold():
         return None
@@ -136,3 +229,11 @@ def _markdown_cells(line: str) -> tuple[str, ...]:
 
 def _clean_cell(value: str) -> str:
     return " ".join(value.split())[:500]
+
+
+def _normalized_header(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value)
+    ascii_value = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    )
+    return re.sub(r"[^a-z0-9%]+", " ", ascii_value.casefold()).strip()

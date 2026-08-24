@@ -14,8 +14,8 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    assert app.segmented_control[0].options == ["Analyse", "Laboratoire", "Glossaire"]
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].options == ["Général", "Analyse IA", "Glossaire"]
+    assert app.segmented_control[0].value == "Général"
     assert len(app.file_uploader) == 1
     assert [selectbox.label for selectbox in app.selectbox] == ["Document de démonstration"]
     assert not app.button
@@ -30,7 +30,7 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
     assert [button.label for button in app.button] == ["Tester un nouveau document"]
     assert "Fichier prêt pour analyse" not in markdown
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.slider
     assert not app.select_slider
 
@@ -40,7 +40,7 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
     assert [selectbox.label for selectbox in app.selectbox] == ["Document de démonstration"]
     assert not app.button
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
 
 
 def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Path) -> None:
@@ -61,7 +61,7 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert '<h2 class="workspace-title">Document</h2>' not in markdown
     assert "Synthèse de revue" in markdown
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert 'class="analysis-handoff"' not in markdown
     assert "Document reçu" not in markdown
     assert "Préparation des contrôles" not in markdown
@@ -121,10 +121,10 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
         '<section class="indicator-sequence"' in element.value for element in app.markdown
     )
 
-    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
 
     assert not app.exception
-    assert app.segmented_control[0].value == "Laboratoire"
+    assert app.segmented_control[0].value == "Analyse IA"
     assert [selectbox.label for selectbox in app.selectbox] == ["Vue affichée"]
     assert "Zones à revoir - page 1" in app.selectbox[0].options
 
@@ -159,7 +159,7 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.expander
     assert "Zones de texte reconnues - page 1" in app.selectbox[0].options
     assert "Contrôles effectués" in markdown
@@ -184,7 +184,7 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert not app.slider
     assert not app.select_slider
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.expander
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert sequence.count('class="indicator-step ') == 1
@@ -222,11 +222,11 @@ def test_extraction_laboratory_has_a_business_readable_empty_state(
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("OCR - Relevé bancaire à anomalies").run(timeout=30)
-    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
     markdown = "\n".join(element.value for element in app.markdown)
 
     assert not app.exception
-    assert app.segmented_control[0].value == "Laboratoire"
+    assert app.segmented_control[0].value == "Analyse IA"
     assert "OCR - Relevé bancaire à anomalies" in markdown
     assert "Aucune extraction disponible" in markdown
     assert "Texte reconnu" in markdown
@@ -303,7 +303,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     monkeypatch.setattr(requests, "post", fake_post)
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("OCR - Déclaration cohérente").run(timeout=30)
-    app.segmented_control[0].set_value("Laboratoire").run(timeout=30)
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
     markdown_blocks = [element.value for element in app.markdown]
     markdown = "\n".join(markdown_blocks)
 
@@ -483,7 +483,7 @@ def test_document_action_is_reserved_in_the_app_header() -> None:
     assert 'horizontal_alignment="right"' in app_header
     assert 'width="content"' in app_header
     assert 'with st.container(key="header_navigation", width="content"):' in app_header
-    assert 'return selected or "Analyse", action_slot' in app_header
+    assert 'return selected or "Général", action_slot' in app_header
 
 
 def _css_rule(styles: str, selector: str) -> str:

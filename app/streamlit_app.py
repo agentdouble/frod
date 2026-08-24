@@ -293,6 +293,11 @@ def main() -> None:
 
 
 def _render_app_header() -> tuple[str, Any]:
+    legacy_view = st.session_state.get("workspace_view")
+    if legacy_view == "Analyse":
+        st.session_state["workspace_view"] = "Général"
+    elif legacy_view == "Laboratoire":
+        st.session_state["workspace_view"] = "Analyse IA"
     with st.container(
         key="app_header",
         horizontal=True,
@@ -315,13 +320,13 @@ def _render_app_header() -> tuple[str, Any]:
             with st.container(key="header_navigation", width="content"):
                 selected = st.segmented_control(
                     "Navigation principale",
-                    ("Analyse", "Laboratoire", "Glossaire"),
-                    default="Analyse",
+                    ("Général", "Analyse IA", "Glossaire"),
+                    default="Général",
                     key="workspace_view",
                     label_visibility="collapsed",
                 )
             action_slot = st.empty()
-    return selected or "Analyse", action_slot
+    return selected or "Général", action_slot
 
 
 def _render_input_panel(*, hidden: bool = False) -> InputDocument | OcrDemoDocument | None:
@@ -435,7 +440,7 @@ def _render_pending_scroll_reset() -> None:
 
 
 def _render_pdf_loading_if_pending(workspace_view: str, *, label: str) -> bool:
-    if workspace_view != "Analyse":
+    if workspace_view != "Général":
         return False
     if not st.session_state.pop("pending_pdf_loading", False):
         return False
@@ -822,7 +827,7 @@ def _render_report(
     if workspace_view == "Glossaire":
         _render_indicator_glossary()
         return
-    if workspace_view == "Laboratoire":
+    if workspace_view == "Analyse IA":
         _render_extraction_laboratory(
             report.extraction,
             classification=report.classification,
@@ -876,7 +881,7 @@ def _render_ocr_demo_report(
     if workspace_view == "Glossaire":
         _render_indicator_glossary(categories=("content_consistency",))
         return
-    if workspace_view == "Laboratoire":
+    if workspace_view == "Analyse IA":
         _render_extraction_laboratory(
             extraction,
             classification=classification,

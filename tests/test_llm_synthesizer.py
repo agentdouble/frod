@@ -111,6 +111,8 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     payload = calls[0]["json"]
     assert payload["max_tokens"] == 32_768
+    assert payload["chat_template_kwargs"] == {"thinking_budget": 0}
+    assert payload["stream"] is True
     assert "response_format" not in payload
     assert "ne décides jamais" in payload["messages"][0]["content"]
     assert "sans JSON" in payload["messages"][0]["content"]
