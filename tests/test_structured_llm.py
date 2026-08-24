@@ -99,7 +99,11 @@ def test_invalid_json_is_retried_with_schema_and_more_output_tokens(monkeypatch:
     assert calls[1]["json"]["response_format"]["type"] == "json_schema"
     assert calls[1]["json"]["max_tokens"] == 2000
     assert "invalid or truncated" in calls[1]["json"]["messages"][0]["content"]
-    assert all(call["json"]["chat_template_kwargs"] == {"thinking_budget": 0} for call in calls)
+    assert all(
+        call["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+        for call in calls
+    )
+    assert all("reasoning_effort" not in call["json"] for call in calls)
     assert all(call["json"]["stream"] is True for call in calls)
     assert all(call["stream"] is True for call in calls)
 

@@ -63,21 +63,52 @@ def analyze_document_content(
             detector_result=detector.result(ocr_report),
         )
 
+    report_progress(0.25, "Contenu reconnu")
+    return analyze_recognized_content(
+        ocr_report,
+        config,
+        progress_callback=lambda value, label: report_progress(0.25 + 0.75 * value, label),
+    )
+
+
+def analyze_recognized_content(
+    ocr_report: OcrReport,
+    config: AnalysisConfig,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> ContentAnalysisResult:
+    """Run semantic operations over an existing OCR result without repeating OCR."""
+
+    def report_progress(value: float, label: str) -> None:
+        if progress_callback is not None:
+            progress_callback(min(1.0, max(0.0, value)), label)
+
+    detector = OcrDetector(config)
+    if not ocr_report.success:
+        report_progress(1.0, "Analyse du contenu indisponible")
+        return ContentAnalysisResult(
+            ocr_report=ocr_report,
+            detector_result=detector.result(ocr_report),
+        )
+
     classification = None
     extraction = None
     verification = None
-    report_progress(0.25, "Contenu reconnu")
 
-    if config.classification_enabled:
-        report_progress(0.28, "Classification du document")
+    def cancelled() -> bool:
+        return cancel_callback is not None and cancel_callback()
+
+    if config.classification_enabled and not cancelled():
+        report_progress(0.04, "Classification du document")
         try:
             classification = classify_document(ocr_report.markdown, config)
         except Exception as error:
             logger.warning("Classification failed: %s", error)
-    report_progress(0.48, "Classification terminée")
+    report_progress(0.30, "Classification terminée")
 
-    if config.extraction_enabled:
-        report_progress(0.50, "Extraction des informations")
+    if config.extraction_enabled and not cancelled():
+        report_progress(0.34, "Extraction des informations")
         try:
             extraction = extract_document(
                 ocr_report.json_result,
@@ -86,10 +117,10 @@ def analyze_document_content(
             )
         except Exception as error:
             logger.warning("Extraction failed: %s", error)
-    report_progress(0.78, "Extraction terminée")
+    report_progress(0.70, "Extraction terminée")
 
-    if config.verification_enabled and extraction is not None:
-        report_progress(0.80, "Vérification indépendante de l'extraction")
+    if config.verification_enabled and extraction is not None and not cancelled():
+        report_progress(0.74, "Vérification indépendante de l'extraction")
         try:
             verification = verify_extraction(
                 ocr_report.json_result,
@@ -101,7 +132,7 @@ def analyze_document_content(
         except Exception as error:
             logger.warning("Extraction verification failed: %s", error)
 
-    report_progress(1.0, "Analyse du contenu terminée")
+    report_progress(1.0, "Analyse sémantique terminée")
     return ContentAnalysisResult(
         ocr_report=ocr_report,
         detector_result=detector.result(ocr_report),

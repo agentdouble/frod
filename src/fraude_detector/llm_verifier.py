@@ -95,6 +95,7 @@ class LLMExtractionVerifier:
                 max_tokens=self.max_tokens,
                 timeout_seconds=self.timeout_seconds,
                 operation="extraction verification",
+                reasoning_effort="low",
             )
         except StructuredLlmError as error:
             raise VerificationError(f"Service de vérification indisponible: {error}") from error

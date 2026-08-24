@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,8 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert not app.expander
     assert "Zones à revoir - page 1" in app.selectbox[0].options
 
+    app = _wait_for_ai(app)
+    markdown = "\n".join(element.value for element in app.markdown)
     assert "Signature électronique du PDF" not in markdown
     assert "Facture électronique embarquée" not in markdown
     assert "Code de vérification 2D-Doc" not in markdown
@@ -155,6 +158,7 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("Montant modifié").run(timeout=30)
+    app = _wait_for_ai(app)
 
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
@@ -476,7 +480,7 @@ def test_document_action_is_reserved_in_the_app_header() -> None:
         source.index("def _render_app_header") : source.index("def _render_input_panel")
     ]
 
-    assert "workspace_view, header_action = _render_app_header()" in main_view
+    assert "workspace_view, header_action = _render_app_header(" in main_view
     assert "_render_header_document_action(header_action)" in main_view
     assert app_header.index("st.segmented_control(") < app_header.index("action_slot = st.empty()")
     assert 'key="header_actions"' in app_header
@@ -494,6 +498,17 @@ def _css_rule(styles: str, selector: str) -> str:
 
 def _component_markup(app: AppTest, marker: str) -> str:
     return next(element.value for element in app.markdown if marker in element.value)
+
+
+def _wait_for_ai(app: AppTest, *, timeout_seconds: float = 5.0) -> AppTest:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        analysis = app.session_state["analysis"]
+        if analysis.get("status") == "ready":
+            return app.run(timeout=30)
+        time.sleep(0.05)
+        app.run(timeout=30)
+    raise AssertionError("L'analyse IA de test n'a pas terminé dans le délai imparti")
 
 
 class _Response:

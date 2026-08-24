@@ -100,6 +100,7 @@ def request_json_object(
     max_tokens: int,
     timeout_seconds: int,
     operation: str,
+    reasoning_effort: str | None = None,
 ) -> Mapping[str, Any]:
     """Return one JSON object, retaining constrained output on every attempt."""
 
@@ -110,6 +111,8 @@ def request_json_object(
         "max_tokens": max_tokens,
         "response_format": response_format,
     }
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
     response = _post(endpoint, payload, timeout_seconds, operation)
     if getattr(response, "status_code", 200) in {400, 422}:
         _terminal_rejected(response, "format JSON Schema refusé, nouvel essai en mode JSON")
@@ -155,7 +158,8 @@ def _post(
 ) -> requests.Response:
     body = dict(payload)
     template_kwargs = dict(body.get("chat_template_kwargs", {}))
-    template_kwargs["thinking_budget"] = 0
+    template_kwargs.pop("thinking_budget", None)
+    template_kwargs["enable_thinking"] = False
     body["chat_template_kwargs"] = template_kwargs
     body["stream"] = True
     _terminal_header(operation)
