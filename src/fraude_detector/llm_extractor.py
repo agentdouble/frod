@@ -6,10 +6,12 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fraude_detector.config import AnalysisConfig
+from fraude_detector.financial_identifiers import expected_iban_length
 from fraude_detector.models import (
     AdditionalExtractionField,
     DocumentClassification,
@@ -27,9 +29,9 @@ from fraude_detector.structured_ocr import (
     format_structured_ocr_region,
 )
 
-EXTRACTION_SCHEMA_VERSION = "0.3-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-compact-2026-08-19-v1"
-EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-19-v1"
+EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-08-25-v2"
+EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-25-v2"
 
 FIELD_CODES = (
     "person_name",
@@ -314,14 +316,47 @@ Ta réponse doit commencer par { et se terminer par }. Ne produis aucun raisonne
 aucune balise Markdown, aucune introduction et aucun texte après l'objet JSON demandé."""
 
 _CURRENCY_CODES = {
+    "US$": "USD",
+    "C$": "CAD",
+    "A$": "AUD",
     "€": "EUR",
-    "$": "USD",
     "£": "GBP",
     "EUR": "EUR",
     "USD": "USD",
     "GBP": "GBP",
     "CHF": "CHF",
 }
+
+_CURRENCY_NAMES = frozenset(
+    {
+        "AED",
+        "AUD",
+        "BGN",
+        "BRL",
+        "CAD",
+        "CHF",
+        "CNY",
+        "CZK",
+        "DKK",
+        "EUR",
+        "GBP",
+        "HKD",
+        "HUF",
+        "INR",
+        "JPY",
+        "KRW",
+        "MXN",
+        "NOK",
+        "PLN",
+        "RON",
+        "SAR",
+        "SEK",
+        "SGD",
+        "TRY",
+        "USD",
+        "ZAR",
+    }
+)
 
 
 class ExtractionError(RuntimeError):
@@ -534,9 +569,12 @@ Règles:
    region_dispositions: boilerplate pour le contenu décoratif, promotionnel, répétitif ou générique;
    unstructured pour une information métier utile mais impossible à structurer; unreadable pour
    une lecture insuffisante. Ne génère aucune explication pour les régions ainsi comptabilisées.
-9. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure.
-10. confidence mesure uniquement la confiance de lecture et d'association du champ. Réduis-la
-    si le libellé, la valeur, la colonne ou le rôle sont ambigus; elle est comprise entre 0 et 1.
+9. raw_value doit reprendre la valeur documentaire, sans connaissance extérieure. N'ajoute jamais
+   la chaîne "None", "null" ou une devise absente à une valeur. Pour un montant sans devise dans
+   sa cellule, conserve uniquement le nombre: le post-traitement recherche séparément la devise
+   dans les titres, libellés et en-têtes de tableau.
+10. Ne produis aucun score de confiance. Une valeur incertaine doit rester liée à sa région et être
+    classée unstructured ou unreadable si son association ne peut pas être soutenue.
 11. Pour field_code=date, distingue précisément issue (date d'émission), due (date d'échéance),
     payment (date à laquelle le paiement a été effectué) et expiry (date d'expiration).
 12. Utilise bbox_2d, order, label et native_label pour restituer l'ordre de lecture, rapprocher
@@ -546,6 +584,14 @@ Règles:
     additional_fields sauf pour une information clé du document autorisée par la règle 5.
 14. Choisis toujours le field_code et le role les plus précis selon les définitions ci-dessous.
     N'utilise other ou other_identifier que si aucune définition plus précise ne convient.
+15. Ne traite jamais un fragment OCR manifestement corrompu comme une information fiable. Des
+    symboles isolés, caractères de remplacement ou fragments d'un autre alphabet sans relation
+    sémantique avec leur ligne doivent être classés unreadable. Ne rejette toutefois pas une langue
+    ou une écriture réellement utilisée par le document.
+16. Une ligne de tableau peut avoir des cellules vides ou fusionnées. N'invente jamais une valeur
+    pour remplir une colonne et ne décale pas les cellules uniquement pour obtenir le même nombre
+    de valeurs que d'en-têtes. Utilise le sens des en-têtes, la géométrie et les lignes voisines;
+    si l'association reste incertaine, conserve le tableau et laisse la vérification la signaler.
 
 Définitions stables des field_code:
 {field_guidance}
@@ -570,7 +616,6 @@ Régions OCR:
 
 def _response_format() -> dict[str, Any]:
     source_fields = {
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "region_ids": {"type": "array", "items": {"type": "string"}},
     }
     return {
@@ -597,7 +642,6 @@ def _response_format() -> dict[str, Any]:
                                 "role",
                                 "raw_label",
                                 "raw_value",
-                                "confidence",
                                 "region_ids",
                             ],
                             "additionalProperties": False,
@@ -620,7 +664,6 @@ def _response_format() -> dict[str, Any]:
                                 "raw_label",
                                 "raw_value",
                                 "semantic_hint",
-                                "confidence",
                                 "region_ids",
                             ],
                             "additionalProperties": False,
@@ -664,7 +707,6 @@ def _response_format() -> dict[str, Any]:
                                 "column_roles",
                                 "default_row_role",
                                 "row_role_overrides",
-                                "confidence",
                                 "region_ids",
                             ],
                             "additionalProperties": False,
@@ -815,19 +857,31 @@ def _validated_facts(
     country: str | None,
 ) -> tuple[ExtractedFact, ...]:
     facts: list[ExtractedFact] = []
-    seen: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    seen: set[tuple[str, str, str | int | float, tuple[str, ...]]] = set()
     for candidate in candidates:
         field_code = str(candidate.get("field_code", ""))
         role = str(candidate.get("role", ""))
         raw_value = _clean_text(candidate.get("raw_value"), maximum=1000)
-        if field_code not in FIELD_CODES or role not in FACT_ROLES or not raw_value:
+        if (
+            field_code not in FIELD_CODES
+            or role not in FACT_ROLES
+            or not raw_value
+            or _is_obvious_ocr_garbage(raw_value)
+        ):
             continue
         region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
-        confidence = _bounded_float(candidate.get("confidence"))
-        if not region_ids:
-            confidence = min(confidence, 0.30)
         normalized, status = _normalize_value(field_code, raw_value, language, country)
-        key = (field_code, role, normalized or raw_value.casefold(), region_ids)
+        normalized_currency = (
+            _currency_from_context(
+                raw_value,
+                _clean_text(candidate.get("raw_label"), maximum=200),
+                *(region_by_id[item].content for item in region_ids),
+            )
+            if field_code == "monetary_amount"
+            else None
+        )
+        comparison_value = normalized if normalized is not None else raw_value.casefold()
+        key = (field_code, role, comparison_value, region_ids)
         if key in seen:
             continue
         seen.add(key)
@@ -839,9 +893,9 @@ def _validated_facts(
                 raw_value=raw_value,
                 normalized_value=normalized,
                 normalization_status=status,
-                confidence=confidence,
                 page=_first_page(region_ids, region_by_id),
                 region_ids=region_ids,
+                normalized_currency=normalized_currency,
             )
         )
     return tuple(facts)
@@ -856,7 +910,9 @@ def _validated_additional(
     for candidate in candidates:
         raw_label = _clean_text(candidate.get("raw_label"), maximum=200)
         raw_value = _clean_text(candidate.get("raw_value"), maximum=1000)
-        if not raw_label or not raw_value:
+        if not raw_label or not raw_value or _is_obvious_ocr_garbage(raw_value):
+            continue
+        if _comparison_text(raw_label) == _comparison_text(raw_value):
             continue
         region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
         candidate_text = f"{raw_label} {raw_value}"
@@ -870,15 +926,11 @@ def _validated_additional(
         if key in seen:
             continue
         seen.add(key)
-        confidence = _bounded_float(candidate.get("confidence"))
-        if not region_ids:
-            confidence = min(confidence, 0.30)
         fields.append(
             AdditionalExtractionField(
                 raw_label=raw_label,
                 raw_value=raw_value,
                 semantic_hint=_additional_field_hint(candidate.get("semantic_hint")),
-                confidence=confidence,
                 page=_first_page(region_ids, region_by_id),
                 region_ids=region_ids,
             )
@@ -908,6 +960,15 @@ def _validated_tables(
                 candidate.get("headers"), maximum_items=40, maximum_length=200
             )
             rows = _table_rows(candidate.get("rows"), maximum_rows=2000, maximum_columns=40)
+        column_count = min(
+            40,
+            max(
+                len(headers),
+                max((len(row) for row in rows), default=0),
+            ),
+        )
+        if len(headers) < column_count:
+            headers = (*headers, *("" for _ in range(column_count - len(headers))))
         column_roles = tuple(
             role if role in TABLE_COLUMN_ROLES else "other"
             for role in _string_sequence(
@@ -916,10 +977,13 @@ def _validated_tables(
                 maximum_length=40,
             )
         )
-        if len(column_roles) < len(headers):
-            missing_roles = len(headers) - len(column_roles)
+        column_count = max(column_count, min(40, len(column_roles)))
+        if len(headers) < column_count:
+            headers = (*headers, *("" for _ in range(column_count - len(headers))))
+        if len(column_roles) < column_count:
+            missing_roles = column_count - len(column_roles)
             column_roles = (*column_roles, *("other" for _ in range(missing_roles)))
-        column_roles = column_roles[: len(headers)]
+        column_roles = column_roles[:column_count]
         column_roles = tuple(
             infer_table_column_role(header, semantic_type) if role == "other" else role
             for header, role in zip(headers, column_roles, strict=True)
@@ -954,9 +1018,6 @@ def _validated_tables(
         if key in seen:
             continue
         seen.add(key)
-        confidence = _bounded_float(candidate.get("confidence"))
-        if not region_ids:
-            confidence = min(confidence, 0.30)
         pages = tuple(sorted({region_by_id[item].page for item in region_ids}))
         tables.append(
             ExtractedTable(
@@ -966,7 +1027,6 @@ def _validated_tables(
                 column_roles=column_roles,
                 rows=rows,
                 row_roles=tuple(row_roles),
-                confidence=confidence,
                 pages=pages,
                 region_ids=region_ids,
             )
@@ -989,10 +1049,16 @@ def _coverage(
     for region in regions:
         if _is_obvious_boilerplate(region.content):
             disposition_by_region[region.region_id] = "boilerplate"
+        elif _is_obvious_ocr_garbage(region.content):
+            disposition_by_region[region.region_id] = "unreadable"
     for disposition in raw.dispositions:
         region_id = str(disposition.get("region_id", ""))
         state = str(disposition.get("disposition", ""))
-        if region_id in region_ids and state in REGION_DISPOSITIONS:
+        if (
+            region_id in region_ids
+            and state in REGION_DISPOSITIONS
+            and disposition_by_region.get(region_id) != "unreadable"
+        ):
             disposition_by_region[region_id] = state
     accounted = mapped | table_regions | set(disposition_by_region)
     uncovered = tuple(sorted(region_ids - accounted))
@@ -1030,10 +1096,19 @@ def _normalize_value(
     raw_value: str,
     language: str | None,
     country: str | None,
-) -> tuple[str | None, NormalizationStatus]:
+) -> tuple[str | int | float | None, NormalizationStatus]:
     del language, country
+    if field_code == "iban":
+        compact = "".join(character for character in raw_value.upper() if character.isalnum())
+        for match in re.finditer(r"[A-Z]{2}\d{2}", compact):
+            expected_length = expected_iban_length(match.group()[:2])
+            if expected_length is None:
+                continue
+            candidate = compact[match.start() : match.start() + expected_length]
+            if len(candidate) == expected_length and candidate.isalnum():
+                return candidate, "normalized"
+        return None, "raw_only"
     if field_code in {
-        "iban",
         "bic",
         "payment_card_number",
         "tax_identifier",
@@ -1079,21 +1154,29 @@ def normalize_extracted_value(
     raw_value: str,
     language: str | None,
     country: str | None,
-) -> tuple[str | None, NormalizationStatus]:
+) -> tuple[str | int | float | None, NormalizationStatus]:
     """Normalize a validated fact value after a structured reconciliation."""
 
     return _normalize_value(field_code, raw_value, language, country)
 
 
-def _normalize_amount(raw_value: str) -> tuple[str | None, str]:
-    currency = next(
-        (code for marker, code in _CURRENCY_CODES.items() if marker in raw_value.upper()),
-        None,
-    )
-    match = re.search(r"[-+]?\d[\d\s.,']*", raw_value)
+def normalize_extracted_currency(field_code: str, raw_value: str) -> str | None:
+    """Return the explicit currency of a corrected monetary fact, when present."""
+
+    return _currency_from_context(raw_value) if field_code == "monetary_amount" else None
+
+
+def _normalize_amount(
+    raw_value: str,
+) -> tuple[int | float | None, NormalizationStatus]:
+    value = unicodedata.normalize("NFKC", raw_value)
+    value = value.translate(str.maketrans({"−": "-", "–": "-", "—": "-", "’": "'"}))
+    value = re.sub(r"(?<=\d)([,.])\s*-(?!\d)", r"\g<1>00", value)
+    negative_parentheses = bool(re.search(r"\(\s*\d", value))
+    match = re.search(r"[-+]?\d[\d\s.,']*", value)
     if not match:
         return None, "raw_only"
-    number = re.sub(r"[\s']", "", match.group())
+    number = re.sub(r"[\s']", "", match.group()).rstrip(".,")
     if "," in number and "." in number:
         decimal_separator = "," if number.rfind(",") > number.rfind(".") else "."
         thousands_separator = "." if decimal_separator == "," else ","
@@ -1111,25 +1194,51 @@ def _normalize_amount(raw_value: str) -> tuple[str | None, str]:
         amount = Decimal(number)
     except InvalidOperation:
         return None, "raw_only"
-    normalized = format(amount, "f")
-    return (f"{normalized} {currency}".strip(), "normalized")
+    if negative_parentheses and amount > 0:
+        amount = -amount
+    if amount == amount.to_integral_value():
+        return int(amount), "normalized"
+    return float(amount), "normalized"
 
 
-def _normalize_date(raw_value: str) -> tuple[str | None, str]:
-    match = re.search(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b", raw_value)
+def _currency_from_context(*values: str) -> str | None:
+    for value in values:
+        text = value.upper()
+        for marker, code in _CURRENCY_CODES.items():
+            if not marker.isalpha() and marker in text:
+                return code
+        matches = re.findall(r"(?<![A-Z])([A-Z]{3})(?![A-Z])", text)
+        if code := next((candidate for candidate in matches if candidate in _CURRENCY_NAMES), None):
+            return code
+    return None
+
+
+def _normalize_date(raw_value: str) -> tuple[str | None, NormalizationStatus]:
+    match = re.search(r"\b(\d{4})[-/.,](\d{1,2})[-/.,](\d{1,2})\b", raw_value)
     if match:
         year, month, day = map(int, match.groups())
-        if 1 <= month <= 12 and 1 <= day <= 31:
-            return f"{year:04d}-{month:02d}-{day:02d}", "normalized"
-    match = re.search(r"\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})\b", raw_value)
+        if normalized := _valid_iso_date(year, month, day):
+            return normalized, "normalized"
+    match = re.search(r"\b(\d{1,2})[-/.,](\d{1,2})[-/.,](\d{4})\b", raw_value)
     if not match:
         return None, "raw_only"
     first, second, year = map(int, match.groups())
     if first > 12 and 1 <= second <= 12:
-        return f"{year:04d}-{second:02d}-{first:02d}", "normalized"
+        normalized = _valid_iso_date(year, second, first)
+        return (normalized, "normalized") if normalized else (None, "raw_only")
     if second > 12 and 1 <= first <= 12:
-        return f"{year:04d}-{first:02d}-{second:02d}", "normalized"
+        normalized = _valid_iso_date(year, first, second)
+        return (normalized, "normalized") if normalized else (None, "raw_only")
     return None, "ambiguous"
+
+
+def _valid_iso_date(year: int, month: int, day: int) -> str | None:
+    if not 1000 <= year <= 2999:
+        return None
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
 
 
 def _comparison_text(value: str) -> str:
@@ -1202,14 +1311,6 @@ def _table_rows(
     return tuple(rows)
 
 
-def _bounded_float(value: object) -> float:
-    try:
-        number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, number))
-
-
 def _empty_extraction(
     family: str,
     language: str | None,
@@ -1249,3 +1350,7 @@ def _is_obvious_boilerplate(value: str) -> bool:
     if not text or len(text) > 600:
         return False
     return any(pattern.search(text) for pattern in _OBVIOUS_BOILERPLATE_PATTERNS)
+
+
+def _is_obvious_ocr_garbage(value: str) -> bool:
+    return any(marker in value for marker in ("\ufffd", "锟斤拷", "\x00"))

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fraude_detector.extraction_reconciliation import reconcile_extraction
 from fraude_detector.models import (
     DocumentExtraction,
@@ -22,7 +24,6 @@ def test_payment_date_role_correction_is_applied_with_an_audit_trail() -> None:
                 target_id="fact-0001",
                 target_type="fact",
                 verdict="contradicted",
-                confidence=1.0,
                 explanation="The source identifies a payment date, not a due date.",
                 source_region_ids=("p001-r007",),
                 suggested_field_code="date",
@@ -56,7 +57,6 @@ def test_corrected_value_is_normalized_again() -> None:
                 target_id="fact-0001",
                 target_type="fact",
                 verdict="contradicted",
-                confidence=0.99,
                 explanation="The OCR date was misread.",
                 source_region_ids=("p001-r007",),
                 suggested_value="19/07/2026",
@@ -74,6 +74,46 @@ def test_corrected_value_is_normalized_again() -> None:
     assert reviewed.reviews[0].correction_applied is True
 
 
+def test_amount_correction_keeps_contextual_currency() -> None:
+    initial = _extraction()
+    extraction = replace(
+        initial,
+        facts=(
+            replace(
+                initial.facts[0],
+                field_code="monetary_amount",
+                role="total",
+                raw_label="Total en EUR",
+                raw_value="5,00",
+                normalized_value=5,
+                normalized_currency="EUR",
+            ),
+        ),
+    )
+    verification = ExtractionVerification(
+        schema_version="0.4-experimental",
+        status="attention",
+        expected_targets=1,
+        reviewed_targets=1,
+        reviews=(
+            ExtractionReview(
+                target_id="fact-0001",
+                target_type="fact",
+                verdict="contradicted",
+                explanation="La valeur lue est 5,01.",
+                source_region_ids=("p001-r007",),
+                suggested_value="5,01",
+            ),
+        ),
+        omissions=(),
+    )
+
+    resolved, _ = reconcile_extraction(extraction, verification)
+
+    assert resolved.facts[0].normalized_value == 5.01
+    assert resolved.facts[0].normalized_currency == "EUR"
+
+
 def _extraction() -> DocumentExtraction:
     return DocumentExtraction(
         schema_version="0.1-experimental",
@@ -88,7 +128,6 @@ def _extraction() -> DocumentExtraction:
                 raw_value="18/07/2026",
                 normalized_value="2026-07-18",
                 normalization_status="normalized",
-                confidence=0.95,
                 page=1,
                 region_ids=("p001-r007",),
             ),

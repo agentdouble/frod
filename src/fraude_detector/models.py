@@ -124,16 +124,12 @@ class ExtractedFact:
     role: str
     raw_label: str | None
     raw_value: str
-    normalized_value: str | None
+    normalized_value: str | int | float | None
     normalization_status: NormalizationStatus
-    confidence: float
     page: int | None
     region_ids: tuple[str, ...] = ()
     corrected_value: str | None = None
-
-    def __post_init__(self) -> None:
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("confidence must be between 0 and 1")
+    normalized_currency: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,14 +139,9 @@ class AdditionalExtractionField:
     raw_label: str
     raw_value: str
     semantic_hint: str | None
-    confidence: float
     page: int | None
     region_ids: tuple[str, ...] = ()
     corrected_value: str | None = None
-
-    def __post_init__(self) -> None:
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("confidence must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,13 +154,8 @@ class ExtractedTable:
     column_roles: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
     row_roles: tuple[str, ...]
-    confidence: float
     pages: tuple[int, ...] = ()
     region_ids: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("confidence must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +206,6 @@ class ExtractionReview:
     target_id: str
     target_type: str
     verdict: VerificationVerdict
-    confidence: float
     explanation: str
     source_region_ids: tuple[str, ...] = ()
     suggested_value: str | None = None
@@ -232,11 +217,6 @@ class ExtractionReview:
     original_field_code: str | None = None
     original_role: str | None = None
 
-    def __post_init__(self) -> None:
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("confidence must be between 0 and 1")
-
-
 @dataclass(frozen=True, slots=True)
 class ExtractionOmission:
     """Material OCR information that may be absent from the extraction."""
@@ -245,12 +225,7 @@ class ExtractionOmission:
     proposed_field_code: str | None
     proposed_role: str | None
     proposed_value: str | None
-    confidence: float
     source_region_ids: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("confidence must be between 0 and 1")
 
 
 @dataclass(frozen=True, slots=True)

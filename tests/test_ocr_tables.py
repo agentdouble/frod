@@ -30,6 +30,16 @@ def test_plain_text_is_not_mistaken_for_a_table() -> None:
     assert parse_ocr_table("Date | Libellé | Montant") is None
 
 
+def test_html_colspan_keeps_following_cells_in_their_original_columns() -> None:
+    table = parse_ocr_table(
+        "<table><thead><tr><th>Date</th><th>Libellé</th><th>Montant</th></tr></thead>"
+        "<tbody><tr><td colspan='2'>Report de solde</td><td>125,-</td></tr></tbody></table>"
+    )
+
+    assert table is not None
+    assert table.rows == (("Report de solde", "", "125,-"),)
+
+
 def test_explicit_multilingual_headers_have_deterministic_roles() -> None:
     assert infer_table_column_role("Transaction Date", "transactions") == "transaction_date"
     assert infer_table_column_role("Date de valeur", "transactions") == "value_date"

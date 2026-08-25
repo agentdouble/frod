@@ -58,7 +58,6 @@ class AnalysisConfig:
     verification_max_input_chars: int = 80_000
     verification_max_tokens: int = 32_768
     verification_temperature: float = 0.0
-    verification_issue_min_confidence: float = 0.80
     synthesis_enabled: bool = False
     synthesis_url: str = "http://127.0.0.1:8030"
     synthesis_model: str = "minimax_m2_1"
@@ -156,8 +155,6 @@ class AnalysisConfig:
             raise ValueError("verification_max_tokens must be at least 500")
         if not 0 <= self.verification_temperature <= 2:
             raise ValueError("verification_temperature must be between 0 and 2")
-        if not 0 <= self.verification_issue_min_confidence <= 1:
-            raise ValueError("verification_issue_min_confidence must be between 0 and 1")
         if self.synthesis_enabled and not self.synthesis_url.strip():
             raise ValueError("synthesis_url must not be empty when synthesis is enabled")
         if self.synthesis_enabled and not self.synthesis_model.strip():

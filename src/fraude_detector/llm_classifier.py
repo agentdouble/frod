@@ -98,8 +98,13 @@ Retourne le pays sous forme de code ISO 3166-1 alpha-2 en majuscules, ou null. U
 que si une adresse, un identifiant, un organisme ou une mention explicite du texte le démontre.
 La langue et la devise seules ne démontrent jamais le pays. Justifie séparément le pays retenu.
 
-model_confidence exprime seulement ton degré d'hésitation entre les familles. Mets ambiguous=true
-si une autre famille reste raisonnablement possible. Ne présente jamais cette confiance comme une
+model_confidence exprime seulement ton degré d'hésitation entre les familles, selon cette échelle:
+- 0.95 à 1.00: la nature du document est explicite et plusieurs indices indépendants la confirment;
+- 0.80 à 0.94: une famille est clairement dominante, malgré quelques éléments génériques;
+- 0.60 à 0.79: la famille est plausible mais repose sur peu d'indices spécifiques;
+- sous 0.60: contenu insuffisant, tronqué ou plusieurs familles raisonnablement possibles.
+N'utilise jamais 1.00 par défaut. Mets ambiguous=true si une autre famille reste raisonnablement
+possible; model_confidence doit alors rester inférieur à 0.50. Cette confiance n'est jamais une
 probabilité de fraude.
 
 Toutes les clés JSON et valeurs d'énumération doivent être en anglais exactement comme dans le
@@ -205,9 +210,14 @@ def _classification_result(payload: Mapping[str, Any]) -> DocumentClassification
         reliability = model_confidence
         if ambiguous:
             reliability = min(reliability, 0.49)
+        elif not evidence:
+            reliability = min(reliability, 0.50)
+        elif len(evidence) == 1:
+            reliability = min(reliability, 0.85)
 
     language = _language_code(payload.get("language"))
-    country = _country_code(payload.get("country"))
+    country_evidence = _clean_optional_text(payload.get("country_evidence"))
+    country = _country_code(payload.get("country")) if country_evidence else None
 
     return DocumentClassification(
         family=family,
@@ -243,6 +253,13 @@ def _country_code(value: object) -> str | None:
         return None
     code = value.strip().upper()
     return code if _COUNTRY_CODE.fullmatch(code) else None
+
+
+def _clean_optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split())[:240]
+    return text or None
 
 
 def _bounded_float(value: object) -> float:

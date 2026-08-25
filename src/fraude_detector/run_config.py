@@ -322,7 +322,6 @@ def _load_analysis(
             "max_input_chars",
             "max_tokens",
             "temperature",
-            "issue_min_confidence",
         },
         source,
         "verification",
@@ -510,11 +509,6 @@ def _load_analysis(
         source,
         "verification.temperature",
     )
-    verification_issue_min_confidence = _number(
-        verification.get("issue_min_confidence", 0.80),
-        source,
-        "verification.issue_min_confidence",
-    )
     synthesis_url_override = _env_text(environ, "FROD_SYNTHESIS_URL")
     synthesis_enabled_override = _env_bool(environ, "FROD_SYNTHESIS_ENABLED")
     synthesis_enabled = (
@@ -698,7 +692,6 @@ def _load_analysis(
             verification_max_input_chars=verification_max_input_chars,
             verification_max_tokens=verification_max_tokens,
             verification_temperature=verification_temperature,
-            verification_issue_min_confidence=verification_issue_min_confidence,
             synthesis_enabled=synthesis_enabled,
             synthesis_url=synthesis_url,
             synthesis_model=synthesis_model,

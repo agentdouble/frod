@@ -935,7 +935,13 @@ def _render_extraction_laboratory(
         for fact in extraction.facts:
             field_label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
             role_label = EXTRACTION_ROLE_LABELS.get(fact.role, fact.role)
-            normalized = fact.normalized_value or "Non normalisée"
+            normalized = (
+                str(fact.normalized_value)
+                if fact.normalized_value is not None
+                else "Non normalisée"
+            )
+            if fact.normalized_currency is not None:
+                normalized = f"{normalized} {fact.normalized_currency}"
             displayed_value = fact.corrected_value or fact.raw_value
             source_value = (
                 f"<span>Lecture OCR : {_html(fact.raw_value)}</span>"
@@ -948,7 +954,6 @@ def _render_extraction_laboratory(
                 f"<td><strong>{_html(field_label)}</strong><span>{_html(role_label)}</span></td>"
                 f"<td><strong>{_html(displayed_value)}</strong>{source_value}</td>"
                 f"<td>{_html(normalized)}</td>"
-                f"<td>{fact.confidence:.0%}</td>"
                 f"<td>{_html(page)}</td>"
                 "</tr>"
             )
@@ -956,7 +961,7 @@ def _render_extraction_laboratory(
             '<h3 class="subsection-title">Informations comparables</h3>'
             '<div class="extraction-table-wrap"><table class="extraction-table">'
             "<thead><tr><th>Champ</th><th>Valeur lue</th><th>Valeur de comparaison</th>"
-            "<th>Fiabilité</th><th>Source</th></tr></thead><tbody>"
+            "<th>Source</th></tr></thead><tbody>"
             + "".join(rows)
             + "</tbody></table></div>",
             unsafe_allow_html=True,
@@ -977,7 +982,7 @@ def _render_extraction_laboratory(
                 f"<span>{_html(field.raw_label)}</span>"
                 f"<strong>{_html(displayed_value)}</strong>"
                 f"{source_value}"
-                f"<small>{_html(page)} · Fiabilité {field.confidence:.0%}</small>"
+                f"<small>{_html(page)}</small>"
                 "</article>"
             )
         st.markdown(
@@ -1001,10 +1006,10 @@ def _render_extraction_laboratory(
         roles = (*table.column_roles, *("other" for _ in range(len(headers))))[: len(headers)]
         head = "<th>Nature</th>" + "".join(
             "<th>"
-            f"{_html(header)}"
+            f"{_html(header or f'Colonne {index + 1}')}"
             f"<span>{_html(EXTRACTION_COLUMN_ROLE_LABELS.get(role, role))}</span>"
             "</th>"
-            for header, role in zip(headers, roles, strict=True)
+            for index, (header, role) in enumerate(zip(headers, roles, strict=True))
         )
         body_rows = []
         row_roles = (*table.row_roles, *("other" for _ in range(len(table.rows))))[
@@ -1163,6 +1168,13 @@ def _render_extraction_verification(
     issue_cards = []
     for review in attention_reviews:
         label = "Contradiction étayée" if review.verdict == "contradicted" else "Ambiguïté"
+        affected_rows = (
+            "<small>Ligne(s) concernée(s) : "
+            + ", ".join(str(index + 1) for index in review.problematic_row_indexes)
+            + "</small>"
+            if review.problematic_row_indexes
+            else ""
+        )
         suggestion = (
             f"<small>Proposition : {_html(review.suggested_value)}</small>"
             if review.suggested_value
@@ -1172,7 +1184,7 @@ def _render_extraction_verification(
             '<article class="verification-issue">'
             f"<span>{_html(label)} · {_html(review.target_id)}</span>"
             f"<strong>{_html(review.explanation)}</strong>"
-            f"<small>Solidité du contrôle : {review.confidence:.0%}</small>"
+            f"{affected_rows}"
             f"{suggestion}</article>"
         )
     for omission in verification.omissions:
@@ -1181,7 +1193,6 @@ def _render_extraction_verification(
             '<article class="verification-issue omission">'
             f"<span>Omission possible{value}</span>"
             f"<strong>{_html(omission.description)}</strong>"
-            f"<small>Solidité du contrôle : {omission.confidence:.0%}</small>"
             "</article>"
         )
     if issue_cards:

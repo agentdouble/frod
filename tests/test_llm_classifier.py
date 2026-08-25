@@ -65,6 +65,8 @@ def test_classification_accepts_paraphrased_reasons(monkeypatch: Any) -> None:
     assert calls[0]["json"]["messages"][0]["role"] == "system"
     assert calls[0]["json"]["response_format"]["type"] == "json_schema"
     assert '"model_confidence": "confidence"' in calls[0]["json"]["messages"][1]["content"]
+    assert "0.95 à 1.00" in calls[0]["json"]["messages"][1]["content"]
+    assert "N'utilise jamais 1.00 par défaut" in calls[0]["json"]["messages"][1]["content"]
     assert (
         "Rédige category_evidence et country_evidence en français"
         in calls[0]["json"]["messages"][1]["content"]
@@ -103,7 +105,7 @@ def test_classification_does_not_require_verbatim_reasons(monkeypatch: Any) -> N
     )
 
     assert result.family == "releve_bancaire"
-    assert result.reliability == 0.99
+    assert result.reliability == 0.85
     assert result.country == "FR"
     assert result.language == "fr"
     assert result.evidence == ("Relevé bancaire complet",)
@@ -130,6 +132,31 @@ def test_ambiguous_classification_never_looks_reliable(monkeypatch: Any) -> None
 
     assert result.family == "devis"
     assert result.reliability == 0.49
+
+
+def test_classification_confidence_is_capped_without_supporting_evidence(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: _chat_response(
+            """{
+              "category": "releve_bancaire",
+              "model_confidence": 0.99,
+              "ambiguous": false,
+              "language": "fr",
+              "country": "LU",
+              "category_evidence": [],
+              "country_evidence": null
+            }"""
+        ),
+    )
+
+    result = LLMClassifier().classify("Relevé mensuel avec opérations et nouveau solde")
+
+    assert result.reliability == 0.50
+    assert result.country is None
 
 
 def test_classifier_retains_json_mode_for_older_vllm(monkeypatch: Any) -> None:

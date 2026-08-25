@@ -118,6 +118,8 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     assert "sans JSON" in payload["messages"][0]["content"]
     assert "ne cite jamais le score numérique" in payload["messages"][1]["content"]
     assert "anomalies déterminantes" in payload["messages"][1]["content"]
+    assert "maximum absolu de 75 mots" in payload["messages"][1]["content"]
+    assert "ne dis jamais qu'une revue est inutile" in payload["messages"][1]["content"]
     assert "Score global calculé" not in payload["messages"][1]["content"]
     assert "pays=LU" not in payload["messages"][1]["content"]
     assert "Aucune signature électronique" not in payload["messages"][1]["content"]
@@ -158,9 +160,13 @@ def test_synthesis_keeps_the_model_note_without_imposing_sections(monkeypatch: A
         "Le document est frauduleux.",
         "Le document paraît authentique.",
         "Aucune fraude n'est détectée.",
+        "Le document ne nécessite pas de revue.",
     ],
 )
-def test_synthesis_rejects_a_verdict(monkeypatch: Any, review_summary: str) -> None:
+def test_synthesis_rejects_a_verdict_or_review_dismissal(
+    monkeypatch: Any,
+    review_summary: str,
+) -> None:
     monkeypatch.setattr(
         requests,
         "post",
@@ -171,7 +177,7 @@ def test_synthesis_rejects_a_verdict(monkeypatch: Any, review_summary: str) -> N
         ),
     )
 
-    with pytest.raises(SynthesisError, match="verdict"):
+    with pytest.raises(SynthesisError, match="verdict|revue"):
         summarize_analysis(
             classification=None,
             extraction=None,
@@ -181,3 +187,58 @@ def test_synthesis_rejects_a_verdict(monkeypatch: Any, review_summary: str) -> N
             laboratory=None,
             config=AnalysisConfig(synthesis_enabled=True),
         )
+
+
+def test_high_risk_context_explicitly_requests_reinforced_vigilance(monkeypatch: Any) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        calls.append(kwargs["json"])
+        return _response(
+            "Vigilance renforcée : une revue manuelle prioritaire doit contrôler le logiciel "
+            "d'édition mentionné dans le fichier."
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    summarize_analysis(
+        classification=None,
+        extraction=None,
+        verification=None,
+        findings=(_finding(),),
+        detectors=(),
+        laboratory=None,
+        config=AnalysisConfig(synthesis_enabled=True),
+        assessment_score=75,
+    )
+
+    assert "Vigilance renforcée" in calls[0]["messages"][1]["content"]
+
+
+def test_low_risk_context_never_says_that_review_is_unnecessary(monkeypatch: Any) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        calls.append(kwargs["json"])
+        return _response(
+            "Aucun indice prioritaire n'a été relevé par les contrôles disponibles. "
+            "Cette absence ne valide pas le document."
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    result = summarize_analysis(
+        classification=None,
+        extraction=None,
+        verification=None,
+        findings=(),
+        detectors=(),
+        laboratory=None,
+        config=AnalysisConfig(synthesis_enabled=True),
+        assessment_score=0,
+    )
+
+    prompt = calls[0]["messages"][1]["content"]
+    assert "Pas de revue automatique" not in prompt
+    assert "Aucun indice prioritaire" in prompt
+    assert "ne valide pas le document" in result.document_summary.text

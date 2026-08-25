@@ -7,7 +7,11 @@ import requests
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.llm_classifier import DOCUMENT_FAMILIES
-from fraude_detector.llm_extractor import FAMILY_GUIDANCE, LLMDocumentExtractor
+from fraude_detector.llm_extractor import (
+    FAMILY_GUIDANCE,
+    LLMDocumentExtractor,
+    normalize_extracted_value,
+)
 from fraude_detector.models import DocumentClassification
 
 
@@ -78,7 +82,6 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
                 "role": "invoice",
                 "raw_label": "Facture N°",
                 "raw_value": "FAC-2026-0042",
-                "confidence": 0.98,
                 "region_ids": ["p001-r000"],
             },
             {
@@ -86,7 +89,6 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
                 "role": "total",
                 "raw_label": "Total TTC",
                 "raw_value": "1 234,50 EUR",
-                "confidence": 0.95,
                 "region_ids": ["p001-r001"],
             },
         ],
@@ -98,7 +100,6 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
                 "column_roles": ["transaction_date", "description", "line_total"],
                 "default_row_role": "line_item",
                 "row_role_overrides": [],
-                "confidence": 0.91,
                 "region_ids": ["p001-r002"],
             }
         ],
@@ -133,6 +134,9 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert "rows" not in table_properties
     assert "headers" not in table_properties
     assert "default_row_role" in table_properties
+    assert "confidence" not in schema_properties["facts"]["items"]["properties"]
+    assert "confidence" not in schema_properties["additional_fields"]["items"]["properties"]
+    assert "confidence" not in table_properties
     assert schema_properties["region_dispositions"]["type"] == "object"
     assert "famille: facture_recu" in calls[0]["json"]["messages"][1]["content"]
     assert "Toutes les clés JSON" in calls[0]["json"]["messages"][1]["content"]
@@ -142,7 +146,8 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert 'bbox_2d="10,20,300,120"' in calls[0]["json"]["messages"][1]["content"]
     assert extraction.family == "facture_recu"
     assert extraction.facts[1].raw_value == "1 234,50 EUR"
-    assert extraction.facts[1].normalized_value == "1234.50 EUR"
+    assert extraction.facts[1].normalized_value == 1234.5
+    assert extraction.facts[1].normalized_currency == "EUR"
     assert extraction.tables[0].rows == (("12/08/2026", "Consultation", "80,00 EUR"),)
     assert extraction.tables[0].column_roles == (
         "transaction_date",
@@ -155,7 +160,7 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert extraction.coverage.table_regions == 1
     assert extraction.coverage.boilerplate_regions == 1
     assert extraction.passes == 1
-    assert extraction.schema_version == "0.3-experimental"
+    assert extraction.schema_version == "0.4-experimental"
     assert extraction.prompt_version.startswith("extraction-")
     assert extraction.vocabulary_version.startswith("document-fields-")
 
@@ -169,7 +174,6 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
             "role": "document",
             "raw_label": "Référence",
             "raw_value": "REFERENCE_ALPHA",
-            "confidence": 0.9,
             "region_ids": ["p001-r000"],
         }
     ]
@@ -179,7 +183,6 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
             "raw_label": "Champ libre",
             "raw_value": "CHAMP_BETA",
             "semantic_hint": "other_material",
-            "confidence": 0.8,
             "region_ids": ["p001-r001"],
         }
     ]
@@ -220,7 +223,6 @@ def test_obvious_decorative_message_is_not_kept_as_additional_information(
             "raw_label": "Message",
             "raw_value": "Please think about the environment before printing this email.",
             "semantic_hint": "other_material",
-            "confidence": 0.99,
             "region_ids": ["p001-r000"],
         }
     ]
@@ -326,7 +328,9 @@ def test_extractor_retries_a_non_json_generation_with_constrained_output(
     assert calls[1]["max_tokens"] == 32_768
 
 
-def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: Any) -> None:
+def test_unreferenced_model_value_is_retained_without_inventing_source_quality(
+    monkeypatch: Any,
+) -> None:
     result = _empty_result()
     result["facts"] = [
         {
@@ -334,7 +338,6 @@ def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: A
             "role": "beneficiary",
             "raw_label": "IBAN",
             "raw_value": "LU28 0019 4006 4475 0000",
-            "confidence": 0.99,
             "region_ids": ["unknown-region"],
         }
     ]
@@ -349,7 +352,6 @@ def test_unreferenced_model_value_is_retained_with_low_confidence(monkeypatch: A
     assert extraction.facts[0].raw_value == "LU28 0019 4006 4475 0000"
     assert extraction.facts[0].normalized_value == "LU280019400644750000"
     assert extraction.facts[0].region_ids == ()
-    assert extraction.facts[0].confidence == 0.3
     assert extraction.coverage.unreadable_regions == 1
 
 
@@ -376,7 +378,6 @@ def test_bank_prompt_requires_summary_rows_to_be_separated_from_transactions(
                 {"row_index": 3, "role": "total"},
                 {"row_index": 4, "role": "closing_balance"},
             ],
-            "confidence": 0.92,
             "region_ids": ["p001-r000"],
         }
     ]
@@ -407,6 +408,8 @@ def test_bank_prompt_requires_summary_rows_to_be_separated_from_transactions(
         "closing_balance",
     )
     assert extraction.tables[0].row_roles.count("transaction") == 1
+    assert extraction.tables[0].headers == ("", "")
+    assert extraction.tables[0].column_roles == ("description", "amount")
     assert "Un ancien solde" in prompts[0]
     assert "ne sont jamais\n   des transactions" in prompts[0]
 
@@ -426,7 +429,6 @@ def test_explicit_headers_replace_only_other_column_roles(monkeypatch: Any) -> N
             "column_roles": ["other", "other", "other", "other", "other"],
             "default_row_role": "transaction",
             "row_role_overrides": [],
-            "confidence": 0.9,
             "region_ids": ["p001-r000"],
         }
     ]
@@ -444,3 +446,122 @@ def test_explicit_headers_replace_only_other_column_roles(monkeypatch: Any) -> N
         "credit_amount",
         "balance",
     )
+
+
+def test_international_amount_and_date_formats_are_normalized_deterministically() -> None:
+    assert normalize_extracted_value("monetary_amount", "5.01", None, None) == (
+        5.01,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "1,234.56 USD", None, None) == (
+        1234.56,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "1.234,56 EUR", None, None) == (
+        1234.56,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "125,-", None, None) == (
+        125,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "125,–", None, None) == (
+        125,
+        "normalized",
+    )
+    assert normalize_extracted_value("date", "21,01,2025", None, None) == (
+        "2025-01-21",
+        "normalized",
+    )
+
+
+def test_iban_label_and_common_ocr_misread_are_removed_from_normalized_value() -> None:
+    expected = ("LU280019400644750000", "normalized")
+
+    assert normalize_extracted_value(
+        "iban", "IBANLU28 0019 4006 4475 0000", None, None
+    ) == expected
+    assert normalize_extracted_value(
+        "iban", "IBAU : LU28 0019 4006 4475 0000", None, None
+    ) == expected
+    assert normalize_extracted_value(
+        "iban", "IBAN LU28 0019 4006 4475 0000 with KBC EUR", None, None
+    ) == expected
+
+
+def test_currency_is_inherited_from_linked_table_context(monkeypatch: Any) -> None:
+    table = (
+        "<table><thead><tr><th>Opérations en EUR</th></tr></thead>"
+        "<tbody><tr><td>5.01</td></tr></tbody></table>"
+    )
+    result = _empty_result()
+    result["facts"] = [
+        {
+            "field_code": "monetary_amount",
+            "role": "transaction",
+            "raw_label": "Montant",
+            "raw_value": "5.01",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    result["tables"] = [
+        {
+            "title": "Opérations",
+            "semantic_type": "transactions",
+            "column_roles": ["amount"],
+            "default_row_role": "transaction",
+            "row_role_overrides": [],
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region(table, "table")]],
+        None,
+    )
+
+    assert extraction.facts[0].normalized_value == 5.01
+    assert extraction.facts[0].normalized_currency == "EUR"
+
+
+def test_identical_additional_label_and_value_are_discarded(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["additional_fields"] = [
+        {
+            "raw_label": "Information générale",
+            "raw_value": "Information générale",
+            "semantic_hint": "other_material",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    result["region_dispositions"]["unstructured"] = ["p001-r000"]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Information générale")]],
+        None,
+    )
+
+    assert extraction.additional_fields == ()
+
+
+def test_obvious_ocr_replacement_garbage_is_not_extracted(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["additional_fields"] = [
+        {
+            "raw_label": "Référence",
+            "raw_value": "锟斤拷",
+            "semantic_hint": "other_material",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Référence : 锟斤拷")]],
+        None,
+    )
+
+    assert extraction.additional_fields == ()
+    assert extraction.coverage.unreadable_regions == 1

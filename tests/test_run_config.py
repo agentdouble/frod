@@ -98,7 +98,6 @@ verification:
   max_input_chars: 70000
   max_tokens: 5500
   temperature: 0.02
-  issue_min_confidence: 0.88
 synthesis:
   enabled: true
   url: "http://summary.internal:8030"
@@ -162,7 +161,6 @@ laboratory:
     assert config.analysis.verification_max_input_chars == 70000
     assert config.analysis.verification_max_tokens == 5500
     assert config.analysis.verification_temperature == 0.02
-    assert config.analysis.verification_issue_min_confidence == 0.88
     assert config.analysis.synthesis_enabled is True
     assert config.analysis.synthesis_url == "http://summary.internal:8030"
     assert config.analysis.synthesis_model == "minimax-summary"

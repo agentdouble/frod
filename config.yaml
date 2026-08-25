@@ -122,8 +122,6 @@ verification:
   max_input_chars: 80000
   max_tokens: 32768
   temperature: 0.0
-  # Seuls les doutes ou omissions au-dessus de ce seuil deviennent des alertes visibles.
-  issue_min_confidence: 0.80
 
 synthesis:
   # Résumé métier final, généré après tous les contrôles et sans effet sur le score.

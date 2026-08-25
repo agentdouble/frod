@@ -48,7 +48,6 @@ def _extraction() -> DocumentExtraction:
                 raw_value="FAC 2026/42",
                 normalized_value="fac 2026 42",
                 normalization_status="normalized",
-                confidence=0.95,
                 page=1,
                 region_ids=("p001-r000",),
             ),
@@ -59,7 +58,6 @@ def _extraction() -> DocumentExtraction:
                 raw_value="31/O8/2O26",
                 normalized_value=None,
                 normalization_status="ambiguous",
-                confidence=0.78,
                 page=1,
                 region_ids=("p001-r001",),
             ),
@@ -112,19 +110,18 @@ def _classification() -> DocumentClassification:
 def _review(
     target_id: str,
     verdict: str,
-    confidence: float,
     region_id: str,
 ) -> dict[str, Any]:
     return {
         "target_id": target_id,
         "target_type": "fact",
         "verdict": verdict,
-        "confidence": confidence,
         "explanation": "La valeur et son rôle sont compatibles avec la source.",
         "source_region_ids": [region_id],
         "suggested_value": None,
         "suggested_field_code": None,
         "suggested_role": None,
+        "problematic_row_indexes": [],
     }
 
 
@@ -167,35 +164,39 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     assert 'native_label="paragraph"' in messages[1]["content"]
     assert 'bbox_2d="10,20,400,90"' in messages[1]["content"]
     assert "payment = paiement effectué" in messages[1]["content"]
-    assert verification.schema_version == "0.3-experimental"
+    assert verification.schema_version == "0.4-experimental"
     assert verification.prompt_version.startswith("verification-")
     suggested_role_schema = calls[0]["json"]["response_format"]["json_schema"]["schema"][
         "properties"
     ]["issues"]["items"]["properties"]["suggested_role"]
     assert "payment" in suggested_role_schema["enum"]
+    issue_properties = calls[0]["json"]["response_format"]["json_schema"]["schema"][
+        "properties"
+    ]["issues"]["items"]["properties"]
+    assert "confidence" not in issue_properties
+    assert "problematic_row_indexes" in issue_properties
 
 
-def test_low_confidence_suspicion_cannot_create_a_visible_issue(monkeypatch: Any) -> None:
-    weak_review = _review("fact-0001", "contradicted", 0.61, "p001-r000")
-    weak_review["suggested_value"] = "FAC-2026-43"
+def test_omission_without_an_explicit_value_cannot_create_a_visible_issue(
+    monkeypatch: Any,
+) -> None:
     result = {
-        "issues": [weak_review],
+        "issues": [],
         "possible_omissions": [
             {
                 "description": "Une référence pourrait manquer.",
                 "proposed_field_code": "document_number",
                 "proposed_role": "document",
-                "proposed_value": "INCERTAIN",
-                "confidence": 0.62,
+                "proposed_value": None,
                 "source_region_ids": ["p001-r000"],
             }
         ],
     }
     monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
 
-    verification = LLMExtractionVerifier(
-        AnalysisConfig(verification_enabled=True, verification_issue_min_confidence=0.80)
-    ).verify(_ocr(), _extraction(), _classification())
+    verification = LLMExtractionVerifier(AnalysisConfig(verification_enabled=True)).verify(
+        _ocr(), _extraction(), _classification()
+    )
 
     assert verification.status == "clean"
     assert verification.reviews == ()
@@ -203,7 +204,7 @@ def test_low_confidence_suspicion_cannot_create_a_visible_issue(monkeypatch: Any
 
 
 def test_unlocated_contradiction_cannot_create_a_visible_issue(monkeypatch: Any) -> None:
-    unlocated = _review("fact-0001", "contradicted", 0.99, "unknown-region")
+    unlocated = _review("fact-0001", "contradicted", "unknown-region")
     unlocated["suggested_value"] = "FAC-2026-43"
     result = {
         "issues": [unlocated],
@@ -219,10 +220,10 @@ def test_unlocated_contradiction_cannot_create_a_visible_issue(monkeypatch: Any)
     assert verification.reviews == ()
 
 
-def test_concrete_high_confidence_contradiction_is_reported_without_mutation(
+def test_concrete_grounded_contradiction_is_reported_without_mutation(
     monkeypatch: Any,
 ) -> None:
-    contradiction = _review("fact-0001", "contradicted", 0.96, "p001-r000")
+    contradiction = _review("fact-0001", "contradicted", "p001-r000")
     contradiction["explanation"] = "La source indique 42 et non 43."
     contradiction["suggested_value"] = "FAC 2026/42"
     result = {
@@ -256,7 +257,7 @@ def test_concrete_high_confidence_contradiction_is_reported_without_mutation(
 def test_contradiction_without_an_applicable_change_is_not_reported(
     monkeypatch: Any,
 ) -> None:
-    contradiction = _review("fact-0001", "contradicted", 0.99, "p001-r000")
+    contradiction = _review("fact-0001", "contradicted", "p001-r000")
     contradiction["suggested_field_code"] = "invoice_number"
     result = {
         "issues": [contradiction],
@@ -288,7 +289,7 @@ def test_empty_differential_output_means_all_targets_were_controlled(monkeypatch
     assert verification.reviewed_targets == 2
 
 
-def test_verifier_receives_only_a_compact_table_summary(monkeypatch: Any) -> None:
+def test_verifier_receives_table_cells_for_semantic_validation(monkeypatch: Any) -> None:
     calls: list[dict[str, Any]] = []
     extraction = replace(
         _extraction(),
@@ -300,7 +301,6 @@ def test_verifier_receives_only_a_compact_table_summary(monkeypatch: Any) -> Non
                 column_roles=("transaction_date", "description", "amount"),
                 rows=(("01/01/2026", "SECRET_ROW_VALUE", "10 EUR"),),
                 row_roles=("transaction",),
-                confidence=0.95,
                 pages=(1,),
                 region_ids=("p001-r000",),
             ),
@@ -319,4 +319,50 @@ def test_verifier_receives_only_a_compact_table_summary(monkeypatch: Any) -> Non
 
     prompt = calls[0]["messages"][1]["content"]
     assert '"row_count":1' in prompt
-    assert "SECRET_ROW_VALUE" not in prompt
+    assert "SECRET_ROW_VALUE" in prompt
+    assert "problematic_row_indexes" in prompt
+
+
+def test_concrete_table_misalignment_is_reported_without_mutating_rows(
+    monkeypatch: Any,
+) -> None:
+    extraction = replace(
+        _extraction(),
+        tables=(
+            ExtractedTable(
+                title="Opérations",
+                semantic_type="transactions",
+                headers=("Date", "Lieu", "Montant"),
+                column_roles=("transaction_date", "description", "amount"),
+                rows=(("Luxembourg", "21/01/2025", "125,-"),),
+                row_roles=("transaction",),
+                pages=(1,),
+                region_ids=("p001-r000",),
+            ),
+        ),
+    )
+    issue = {
+        "target_id": "table-0001",
+        "target_type": "table",
+        "verdict": "ambiguous",
+        "explanation": "La date et le lieu semblent placés dans les colonnes opposées.",
+        "source_region_ids": ["p001-r000"],
+        "suggested_value": None,
+        "suggested_field_code": None,
+        "suggested_role": None,
+        "problematic_row_indexes": [0],
+    }
+    monkeypatch.setattr(
+        requests,
+        "post",
+        lambda *args, **kwargs: _chat_response({"issues": [issue], "possible_omissions": []}),
+    )
+
+    verification = LLMExtractionVerifier(AnalysisConfig(verification_enabled=True)).verify(
+        _ocr(), extraction, _classification()
+    )
+
+    assert verification.status == "attention"
+    assert verification.reviews[0].target_type == "table"
+    assert verification.reviews[0].problematic_row_indexes == (0,)
+    assert extraction.tables[0].rows == (("Luxembourg", "21/01/2025", "125,-"),)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from fraude_detector.llm_extractor import normalize_extracted_value
+from fraude_detector.llm_extractor import normalize_extracted_currency, normalize_extracted_value
 from fraude_detector.models import (
     DocumentExtraction,
     ExtractionReview,
@@ -51,6 +51,12 @@ def reconcile_extraction(
                             extraction.language,
                             extraction.country,
                         )
+                        corrected_currency = normalize_extracted_currency(
+                            field_code,
+                            effective_value,
+                        )
+                        if corrected_currency is None and field_code == current.field_code:
+                            corrected_currency = current.normalized_currency
                         facts[index] = replace(
                             current,
                             field_code=field_code,
@@ -58,6 +64,7 @@ def reconcile_extraction(
                             corrected_value=corrected_value,
                             normalized_value=normalized_value,
                             normalization_status=normalization_status,
+                            normalized_currency=corrected_currency,
                         )
                         applied_review = replace(
                             review,
