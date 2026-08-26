@@ -469,9 +469,32 @@ def test_international_amount_and_date_formats_are_normalized_deterministically(
         125,
         "normalized",
     )
+    assert normalize_extracted_value("monetary_amount", "2,356,45", "fr", "LU") == (
+        2356.45,
+        "normalized",
+    )
     assert normalize_extracted_value("date", "21,01,2025", None, None) == (
         "2025-01-21",
         "normalized",
+    )
+
+
+def test_short_year_dates_use_locale_only_when_it_resolves_the_order() -> None:
+    assert normalize_extracted_value("date", "21/01/25", "fr", "LU") == (
+        "2025-01-21",
+        "normalized",
+    )
+    assert normalize_extracted_value("date", "1/21/25", "en", "US") == (
+        "2025-01-21",
+        "normalized",
+    )
+    assert normalize_extracted_value("date", "31/12/99", "fr", "LU") == (
+        "1999-12-31",
+        "normalized",
+    )
+    assert normalize_extracted_value("date", "01/02/25", None, None) == (
+        None,
+        "ambiguous",
     )
 
 

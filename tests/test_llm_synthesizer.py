@@ -10,6 +10,8 @@ from fraude_detector.llm_synthesizer import SynthesisError, summarize_analysis
 from fraude_detector.models import (
     DetectorResult,
     DocumentClassification,
+    ExtractionReview,
+    ExtractionVerification,
     Finding,
     LaboratoryCheck,
     LaboratoryReport,
@@ -118,13 +120,71 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     assert "sans JSON" in payload["messages"][0]["content"]
     assert "ne cite jamais le score numérique" in payload["messages"][1]["content"]
     assert "anomalies déterminantes" in payload["messages"][1]["content"]
-    assert "maximum absolu de 75 mots" in payload["messages"][1]["content"]
+    assert "maximum absolu de 120 mots" in payload["messages"][1]["content"]
     assert "ne dis jamais qu'une revue est inutile" in payload["messages"][1]["content"]
     assert "Score global calculé" not in payload["messages"][1]["content"]
     assert "pays=LU" not in payload["messages"][1]["content"]
     assert "Aucune signature électronique" not in payload["messages"][1]["content"]
     assert "Faible ressemblance avec une image générée" not in payload["messages"][1]["content"]
     assert "EDITING_SOFTWARE" not in payload["messages"][1]["content"]
+
+
+def test_synthesis_excludes_extraction_quality_and_masks_exact_signal_values(
+    monkeypatch: Any,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        del url
+        calls.append(kwargs["json"])
+        return _response(
+            "Revue manuelle nécessaire : un identifiant financier présente une incohérence "
+            "de format. Il faut le comparer au document d'origine."
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    finding = Finding(
+        detector="financial_identifiers",
+        code="INVALID_IBAN",
+        category="content_consistency",
+        title="Identifiant financier incohérent",
+        description="L'IBAN LU280019400644750000 associé au montant 2.500,00 EUR est invalide.",
+        risk_points=12,
+        confidence=0.9,
+    )
+    verification = ExtractionVerification(
+        schema_version="0.4-experimental",
+        status="attention",
+        expected_targets=1,
+        reviewed_targets=1,
+        reviews=(
+            ExtractionReview(
+                target_id="fact-0001",
+                target_type="fact",
+                verdict="ambiguous",
+                explanation="Le montant OCR a peut-être été rattaché à la mauvaise colonne.",
+                source_region_ids=("p001-r001",),
+            ),
+        ),
+        omissions=(),
+    )
+
+    summarize_analysis(
+        classification=None,
+        extraction=None,
+        verification=verification,
+        findings=(finding,),
+        detectors=(),
+        laboratory=None,
+        config=AnalysisConfig(synthesis_enabled=True),
+        assessment_score=30,
+    )
+
+    prompt = calls[0]["messages"][1]["content"]
+    assert "LU280019400644750000" not in prompt
+    assert "2.500,00" not in prompt
+    assert "mauvaise colonne" not in prompt
+    assert "qualité des données" in prompt
 
 
 def test_synthesis_keeps_the_model_note_without_imposing_sections(monkeypatch: Any) -> None:

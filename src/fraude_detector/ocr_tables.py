@@ -20,6 +20,7 @@ class ParsedOcrTable:
 class _ParsedRow:
     cells: tuple[str, ...]
     contains_header: bool
+    contains_data: bool
 
 
 _COLUMN_ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -94,24 +95,49 @@ class _TableParser(HTMLParser):
         self.tables: list[list[_ParsedRow]] = []
         self._table_depth = 0
         self._rows: list[_ParsedRow] = []
-        self._cells: list[str] | None = None
+        self._cells: dict[int, str] | None = None
+        self._occupied_columns: set[int] = set()
+        self._next_column = 0
+        self._pending_rowspans: dict[int, tuple[str, int, bool]] = {}
         self._cell_fragments: list[str] | None = None
         self._cell_colspan = 1
+        self._cell_rowspan = 1
+        self._cell_is_header = False
         self._row_contains_header = False
+        self._row_contains_data = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "table":
             self._table_depth += 1
             if self._table_depth == 1:
                 self._rows = []
+                self._pending_rowspans = {}
         elif self._table_depth == 1 and tag == "tr":
-            self._cells = []
-            self._row_contains_header = False
+            current_spans = self._pending_rowspans
+            self._pending_rowspans = {
+                column: (value, remaining - 1, is_header)
+                for column, (value, remaining, is_header) in current_spans.items()
+                if remaining > 1
+            }
+            self._cells = {
+                column: value for column, (value, _remaining, _is_header) in current_spans.items()
+            }
+            self._occupied_columns = set(current_spans)
+            self._next_column = 0
+            self._row_contains_header = any(
+                is_header for _value, _remaining, is_header in current_spans.values()
+            )
+            self._row_contains_data = any(
+                not is_header for _value, _remaining, is_header in current_spans.values()
+            )
         elif self._table_depth == 1 and tag in {"th", "td"} and self._cells is not None:
             self._cell_fragments = []
             self._cell_colspan = _span(dict(attrs).get("colspan"))
-            self._row_contains_header = self._row_contains_header or tag == "th"
-        elif self._cell_fragments is not None and tag == "br":
+            self._cell_rowspan = _span(dict(attrs).get("rowspan"))
+            self._cell_is_header = tag == "th"
+            self._row_contains_header = self._row_contains_header or self._cell_is_header
+            self._row_contains_data = self._row_contains_data or not self._cell_is_header
+        elif self._cell_fragments is not None and tag in {"br", "div", "li", "p"}:
             self._cell_fragments.append(" ")
 
     def handle_data(self, data: str) -> None:
@@ -120,14 +146,37 @@ class _TableParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if self._table_depth == 1 and tag in {"th", "td"} and self._cells is not None:
-            self._cells.append(_clean_cell("".join(self._cell_fragments or ())))
-            self._cells.extend("" for _ in range(self._cell_colspan - 1))
+            value = _clean_cell("".join(self._cell_fragments or ()))
+            start = _first_free_block(
+                self._occupied_columns,
+                start=self._next_column,
+                width=self._cell_colspan,
+            )
+            for offset in range(self._cell_colspan):
+                column = start + offset
+                spanned_value = value if offset == 0 else ""
+                self._cells[column] = spanned_value
+                self._occupied_columns.add(column)
+                if self._cell_rowspan > 1:
+                    self._pending_rowspans[column] = (
+                        spanned_value,
+                        self._cell_rowspan - 1,
+                        self._cell_is_header,
+                    )
+            self._next_column = start + self._cell_colspan
             self._cell_fragments = None
             self._cell_colspan = 1
+            self._cell_rowspan = 1
+            self._cell_is_header = False
         elif self._table_depth == 1 and tag == "tr" and self._cells is not None:
-            if any(self._cells):
-                self._rows.append(_ParsedRow(tuple(self._cells), self._row_contains_header))
+            width = max(self._occupied_columns, default=-1) + 1
+            cells = tuple(self._cells.get(column, "") for column in range(width))
+            if any(cells):
+                self._rows.append(
+                    _ParsedRow(cells, self._row_contains_header, self._row_contains_data)
+                )
             self._cells = None
+            self._occupied_columns = set()
             self._cell_fragments = None
         elif tag == "table" and self._table_depth:
             if self._table_depth == 1 and self._rows:
@@ -200,9 +249,11 @@ def _parse_html_table(content: str) -> ParsedOcrTable | None:
 def _table_from_rows(rows: list[_ParsedRow]) -> ParsedOcrTable | None:
     if not rows:
         return None
-    header_index = next((index for index, row in enumerate(rows) if row.contains_header), None)
-    headers = rows[header_index].cells if header_index is not None else ()
-    body = tuple(row.cells for index, row in enumerate(rows) if index != header_index)
+    header_indexes = tuple(
+        index for index, row in enumerate(rows) if row.contains_header and not row.contains_data
+    )
+    headers = _combined_headers(tuple(rows[index].cells for index in header_indexes))
+    body = tuple(row.cells for index, row in enumerate(rows) if index not in header_indexes)
     return ParsedOcrTable(headers=headers, rows=body) if headers or body else None
 
 
@@ -239,6 +290,28 @@ def _span(value: str | None) -> int:
         return max(1, min(40, int(value or "1")))
     except ValueError:
         return 1
+
+
+def _first_free_block(occupied: set[int], *, start: int, width: int) -> int:
+    column = max(0, start)
+    while any(column + offset in occupied for offset in range(width)):
+        column += 1
+    return column
+
+
+def _combined_headers(rows: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    if not rows:
+        return ()
+    width = max(map(len, rows))
+    headers: list[str] = []
+    for column in range(width):
+        fragments: list[str] = []
+        for row in rows:
+            fragment = row[column] if column < len(row) else ""
+            if fragment and fragment.casefold() not in {item.casefold() for item in fragments}:
+                fragments.append(fragment)
+        headers.append(" / ".join(fragments))
+    return tuple(headers)
 
 
 def _normalized_header(value: str) -> str:

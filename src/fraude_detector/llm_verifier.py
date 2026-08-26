@@ -26,7 +26,7 @@ from fraude_detector.structured_ocr import (
 ISSUE_TARGET_TYPES = ("fact", "additional_field", "table")
 ISSUE_VERDICTS = ("ambiguous", "contradicted")
 VERIFICATION_SCHEMA_VERSION = "0.4-experimental"
-VERIFICATION_PROMPT_VERSION = "verification-differential-2026-08-25-v2"
+VERIFICATION_PROMPT_VERSION = "verification-differential-2026-08-26-v3"
 
 _SYSTEM_PROMPT = """Tu contrôles la fidélité d'une extraction documentaire.
 Tu es un auditeur conservateur, pas un correcteur créatif. L'hypothèse de départ est que
@@ -165,7 +165,9 @@ Principe conservateur obligatoire:
    concret entre en-têtes, column_roles et cellules, ou lorsqu'un fragment OCR manifestement
    corrompu a été interprété comme une valeur. Indique alors chaque index dans
    problematic_row_indexes. Ne propose aucune correction de valeur, field_code ou role pour un
-   tableau: il restera à revoir sans mutation automatique.
+   tableau: il restera à revoir sans mutation automatique. Vérifie particulièrement les en-têtes
+   ou libellés concaténés par l'OCR et les cellules issues de rowspan/colspan, mais ne les signale
+   que s'ils causent un décalage sémantique observable dans les lignes reconstruites.
 8. Ne signale une omission que pour une information métier explicite, importante et absente de
    tous les faits, champs additionnels et tableaux. Une cellule déjà conservée dans un tableau
    n'est pas omise. Ne transforme pas du texte décoratif en champ.

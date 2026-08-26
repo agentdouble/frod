@@ -1150,10 +1150,11 @@ def _render_extraction_verification(
             f"{verification.expected_targets}. L'extraction initiale n'a pas été modifiée."
         )
     else:
-        title = "Points à contrôler dans l'extraction"
+        title = "Qualité de l'extraction à contrôler"
         detail = (
             f"{len(attention_reviews)} interprétation(s) discutée(s) et "
-            f"{len(verification.omissions)} omission(s) possible(s)."
+            f"{len(verification.omissions)} omission(s) possible(s). "
+            "Ces points n'entrent pas dans le score de risque."
         )
     st.markdown(
         f"""
@@ -1167,7 +1168,11 @@ def _render_extraction_verification(
 
     issue_cards = []
     for review in attention_reviews:
-        label = "Contradiction étayée" if review.verdict == "contradicted" else "Ambiguïté"
+        label = (
+            "Correction d'extraction proposée"
+            if review.verdict == "contradicted"
+            else "Interprétation de l'extraction à confirmer"
+        )
         affected_rows = (
             "<small>Ligne(s) concernée(s) : "
             + ", ".join(str(index + 1) for index in review.problematic_row_indexes)
@@ -1191,7 +1196,7 @@ def _render_extraction_verification(
         value = f" · {_html(omission.proposed_value)}" if omission.proposed_value else ""
         issue_cards.append(
             '<article class="verification-issue omission">'
-            f"<span>Omission possible{value}</span>"
+            f"<span>Information possiblement omise par l'extraction{value}</span>"
             f"<strong>{_html(omission.description)}</strong>"
             "</article>"
         )
@@ -3054,10 +3059,10 @@ def _inject_styles() -> None:
           gap: .24rem;
           min-width: 0;
           padding: .65rem;
-          border: 1px solid #69424a;
-          border-left: 4px solid var(--coral);
+          border: 1px solid #665527;
+          border-left: 4px solid var(--amber);
           border-radius: 5px;
-          background: #26191d;
+          background: #211d16;
         }
         .verification-issue.omission {
           border-color: #665527;

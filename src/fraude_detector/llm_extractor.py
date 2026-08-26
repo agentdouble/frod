@@ -30,7 +30,7 @@ from fraude_detector.structured_ocr import (
 )
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-08-25-v2"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-08-26-v3"
 EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-25-v2"
 
 FIELD_CODES = (
@@ -592,6 +592,8 @@ Règles:
     pour remplir une colonne et ne décale pas les cellules uniquement pour obtenir le même nombre
     de valeurs que d'en-têtes. Utilise le sens des en-têtes, la géométrie et les lignes voisines;
     si l'association reste incertaine, conserve le tableau et laisse la vérification la signaler.
+    Un en-tête ou un libellé concaténé par l'OCR ne justifie jamais de déplacer les cellules ou de
+    fabriquer des colonnes absentes.
 
 Définitions stables des field_code:
 {field_guidance}
@@ -1097,7 +1099,6 @@ def _normalize_value(
     language: str | None,
     country: str | None,
 ) -> tuple[str | int | float | None, NormalizationStatus]:
-    del language, country
     if field_code == "iban":
         compact = "".join(character for character in raw_value.upper() if character.isalnum())
         for match in re.finditer(r"[A-Z]{2}\d{2}", compact):
@@ -1127,9 +1128,9 @@ def _normalize_value(
         value = raw_value.strip().casefold()
         return (value, "normalized") if "@" in value else (None, "raw_only")
     if field_code == "monetary_amount":
-        return _normalize_amount(raw_value)
+        return _normalize_amount(raw_value, language=language, country=country)
     if field_code in {"date", "date_period"}:
-        return _normalize_date(raw_value)
+        return _normalize_date(raw_value, language=language, country=country)
     if field_code in {
         "person_name",
         "organization_name",
@@ -1168,6 +1169,9 @@ def normalize_extracted_currency(field_code: str, raw_value: str) -> str | None:
 
 def _normalize_amount(
     raw_value: str,
+    *,
+    language: str | None = None,
+    country: str | None = None,
 ) -> tuple[int | float | None, NormalizationStatus]:
     value = unicodedata.normalize("NFKC", raw_value)
     value = value.translate(str.maketrans({"−": "-", "–": "-", "—": "-", "’": "'"}))
@@ -1186,8 +1190,16 @@ def _normalize_amount(
         parts = number.split(separator)
         if len(parts) == 2 and len(parts[1]) in {1, 2}:
             number = f"{parts[0]}.{parts[1]}"
+        elif (
+            len(parts) > 2
+            and len(parts[-1]) in {1, 2}
+            and all(len(part) == 3 for part in parts[1:-1])
+        ):
+            number = f"{''.join(parts[:-1])}.{parts[-1]}"
         elif all(len(part) == 3 for part in parts[1:]):
             number = "".join(parts)
+        elif _decimal_separator_for_locale(language, country) == separator and len(parts) == 2:
+            number = f"{parts[0]}.{parts[1]}"
         else:
             return None, "ambiguous"
     try:
@@ -1213,23 +1225,85 @@ def _currency_from_context(*values: str) -> str | None:
     return None
 
 
-def _normalize_date(raw_value: str) -> tuple[str | None, NormalizationStatus]:
+def _normalize_date(
+    raw_value: str,
+    *,
+    language: str | None = None,
+    country: str | None = None,
+) -> tuple[str | None, NormalizationStatus]:
     match = re.search(r"\b(\d{4})[-/.,](\d{1,2})[-/.,](\d{1,2})\b", raw_value)
     if match:
         year, month, day = map(int, match.groups())
         if normalized := _valid_iso_date(year, month, day):
             return normalized, "normalized"
-    match = re.search(r"\b(\d{1,2})[-/.,](\d{1,2})[-/.,](\d{4})\b", raw_value)
+    match = re.search(r"\b(\d{1,2})[-/.,](\d{1,2})[-/.,](\d{2}|\d{4})\b", raw_value)
     if not match:
         return None, "raw_only"
-    first, second, year = map(int, match.groups())
+    first, second = map(int, match.groups()[:2])
+    year = _four_digit_year(match.group(3))
     if first > 12 and 1 <= second <= 12:
         normalized = _valid_iso_date(year, second, first)
         return (normalized, "normalized") if normalized else (None, "raw_only")
     if second > 12 and 1 <= first <= 12:
         normalized = _valid_iso_date(year, first, second)
         return (normalized, "normalized") if normalized else (None, "raw_only")
+    date_order = _date_order_for_locale(language, country)
+    if date_order == "dmy":
+        normalized = _valid_iso_date(year, second, first)
+        return (normalized, "normalized") if normalized else (None, "raw_only")
+    if date_order == "mdy":
+        normalized = _valid_iso_date(year, first, second)
+        return (normalized, "normalized") if normalized else (None, "raw_only")
     return None, "ambiguous"
+
+
+def _four_digit_year(value: str) -> int:
+    year = int(value)
+    if len(value) == 2:
+        return 2000 + year if year <= 49 else 1900 + year
+    return year
+
+
+def _date_order_for_locale(language: str | None, country: str | None) -> str | None:
+    normalized_country = (country or "").strip().upper()
+    normalized_language = (language or "").strip().replace("_", "-").casefold()
+    if normalized_country == "US" or normalized_language == "en-us":
+        return "mdy"
+    if normalized_country in {
+        "AT",
+        "BE",
+        "CH",
+        "DE",
+        "ES",
+        "FR",
+        "GB",
+        "IE",
+        "IT",
+        "LU",
+        "NL",
+        "PT",
+    }:
+        return "dmy"
+    if normalized_language.split("-", 1)[0] in {
+        "de",
+        "es",
+        "fr",
+        "it",
+        "lb",
+        "nl",
+        "pt",
+    }:
+        return "dmy"
+    return None
+
+
+def _decimal_separator_for_locale(language: str | None, country: str | None) -> str | None:
+    date_order = _date_order_for_locale(language, country)
+    if date_order == "dmy" and (country or "").strip().upper() != "GB":
+        return ","
+    if date_order == "mdy" or (country or "").strip().upper() in {"GB", "IE"}:
+        return "."
+    return None
 
 
 def _valid_iso_date(year: int, month: int, day: int) -> str | None:
