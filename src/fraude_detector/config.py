@@ -23,6 +23,11 @@ class AnalysisConfig:
     ela_robust_z_threshold: float = 3.5
     ela_max_image_dimension: int = 2400
     ela_max_region_area_fraction: float = 0.25
+    pdf_metadata_online_service_points: float = 4.0
+    pdf_metadata_pdf_editor_points: float = 3.0
+    pdf_metadata_design_tool_points: float = 5.0
+    pdf_metadata_visual_editor_points: float = 8.0
+    pdf_metadata_generative_tool_points: float = 8.0
     ai_max_images: int = 20
     ai_max_inventory_images: int = 100
     ai_analyze_pdf_images: bool = False
@@ -95,6 +100,16 @@ class AnalysisConfig:
             raise ValueError("ela_max_image_dimension must be at least 64")
         if not 0 < self.ela_max_region_area_fraction <= 1:
             raise ValueError("ela_max_region_area_fraction must be between 0 and 1")
+        provenance_points = {
+            "pdf_metadata_online_service_points": self.pdf_metadata_online_service_points,
+            "pdf_metadata_pdf_editor_points": self.pdf_metadata_pdf_editor_points,
+            "pdf_metadata_design_tool_points": self.pdf_metadata_design_tool_points,
+            "pdf_metadata_visual_editor_points": self.pdf_metadata_visual_editor_points,
+            "pdf_metadata_generative_tool_points": self.pdf_metadata_generative_tool_points,
+        }
+        for name, points in provenance_points.items():
+            if not 0 <= points <= 15:
+                raise ValueError(f"{name} must be between 0 and 15")
         if self.ai_max_images < 1:
             raise ValueError("ai_max_images must be at least 1")
         if self.ai_max_inventory_images < self.ai_max_images:

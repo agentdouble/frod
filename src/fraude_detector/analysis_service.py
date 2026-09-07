@@ -23,7 +23,6 @@ from fraude_detector.content_analysis import ContentAnalysisResult, analyze_reco
 from fraude_detector.gapl import best_available_device, create_gapl_adapter
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
 from fraude_detector.laboratory import (
-    analyze_image_laboratory,
     analyze_ocr_laboratory,
     analyze_pdf_laboratory,
 )
@@ -360,18 +359,7 @@ class AnalysisService:
                 else _empty_laboratory_report()
             )
         else:
-            laboratory = (
-                analyze_image_laboratory(
-                    source_path,
-                    output_dir,
-                    trufor_weights=self.config.trufor.weights_path,
-                    trufor_max_pixels=self.config.trufor.max_pixels,
-                    trufor_timeout_seconds=self.config.trufor.timeout_seconds,
-                    progress_callback=progress_callback,
-                )
-                if self.config.laboratory.image_enabled and self.config.trufor.enabled
-                else _empty_laboratory_report()
-            )
+            laboratory = _empty_laboratory_report()
         progress_callback(0.95, "Contrôles expérimentaux terminés")
         laboratory = self._with_ocr_laboratory(
             report,

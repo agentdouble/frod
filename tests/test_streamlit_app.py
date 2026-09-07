@@ -12,7 +12,6 @@ from streamlit.testing.v1 import AppTest
 
 def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     assert app.segmented_control[0].options == ["Général", "Analyse IA", "Glossaire"]
@@ -46,7 +45,6 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
 
 def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("Montant modifié").run(timeout=30)
@@ -137,7 +135,6 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     monkeypatch.setenv("FROD_OCR_URL", "http://ocr.test:8007")
     monkeypatch.setattr(
@@ -176,7 +173,6 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
@@ -221,7 +217,6 @@ def test_extraction_laboratory_has_a_business_readable_empty_state(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
@@ -243,7 +238,6 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     monkeypatch.setenv("FROD_CLASSIFICATION_URL", "http://extract.test:8030")
     monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
@@ -345,7 +339,6 @@ def test_local_original_ocr_demo_is_discovered_when_present(
     (fixture_dir / "document.json").write_text("[]\n", encoding="utf-8")
     (fixture_dir / "document.md").write_text("Original local\n", encoding="utf-8")
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(work_dir))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()

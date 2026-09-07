@@ -12,11 +12,6 @@ import yaml
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.gapl import GAPL_DEFAULT_CHECKPOINT
-from fraude_detector.trufor import (
-    TRUFOR_DEFAULT_CHECKPOINT,
-    TRUFOR_MAX_PIXELS,
-    TRUFOR_TIMEOUT_SECONDS,
-)
 
 
 class RunConfigError(ValueError):
@@ -43,21 +38,10 @@ class GaplConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class TruForConfig:
-    """Settings for the optional local manipulation detector."""
-
-    enabled: bool
-    weights_path: Path
-    max_pixels: int
-    timeout_seconds: int
-
-
-@dataclass(frozen=True, slots=True)
 class LaboratoryConfig:
     """Experimental controls that run outside the main score."""
 
     pdf_enabled: bool
-    image_enabled: bool
     visual_repetition_enabled: bool
     visual_repetition_min_pages: int
     visual_repetition_similarity: float
@@ -72,7 +56,6 @@ class RunConfig:
     application: ApplicationConfig
     analysis: AnalysisConfig
     gapl: GaplConfig
-    trufor: TruForConfig
     laboratory: LaboratoryConfig
 
 
@@ -124,7 +107,7 @@ def load_run_config(
             "a analysis.limits.max_file_size_mb"
         )
 
-    gapl, trufor = _load_models(config, source, base, environment)
+    gapl = _load_models(config, source, base, environment)
     laboratory = _load_laboratory(config, source, environment)
     return RunConfig(
         source=source,
@@ -132,7 +115,6 @@ def load_run_config(
         application=application,
         analysis=analysis,
         gapl=gapl,
-        trufor=trufor,
         laboratory=laboratory,
     )
 
@@ -216,7 +198,7 @@ def _load_analysis(
     section = _section(config, "analysis", source)
     _reject_unknown(
         section,
-        {"rendering", "limits", "composition", "ela", "ai_images"},
+        {"rendering", "limits", "composition", "ela", "pdf_metadata", "ai_images"},
         source,
         "analysis",
     )
@@ -224,6 +206,7 @@ def _load_analysis(
     limits = _section(section, "limits", source, prefix="analysis")
     composition = _section(section, "composition", source, prefix="analysis")
     ela = _section(section, "ela", source, prefix="analysis")
+    pdf_metadata = _section(section, "pdf_metadata", source, prefix="analysis")
     ai_images = _section(section, "ai_images", source, prefix="analysis")
     ocr = _section(config, "ocr", source)
     classification = _section(config, "classification", source)
@@ -264,6 +247,18 @@ def _load_analysis(
         },
         source,
         "analysis.ela",
+    )
+    _reject_unknown(
+        pdf_metadata,
+        {
+            "online_service_points",
+            "pdf_editor_points",
+            "design_tool_points",
+            "visual_editor_points",
+            "generative_tool_points",
+        },
+        source,
+        "analysis.pdf_metadata",
     )
     _reject_unknown(
         ai_images,
@@ -613,6 +608,31 @@ def _load_analysis(
                 source,
                 "analysis.ela.max_region_area_fraction",
             ),
+            pdf_metadata_online_service_points=_number(
+                pdf_metadata.get("online_service_points", 4.0),
+                source,
+                "analysis.pdf_metadata.online_service_points",
+            ),
+            pdf_metadata_pdf_editor_points=_number(
+                pdf_metadata.get("pdf_editor_points", 3.0),
+                source,
+                "analysis.pdf_metadata.pdf_editor_points",
+            ),
+            pdf_metadata_design_tool_points=_number(
+                pdf_metadata.get("design_tool_points", 5.0),
+                source,
+                "analysis.pdf_metadata.design_tool_points",
+            ),
+            pdf_metadata_visual_editor_points=_number(
+                pdf_metadata.get("visual_editor_points", 8.0),
+                source,
+                "analysis.pdf_metadata.visual_editor_points",
+            ),
+            pdf_metadata_generative_tool_points=_number(
+                pdf_metadata.get("generative_tool_points", 8.0),
+                source,
+                "analysis.pdf_metadata.generative_tool_points",
+            ),
             ai_max_images=_integer(
                 ai_images.get("max_images", 20),
                 source,
@@ -709,18 +729,11 @@ def _load_models(
     source: Path,
     base: Path,
     environ: Mapping[str, str],
-) -> tuple[GaplConfig, TruForConfig]:
+) -> GaplConfig:
     models = _section(config, "models", source)
-    _reject_unknown(models, {"gapl", "trufor"}, source, "models")
+    _reject_unknown(models, {"gapl"}, source, "models")
     gapl = _section(models, "gapl", source, prefix="models")
-    trufor = _section(models, "trufor", source, prefix="models")
     _reject_unknown(gapl, {"enabled", "weights_path", "device"}, source, "models.gapl")
-    _reject_unknown(
-        trufor,
-        {"enabled", "weights_path", "max_pixels", "timeout_seconds"},
-        source,
-        "models.trufor",
-    )
 
     gapl_enabled = _environment_boolean(
         environ,
@@ -743,53 +756,7 @@ def _load_models(
         "models.gapl.weights_path",
     )
 
-    trufor_enabled = _environment_boolean(
-        environ,
-        "FROD_TRUFOR_ENABLED",
-        trufor.get("enabled", True),
-        source,
-        "models.trufor.enabled",
-    )
-    trufor_path = _path(
-        environ.get("FROD_TRUFOR_WEIGHTS")
-        or trufor.get("weights_path", str(TRUFOR_DEFAULT_CHECKPOINT)),
-        base,
-        source,
-        "models.trufor.weights_path",
-    )
-    trufor_pixels_override = _env_int(environ, "FROD_TRUFOR_MAX_PIXELS")
-    trufor_max_pixels = (
-        trufor_pixels_override
-        if trufor_pixels_override is not None
-        else _integer(
-            trufor.get("max_pixels", TRUFOR_MAX_PIXELS),
-            source,
-            "models.trufor.max_pixels",
-        )
-    )
-    trufor_timeout_override = _env_int(environ, "FROD_TRUFOR_TIMEOUT_SECONDS")
-    trufor_timeout = (
-        trufor_timeout_override
-        if trufor_timeout_override is not None
-        else _integer(
-            trufor.get("timeout_seconds", TRUFOR_TIMEOUT_SECONDS),
-            source,
-            "models.trufor.timeout_seconds",
-        )
-    )
-    if trufor_max_pixels < 65_536:
-        raise RunConfigError("models.trufor.max_pixels doit etre au moins 65536")
-    if trufor_timeout < 1:
-        raise RunConfigError("models.trufor.timeout_seconds doit etre au moins 1")
-    return (
-        GaplConfig(enabled=gapl_enabled, weights_path=gapl_path, device=gapl_device),
-        TruForConfig(
-            enabled=trufor_enabled,
-            weights_path=trufor_path,
-            max_pixels=trufor_max_pixels,
-            timeout_seconds=trufor_timeout,
-        ),
-    )
+    return GaplConfig(enabled=gapl_enabled, weights_path=gapl_path, device=gapl_device)
 
 
 def _load_laboratory(
@@ -802,7 +769,6 @@ def _load_laboratory(
         section,
         {
             "pdf_enabled",
-            "image_enabled",
             "visual_repetition_enabled",
             "visual_repetition_min_pages",
             "visual_repetition_similarity",
@@ -833,13 +799,6 @@ def _load_laboratory(
             section.get("pdf_enabled", True),
             source,
             "laboratory.pdf_enabled",
-        ),
-        image_enabled=_environment_boolean(
-            environ,
-            "FROD_IMAGE_LAB_ENABLED",
-            section.get("image_enabled", True),
-            source,
-            "laboratory.image_enabled",
         ),
         visual_repetition_enabled=_boolean(
             section.get("visual_repetition_enabled", True),

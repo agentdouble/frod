@@ -34,7 +34,7 @@ PROJECT_CONFIG = load_run_config(CONFIG_PATH)
 WORK_DIR = PROJECT_CONFIG.application.work_dir
 CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
 ANALYSIS_POLICY_VERSION = (
-    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
+    f"gapl-p25-90-v2-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
 )
 INDICATOR_STEP_SECONDS = 0.45
 AI_PENDING_VIEW = "Analyse IA · en cours"
@@ -1464,8 +1464,6 @@ def _render_document_view(
                     observation.artifacts,
                 ):
                     if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}:
-                        if _is_secondary_localization_artifact(path):
-                            continue
                         choices[_laboratory_artifact_caption(path)] = path
 
     if not choices:
@@ -1517,6 +1515,11 @@ def _render_review_summary(
             f'<div class="diagnostic-count">{len(diagnostics)} observation(s) informative(s)</div>',
             unsafe_allow_html=True,
         )
+        software_provenance = [
+            finding for finding in diagnostics if finding.code.startswith("PDF_SOFTWARE_")
+        ]
+        for finding, occurrences in _group_findings(software_provenance):
+            _finding_card(finding, diagnostic=True, occurrences=occurrences)
 
     _render_ocr_field_cards(laboratory)
     _render_attention_observations(laboratory)
@@ -1876,6 +1879,8 @@ def _finding_card(
     gapl_index = finding.evidence.get("global_index")
     if gapl_index is not None:
         confidence_label = f"Ressemblance estimée : {float(gapl_index):.0%}"
+    elif finding.code.startswith("PDF_SOFTWARE_"):
+        confidence_label = "Information déclarée dans les métadonnées du PDF"
     elif finding.detector == "ocr_content":
         confidence_label = f"Fiabilité de la lecture : {finding.confidence:.0%}"
     else:
@@ -1944,17 +1949,11 @@ def _friendly_artifact_caption(path: Path) -> str:
 
 
 def _laboratory_artifact_caption(path: Path) -> str:
-    if "trufor-localization" in path.name:
-        return "Carte des incohérences locales"
     if "revision" in path.name:
         return "Différences entre les versions"
     if "repeated-visual-region" in path.name:
         return "Comparaison des éléments visuels répétés"
     return "Visualisation complémentaire"
-
-
-def _is_secondary_localization_artifact(path: Path) -> bool:
-    return any(marker in path.name for marker in ("trufor-reliable", "trufor-confidence"))
 
 
 def _business_finding_copy(finding: Finding) -> tuple[str, str]:
@@ -1990,16 +1989,11 @@ def _format_identifier_value(code: str, value: str) -> str:
 
 
 def _business_observation_title(observation: Any) -> str:
-    if str(observation.code).startswith("TRUFOR_"):
-        if observation.code == "TRUFOR_UNAVAILABLE":
-            return "Analyse des retouches locales indisponible"
-        return _sentence_case(observation.title)
     return _sentence_case(observation.title)
 
 
 def _business_check_title(code: str, title: str) -> str:
     labels = {
-        "trufor": "Recherche de retouches locales",
         "pades": "Signature électronique du PDF",
         "facturx": "Facture électronique embarquée",
         "two_d_doc": "Code de vérification 2D-Doc",
@@ -2023,9 +2017,6 @@ def _sentence_case(value: object) -> str:
 def _business_text(value: object) -> str:
     text = str(value)
     replacements = (
-        ("Indice TruFor", "Indice de retouche locale"),
-        ("Analyse TruFor", "Analyse des retouches locales"),
-        ("TruFor", "le détecteur de retouches locales"),
         ("GAPL", "le détecteur d'images générées par IA"),
         ("score Frod", "score global"),
         ("Score Frod", "Score global"),

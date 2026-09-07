@@ -58,6 +58,12 @@ analysis:
     robust_z_threshold: 4.0
     max_image_dimension: 1800
     max_region_area_fraction: 0.20
+  pdf_metadata:
+    online_service_points: 2
+    pdf_editor_points: 3
+    design_tool_points: 4
+    visual_editor_points: 6
+    generative_tool_points: 7
   ai_images:
     max_images: 10
     max_inventory_images: 50
@@ -111,14 +117,8 @@ models:
     enabled: false
     weights_path: "weights/gapl.pt"
     device: "cpu"
-  trufor:
-    enabled: true
-    weights_path: "weights/trufor.pth.tar"
-    max_pixels: 500000
-    timeout_seconds: 600
 laboratory:
   pdf_enabled: false
-  image_enabled: true
   visual_repetition_enabled: true
   visual_repetition_min_pages: 4
   visual_repetition_similarity: 0.93
@@ -134,6 +134,11 @@ laboratory:
     assert config.analysis.render_dpi == 180
     assert config.analysis.max_pages == 12
     assert config.analysis.ela_jpeg_quality == 88
+    assert config.analysis.pdf_metadata_online_service_points == 2
+    assert config.analysis.pdf_metadata_pdf_editor_points == 3
+    assert config.analysis.pdf_metadata_design_tool_points == 4
+    assert config.analysis.pdf_metadata_visual_editor_points == 6
+    assert config.analysis.pdf_metadata_generative_tool_points == 7
     assert config.analysis.ai_max_images == 10
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.analysis.ocr_enabled is True
@@ -171,8 +176,6 @@ laboratory:
     assert config.gapl.enabled is False
     assert config.gapl.device == "cpu"
     assert config.gapl.weights_path == (tmp_path / "weights/gapl.pt").resolve()
-    assert config.trufor.max_pixels == 500000
-    assert config.trufor.timeout_seconds == 600
     assert config.laboratory.pdf_enabled is False
     assert config.laboratory.visual_repetition_enabled is True
     assert config.laboratory.visual_repetition_min_pages == 4
@@ -209,7 +212,6 @@ models:
             "FROD_SYNTHESIS_MODEL": "minimax-summary-test",
             "FROD_GAPL_ENABLED": "false",
             "FROD_AI_ANALYZE_PDF_IMAGES": "true",
-            "FROD_TRUFOR_MAX_PIXELS": "600000",
         },
     )
 
@@ -231,7 +233,6 @@ models:
     assert config.analysis.synthesis_model == "minimax-summary-test"
     assert config.gapl.enabled is False
     assert config.analysis.ai_analyze_pdf_images is True
-    assert config.trufor.max_pixels == 600000
 
 
 @pytest.mark.parametrize(
@@ -247,6 +248,10 @@ models:
             "application:\n  max_upload_size_mb: 50\n"
             "analysis:\n  limits:\n    max_file_size_mb: 100\n",
             "superieur ou egal",
+        ),
+        (
+            "analysis:\n  pdf_metadata:\n    online_service_points: 16\n",
+            "between 0 and 15",
         ),
     ],
 )
