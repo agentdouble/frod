@@ -21,9 +21,12 @@ IFS=$'\t' read -r \
   configured_max_upload \
   gapl_enabled \
   gapl_path \
+  ocr_enabled \
+  ocr_no_proxy_host \
   < <(
     uv run python - "$config_path" <<'PY'
 import sys
+from urllib.parse import urlsplit
 
 from fraude_detector.run_config import load_run_config
 
@@ -36,11 +39,23 @@ print(
             str(config.application.max_upload_size_mb),
             str(config.gapl.enabled).lower(),
             str(config.gapl.weights_path),
+            str(config.analysis.ocr_enabled).lower(),
+            urlsplit(config.analysis.ocr_url).hostname or "",
         )
     )
 )
 PY
   )
+
+if [[ "$ocr_enabled" == true ]] && [[ -n "$ocr_no_proxy_host" ]]; then
+  current_no_proxy="${NO_PROXY:-${no_proxy:-}}"
+  case ",$current_no_proxy," in
+    *,"$ocr_no_proxy_host",*) ;;
+    *) current_no_proxy="${current_no_proxy:+$current_no_proxy,}$ocr_no_proxy_host" ;;
+  esac
+  export NO_PROXY="$current_no_proxy"
+  export no_proxy="$current_no_proxy"
+fi
 
 gapl_url="https://huggingface.co/AbyssLumine/GAPL/resolve/main/checkpoint.pt"
 gapl_sha256="ffbcb5eb526f0df0fd197d7266bdd0325b66813e95010f1285685acf2d267235"

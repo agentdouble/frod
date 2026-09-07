@@ -138,7 +138,7 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     monkeypatch.setenv("FROD_OCR_URL", "http://ocr.test:8007")
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {

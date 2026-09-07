@@ -51,6 +51,10 @@ d'environnement `FROD_*` restent disponibles comme surcharges de déploiement, m
 une installation locale peut être configurée uniquement en modifiant ce fichier.
 Redémarrer `./start.sh` après une modification.
 
+Le client OCR utilise une session directe qui ignore les proxies déclarés dans
+l'environnement. Lorsque l'OCR est activé, `start.sh` ajoute également son hôte à
+`NO_PROXY` et `no_proxy` sans modifier le routage des autres destinations.
+
 ## Indices verifies dans le MVP
 
 - historique de mises a jour incrementales encore present dans le PDF ;

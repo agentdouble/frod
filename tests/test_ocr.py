@@ -39,7 +39,7 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
     output = tmp_path / "analysis"
     calls: list[dict[str, Any]] = []
 
-    def fake_post(url: str, **kwargs: Any) -> _Response:
+    def fake_post(_session: requests.Session, url: str, **kwargs: Any) -> _Response:
         calls.append({"url": url, **kwargs})
         return _Response(
             {
@@ -59,8 +59,9 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
             }
         )
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests.Session, "post", fake_post)
     detector = OcrDetector(AnalysisConfig(ocr_enabled=True, ocr_url="http://ocr.internal:8007"))
+    assert detector._session.trust_env is False
     report = detector.detect(source, output)
 
     assert report.success
@@ -84,7 +85,7 @@ def test_ocr_unavailability_is_non_fatal(monkeypatch: Any, tmp_path: Path) -> No
     def fail(*args: Any, **kwargs: Any) -> None:
         raise requests.ConnectionError("offline")
 
-    monkeypatch.setattr(requests, "post", fail)
+    monkeypatch.setattr(requests.Session, "post", fail)
     detector = OcrDetector(AnalysisConfig(ocr_enabled=True))
     report = detector.detect(source, tmp_path / "analysis")
 
@@ -99,7 +100,7 @@ def test_pdf_pipeline_exposes_clean_ocr_content_without_scoring_it(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -142,7 +143,7 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
 ) -> None:
     markdown = "Relevé de compte\nSolde précédent\nOpérations du mois"
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -255,7 +256,7 @@ def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(
     source = tmp_path / "document.png"
     Image.new("RGB", (200, 100), "white").save(source)
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -295,7 +296,7 @@ def test_image_pipeline_scores_corroborated_ocr_content(
     payload = json.loads((fixture / "document.json").read_text(encoding="utf-8"))
     markdown = (fixture / "document.md").read_text(encoding="utf-8")
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {

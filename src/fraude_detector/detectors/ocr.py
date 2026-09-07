@@ -25,6 +25,8 @@ class OcrDetector:
     def __init__(self, config: AnalysisConfig) -> None:
         self.url = config.ocr_url.rstrip("/") + "/glmocr/parse"
         self.timeout_seconds = config.ocr_timeout_seconds
+        self._session = requests.Session()
+        self._session.trust_env = False
 
     def detect(
         self,
@@ -39,7 +41,7 @@ class OcrDetector:
         source = input_path.expanduser().resolve()
         destination = output_dir.expanduser().resolve()
         try:
-            response = requests.post(
+            response = self._session.post(
                 self.url,
                 json={"images": [source.as_uri()]},
                 timeout=(5, self.timeout_seconds),
