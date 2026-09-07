@@ -18,7 +18,6 @@ def test_payment_date_role_correction_is_applied_with_an_audit_trail() -> None:
         schema_version="0.1-experimental",
         status="attention",
         expected_targets=1,
-        reviewed_targets=1,
         reviews=(
             ExtractionReview(
                 target_id="fact-0001",
@@ -51,7 +50,6 @@ def test_corrected_value_is_normalized_again() -> None:
         schema_version="0.1-experimental",
         status="attention",
         expected_targets=1,
-        reviewed_targets=1,
         reviews=(
             ExtractionReview(
                 target_id="fact-0001",
@@ -94,7 +92,6 @@ def test_amount_correction_keeps_contextual_currency() -> None:
         schema_version="0.4-experimental",
         status="attention",
         expected_targets=1,
-        reviewed_targets=1,
         reviews=(
             ExtractionReview(
                 target_id="fact-0001",

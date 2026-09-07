@@ -26,7 +26,7 @@ from fraude_detector.structured_ocr import (
 ISSUE_TARGET_TYPES = ("fact", "additional_field", "table")
 ISSUE_VERDICTS = ("ambiguous", "contradicted")
 VERIFICATION_SCHEMA_VERSION = "0.4-experimental"
-VERIFICATION_PROMPT_VERSION = "verification-differential-2026-08-26-v3"
+VERIFICATION_PROMPT_VERSION = "verification-differential-2026-09-07-v4"
 
 _SYSTEM_PROMPT = """Tu contrôles la fidélité d'une extraction documentaire.
 Tu es un auditeur conservateur, pas un correcteur créatif. L'hypothèse de départ est que
@@ -290,7 +290,6 @@ def _extraction_targets(extraction: DocumentExtraction) -> tuple[_Target, ...]:
                     "raw_label": fact.raw_label,
                     "raw_value": fact.raw_value,
                     "corrected_value": fact.corrected_value,
-                    "normalized_value": fact.normalized_value,
                     "region_ids": fact.region_ids,
                 },
             )
@@ -304,7 +303,6 @@ def _extraction_targets(extraction: DocumentExtraction) -> tuple[_Target, ...]:
                     "raw_label": field.raw_label,
                     "raw_value": field.raw_value,
                     "corrected_value": field.corrected_value,
-                    "semantic_hint": field.semantic_hint,
                     "region_ids": field.region_ids,
                 },
             )
@@ -323,7 +321,6 @@ def _extraction_targets(extraction: DocumentExtraction) -> tuple[_Target, ...]:
                     "rows": table.rows[:maximum_reviewed_rows],
                     "row_roles": table.row_roles[:maximum_reviewed_rows],
                     "row_count": len(table.rows),
-                    "reviewed_row_count": min(len(table.rows), maximum_reviewed_rows),
                     "region_ids": table.region_ids,
                 },
             )
@@ -431,7 +428,6 @@ def _validated_verification(
         schema_version=VERIFICATION_SCHEMA_VERSION,
         status=status,
         expected_targets=len(targets),
-        reviewed_targets=len(targets),
         reviews=tuple(reviews),
         omissions=tuple(omissions),
         limitations=(

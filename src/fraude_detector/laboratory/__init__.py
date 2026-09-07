@@ -28,9 +28,11 @@ def analyze_pdf_laboratory(
     *,
     config: AnalysisConfig,
     password: str | None = None,
+    include_authenticity: bool = True,
+    include_experimental: bool = True,
     progress_callback: Callable[[float, str], None] | None = None,
 ) -> LaboratoryReport:
-    """Run non-scoring experiments over a PDF already accepted by Frod."""
+    """Run document-authenticity controls and optional experiments over a PDF."""
 
     source = Path(input_path).expanduser().resolve()
     destination = Path(output_dir).expanduser().resolve() / "laboratory"
@@ -60,38 +62,54 @@ def analyze_pdf_laboratory(
         )
         checks: list[LaboratoryCheck] = []
 
-        progress(0.03, "Laboratoire : signatures PDF")
-        signature_checks = _guard_many(
-            ("pades", "post_signature"),
-            lambda: analyze_pdf_signatures(context),
-        )
-        checks.extend(signature_checks)
+        if include_authenticity:
+            checks.extend(analyze_authenticity_checks(context, progress_callback=progress))
 
-        progress(0.20, "Laboratoire : Factur-X")
-        checks.append(_guard_one("facturx", lambda: analyze_facturx(context)))
-
-        progress(0.34, "Laboratoire : 2D-Doc")
-        checks.append(_guard_one("two_d_doc", lambda: analyze_two_d_doc(context)))
-
-        progress(0.56, "Laboratoire : polices et objets")
-        checks.append(
-            _guard_one(
-                "fonts_hidden_objects",
-                lambda: analyze_fonts_and_hidden_objects(context),
+        if include_experimental:
+            progress(0.56, "Laboratoire : polices et objets")
+            checks.append(
+                _guard_one(
+                    "fonts_hidden_objects",
+                    lambda: analyze_fonts_and_hidden_objects(context),
+                )
             )
-        )
 
-        progress(0.72, "Laboratoire : historique complet")
-        checks.append(
-            _guard_one(
-                "all_revisions",
-                lambda: analyze_all_revisions(context),
+            progress(0.72, "Laboratoire : historique complet")
+            checks.append(
+                _guard_one(
+                    "all_revisions",
+                    lambda: analyze_all_revisions(context),
+                )
             )
-        )
         progress(1.0, "Laboratoire termine")
         return LaboratoryReport(schema_version="0.1-experimental", checks=tuple(checks))
     finally:
         pdfium_document.close()
+
+
+def analyze_authenticity_checks(
+    context: AnalysisContext,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> tuple[LaboratoryCheck, ...]:
+    """Run the cryptographic and structured controls shared with production scoring."""
+
+    def progress(value: float, label: str) -> None:
+        if progress_callback is not None:
+            progress_callback(value, label)
+
+    progress(0.03, "Contrôle des signatures électroniques")
+    checks: list[LaboratoryCheck] = list(
+        _guard_many(
+            ("pades", "post_signature"),
+            lambda: analyze_pdf_signatures(context),
+        )
+    )
+    progress(0.20, "Contrôle des factures électroniques")
+    checks.append(_guard_one("facturx", lambda: analyze_facturx(context)))
+    progress(0.34, "Contrôle des codes 2D-Doc")
+    checks.append(_guard_one("two_d_doc", lambda: analyze_two_d_doc(context)))
+    return tuple(checks)
 
 
 def _guard_one(code: str, operation: Callable[[], LaboratoryCheck]) -> LaboratoryCheck:
@@ -147,6 +165,7 @@ def _error_check(code: str, error: Exception) -> LaboratoryCheck:
 
 
 __all__ = [
+    "analyze_authenticity_checks",
     "analyze_ocr_laboratory",
     "analyze_pdf_laboratory",
 ]

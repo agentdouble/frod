@@ -28,11 +28,17 @@ from fraude_detector.detectors import (
     RevisionDiffDetector,
 )
 from fraude_detector.detectors.base import AnalysisContext, Detector
+from fraude_detector.document_authenticity import build_document_authenticity_result
 from fraude_detector.errors import AnalysisError
+from fraude_detector.laboratory import analyze_authenticity_checks
+from fraude_detector.laboratory.structured_consistency import (
+    add_extraction_consistency_checks,
+)
 from fraude_detector.models import (
     AnalysisReport,
     DetectorResult,
     DocumentInfo,
+    LaboratoryReport,
     OcrReport,
 )
 from fraude_detector.parallel_progress import ParallelProgress
@@ -149,6 +155,19 @@ class AnalysisPipeline:
             ocr_report = content_result.ocr_report if content_result is not None else None
             if content_result is not None:
                 detector_results_list.append(content_result.detector_result)
+            report_progress(0.855, "Contrôle des signatures et formats structurés")
+            authenticity_checks = LaboratoryReport(
+                schema_version="1.0",
+                checks=analyze_authenticity_checks(context),
+            )
+            authenticity_checks = add_extraction_consistency_checks(
+                authenticity_checks,
+                content_result.extraction if content_result is not None else None,
+                minimum_matches=self.config.structured_content_minimum_matches,
+            )
+            detector_results_list.append(
+                build_document_authenticity_result(authenticity_checks, self.config)
+            )
             detector_results = tuple(detector_results_list)
             report_progress(0.86, "Calcul du score")
             findings = tuple(
@@ -222,6 +241,7 @@ class AnalysisPipeline:
                 classification=content_result.classification if content_result else None,
                 extraction=content_result.extraction if content_result else None,
                 extraction_verification=content_result.verification if content_result else None,
+                _authenticity_checks=authenticity_checks,
             )
             self._write_report(report, destination / "report.json")
             report_progress(1.0, "Analyse terminee")

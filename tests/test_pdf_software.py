@@ -14,8 +14,8 @@ from fraude_detector.scoring import assess_risk
 @pytest.mark.parametrize(
     ("value", "category", "points"),
     [
-        ("ILovePDF", "online_pdf_service", 4.0),
-        ("PDF24 Creator 11.19", "online_pdf_service", 4.0),
+        ("ILovePDF", "online_pdf_service", 5.0),
+        ("PDF24 Creator 11.19", "online_pdf_service", 5.0),
         ("Adobe Photoshop 25.0", "visual_editor", 8.0),
         ("Canva", "design_tool", 5.0),
         ("Foxit PDF Editor", "pdf_editor", 3.0),
@@ -76,15 +76,15 @@ def test_pdf_detector_keeps_creator_and_producer_but_scores_only_the_strongest()
 
     finding = next(item for item in result.findings if item.code.startswith("PDF_SOFTWARE_"))
     assert finding.code == "PDF_SOFTWARE_ONLINE_PDF_SERVICE"
-    assert finding.risk_points == 4.0
+    assert finding.risk_points == 5.0
     assert finding.category == "metadata"
     assert finding.evidence["creator"] == "Microsoft Word"
     assert finding.evidence["producer"] == "ILovePDF"
     assert finding.evidence["scoring_policy"] == "highest_declared_software_category_only"
-    assert [item["risk_points"] for item in finding.evidence["software"]] == [0.0, 4.0]
+    assert [item["risk_points"] for item in finding.evidence["software"]] == [0.0, 5.0]
     assert "Creator : « Microsoft Word »" in finding.description
     assert "Producer : « ILovePDF »" in finding.description
-    assert assess_risk((finding,)).score == 4
+    assert assess_risk((finding,)).score == 5
     assert assess_risk((finding,)).level == "low"
 
 

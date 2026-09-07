@@ -128,10 +128,12 @@ CATEGORY_DESCRIPTIONS = {
 CATEGORY_DETECTORS = {
     "annotations": frozenset({"page_composition"}),
     "content_consistency": frozenset({"ocr_content"}),
-    "document_integrity": frozenset({"pdf_structure"}),
+    "document_integrity": frozenset({"pdf_structure", "document_authenticity"}),
     "metadata": frozenset({"pdf_structure"}),
     "page_composition": frozenset({"page_composition"}),
-    "provenance_integrity": frozenset({"image_provenance"}),
+    "provenance_integrity": frozenset(
+        {"image_provenance", "document_authenticity"}
+    ),
     "raster_forensics": frozenset({"raster_anomaly"}),
     "revision_history": frozenset({"pdf_structure"}),
     "revision_visual": frozenset({"revision_diff"}),
@@ -1081,7 +1083,7 @@ def _render_laboratory_synthesis(
         f"""
         <section class="laboratory-synthesis">
           <span>Synthèse de l'analyse</span>
-          <p>{_html(synthesis.document_summary.text)}</p>
+          <p>{_html(synthesis.text)}</p>
           <small>Résumé fondé uniquement sur les contrôles et informations affichés.</small>
         </section>
         """,
@@ -1142,12 +1144,12 @@ def _render_extraction_verification(
             )
         else:
             title = "Aucune contradiction concrète relevée"
-            detail = f"{verification.reviewed_targets} élément(s) contrôlé(s)."
+            detail = f"{verification.expected_targets} élément(s) contrôlé(s)."
     elif verification.status == "incomplete":
         title = "Vérification partielle"
         detail = (
-            f"{verification.reviewed_targets} élément(s) contrôlé(s) sur "
-            f"{verification.expected_targets}. L'extraction initiale n'a pas été modifiée."
+            "La vérification n'a pas pu couvrir toute l'extraction. "
+            "L'extraction initiale n'a pas été modifiée."
         )
     else:
         title = "Qualité de l'extraction à contrôler"

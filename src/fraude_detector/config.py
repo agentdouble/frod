@@ -23,11 +23,16 @@ class AnalysisConfig:
     ela_robust_z_threshold: float = 3.5
     ela_max_image_dimension: int = 2400
     ela_max_region_area_fraction: float = 0.25
-    pdf_metadata_online_service_points: float = 4.0
+    pdf_metadata_online_service_points: float = 5.0
     pdf_metadata_pdf_editor_points: float = 3.0
     pdf_metadata_design_tool_points: float = 5.0
     pdf_metadata_visual_editor_points: float = 8.0
     pdf_metadata_generative_tool_points: float = 8.0
+    invalid_signature_points: float = 20.0
+    post_signature_change_points: float = 20.0
+    structured_content_mismatch_points: float = 20.0
+    malformed_structured_content_points: float = 4.0
+    structured_content_minimum_matches: int = 2
     ai_max_images: int = 20
     ai_max_inventory_images: int = 100
     ai_analyze_pdf_images: bool = False
@@ -110,6 +115,17 @@ class AnalysisConfig:
         for name, points in provenance_points.items():
             if not 0 <= points <= 15:
                 raise ValueError(f"{name} must be between 0 and 15")
+        authenticity_points = {
+            "invalid_signature_points": self.invalid_signature_points,
+            "post_signature_change_points": self.post_signature_change_points,
+            "structured_content_mismatch_points": self.structured_content_mismatch_points,
+            "malformed_structured_content_points": self.malformed_structured_content_points,
+        }
+        for name, points in authenticity_points.items():
+            if not 0 <= points <= 30:
+                raise ValueError(f"{name} must be between 0 and 30")
+        if self.structured_content_minimum_matches < 1:
+            raise ValueError("structured_content_minimum_matches must be at least 1")
         if self.ai_max_images < 1:
             raise ValueError("ai_max_images must be at least 1")
         if self.ai_max_inventory_images < self.ai_max_images:

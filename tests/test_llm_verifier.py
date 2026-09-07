@@ -145,7 +145,6 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     ).verify(_ocr(), _extraction(), _classification())
 
     assert verification.status == "clean"
-    assert verification.reviewed_targets == 2
     assert verification.reviews == ()
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     assert "reasoning_effort" not in calls[0]["json"]
@@ -286,7 +285,6 @@ def test_empty_differential_output_means_all_targets_were_controlled(monkeypatch
 
     assert verification.status == "clean"
     assert verification.expected_targets == 2
-    assert verification.reviewed_targets == 2
 
 
 def test_verifier_receives_table_cells_for_semantic_validation(monkeypatch: Any) -> None:

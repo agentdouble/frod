@@ -30,7 +30,7 @@ from fraude_detector.structured_ocr import (
 )
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-08-26-v3"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-07-v4"
 EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-25-v2"
 
 FIELD_CODES = (
@@ -143,17 +143,6 @@ TABLE_ROW_ROLES = (
 )
 
 REGION_DISPOSITIONS = ("boilerplate", "unstructured", "unreadable")
-
-ADDITIONAL_FIELD_HINTS = (
-    "document_status",
-    "payment_terms",
-    "coverage_detail",
-    "claim_detail",
-    "medical_detail",
-    "banking_detail",
-    "regulatory_detail",
-    "other_material",
-)
 
 FIELD_CODE_GUIDANCE = {
     "person_name": "nom d'une personne explicitement identifiée",
@@ -400,6 +389,12 @@ class LLMDocumentExtractor:
         if not regions:
             return _empty_extraction(family, language, country)
 
+        model_regions = tuple(
+            region
+            for region in regions
+            if not _is_obvious_boilerplate(region.content)
+            and not _is_obvious_ocr_garbage(region.content)
+        )
         raw_results = [
             self._extract_chunk(
                 chunk,
@@ -409,7 +404,7 @@ class LLMDocumentExtractor:
                 country,
                 coverage_pass=False,
             )
-            for chunk in _chunk_regions(regions, self.max_input_chars)
+            for chunk in _chunk_regions(model_regions, self.max_input_chars)
         ]
         passes = 1
         combined = _combine_raw(raw_results)
@@ -537,9 +532,9 @@ Instruction propre à cette famille:
 {pass_instruction}
 
 Règles:
-0. Toutes les clés JSON, les identifiants canoniques, les valeurs d'énumération et
-   semantic_hint doivent être en anglais. raw_label, raw_value, les titres et en-têtes de tableaux
-   ainsi que leurs cellules doivent conserver la langue et la graphie observées dans le document.
+0. Toutes les clés JSON, les identifiants canoniques et les valeurs d'énumération doivent être en
+   anglais. raw_label, raw_value, les titres et en-têtes de tableaux ainsi que leurs cellules
+   doivent conserver la langue et la graphie observées dans le document.
 1. Comprends la fonction du document et les relations entre libellés, valeurs, sections et
    tableaux avant d'extraire. Retourne chaque information comparable dans facts avec un
    field_code et un role autorisés.
@@ -601,7 +596,6 @@ Définitions stables des field_code:
 Définitions stables des role:
 {role_guidance}
 
-semantic_hint autorisés pour additional_fields: {", ".join(ADDITIONAL_FIELD_HINTS)}
 semantic_type de tableau: {", ".join(TABLE_TYPES)}
 column_role de tableau: {", ".join(TABLE_COLUMN_ROLES)}
 row_role de tableau: {", ".join(TABLE_ROW_ROLES)}
@@ -656,16 +650,11 @@ def _response_format() -> dict[str, Any]:
                             "properties": {
                                 "raw_label": {"type": "string"},
                                 "raw_value": {"type": "string"},
-                                "semantic_hint": {
-                                    "type": ["string", "null"],
-                                    "enum": [*ADDITIONAL_FIELD_HINTS, None],
-                                },
                                 **source_fields,
                             },
                             "required": [
                                 "raw_label",
                                 "raw_value",
-                                "semantic_hint",
                                 "region_ids",
                             ],
                             "additionalProperties": False,
@@ -932,7 +921,6 @@ def _validated_additional(
             AdditionalExtractionField(
                 raw_label=raw_label,
                 raw_value=raw_value,
-                semantic_hint=_additional_field_hint(candidate.get("semantic_hint")),
                 page=_first_page(region_ids, region_by_id),
                 region_ids=region_ids,
             )
@@ -1083,7 +1071,12 @@ def _uncovered_region_ids(
     raw: _RawExtraction,
 ) -> set[str]:
     valid = {region.region_id for region in regions}
-    referenced = {region.region_id for region in regions if _is_obvious_boilerplate(region.content)}
+    referenced = {
+        region.region_id
+        for region in regions
+        if _is_obvious_boilerplate(region.content)
+        or _is_obvious_ocr_garbage(region.content)
+    }
     for item in (*raw.facts, *raw.additional_fields, *raw.tables):
         referenced.update(_raw_region_ids(item.get("region_ids")) & valid)
     for item in raw.dispositions:
@@ -1412,11 +1405,6 @@ def _empty_extraction(
         prompt_version=EXTRACTION_PROMPT_VERSION,
         vocabulary_version=EXTRACTION_VOCABULARY_VERSION,
     )
-
-
-def _additional_field_hint(value: object) -> str:
-    hint = _clean_text(value, maximum=100)
-    return hint if hint in ADDITIONAL_FIELD_HINTS else "other_material"
 
 
 def _is_obvious_boilerplate(value: str) -> bool:

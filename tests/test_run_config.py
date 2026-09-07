@@ -64,6 +64,12 @@ analysis:
     design_tool_points: 4
     visual_editor_points: 6
     generative_tool_points: 7
+  document_authenticity:
+    invalid_signature_points: 19
+    post_signature_change_points: 18
+    structured_content_mismatch_points: 17
+    malformed_structured_content_points: 3
+    minimum_visible_matches: 3
   ai_images:
     max_images: 10
     max_inventory_images: 50
@@ -139,6 +145,11 @@ laboratory:
     assert config.analysis.pdf_metadata_design_tool_points == 4
     assert config.analysis.pdf_metadata_visual_editor_points == 6
     assert config.analysis.pdf_metadata_generative_tool_points == 7
+    assert config.analysis.invalid_signature_points == 19
+    assert config.analysis.post_signature_change_points == 18
+    assert config.analysis.structured_content_mismatch_points == 17
+    assert config.analysis.malformed_structured_content_points == 3
+    assert config.analysis.structured_content_minimum_matches == 3
     assert config.analysis.ai_max_images == 10
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.analysis.ocr_enabled is True

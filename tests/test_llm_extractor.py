@@ -140,7 +140,7 @@ def test_extractor_preserves_raw_values_tables_and_complete_region_coverage(
     assert schema_properties["region_dispositions"]["type"] == "object"
     assert "famille: facture_recu" in calls[0]["json"]["messages"][1]["content"]
     assert "Toutes les clés JSON" in calls[0]["json"]["messages"][1]["content"]
-    assert "doivent être en anglais" in calls[0]["json"]["messages"][1]["content"]
+    assert "valeurs d'énumération doivent être en" in calls[0]["json"]["messages"][1]["content"]
     assert 'order="7"' in calls[0]["json"]["messages"][1]["content"]
     assert 'native_label="paragraph"' in calls[0]["json"]["messages"][1]["content"]
     assert 'bbox_2d="10,20,300,120"' in calls[0]["json"]["messages"][1]["content"]
@@ -211,7 +211,6 @@ def test_extractor_retries_only_regions_not_accounted_for(monkeypatch: Any) -> N
     assert extraction.passes == 2
     assert extraction.coverage.ratio == 1
     assert extraction.additional_fields[0].raw_value == "CHAMP_BETA"
-    assert extraction.additional_fields[0].semantic_hint == "other_material"
 
 
 def test_obvious_decorative_message_is_not_kept_as_additional_information(
@@ -240,7 +239,7 @@ def test_obvious_decorative_message_is_not_kept_as_additional_information(
         None,
     )
 
-    assert calls == 1
+    assert calls == 0
     assert extraction.additional_fields == ()
     assert extraction.coverage.boilerplate_regions == 1
     assert extraction.coverage.ratio == 1

@@ -199,7 +199,6 @@ def test_pdf_pipeline_exposes_classification_outside_artifacts(
         schema_version="0.1-experimental",
         status="clean",
         expected_targets=0,
-        reviewed_targets=0,
         reviews=(),
         omissions=(),
     )

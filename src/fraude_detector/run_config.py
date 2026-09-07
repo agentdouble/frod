@@ -198,7 +198,15 @@ def _load_analysis(
     section = _section(config, "analysis", source)
     _reject_unknown(
         section,
-        {"rendering", "limits", "composition", "ela", "pdf_metadata", "ai_images"},
+        {
+            "rendering",
+            "limits",
+            "composition",
+            "ela",
+            "pdf_metadata",
+            "document_authenticity",
+            "ai_images",
+        },
         source,
         "analysis",
     )
@@ -207,6 +215,12 @@ def _load_analysis(
     composition = _section(section, "composition", source, prefix="analysis")
     ela = _section(section, "ela", source, prefix="analysis")
     pdf_metadata = _section(section, "pdf_metadata", source, prefix="analysis")
+    document_authenticity = _section(
+        section,
+        "document_authenticity",
+        source,
+        prefix="analysis",
+    )
     ai_images = _section(section, "ai_images", source, prefix="analysis")
     ocr = _section(config, "ocr", source)
     classification = _section(config, "classification", source)
@@ -259,6 +273,18 @@ def _load_analysis(
         },
         source,
         "analysis.pdf_metadata",
+    )
+    _reject_unknown(
+        document_authenticity,
+        {
+            "invalid_signature_points",
+            "post_signature_change_points",
+            "structured_content_mismatch_points",
+            "malformed_structured_content_points",
+            "minimum_visible_matches",
+        },
+        source,
+        "analysis.document_authenticity",
     )
     _reject_unknown(
         ai_images,
@@ -609,7 +635,7 @@ def _load_analysis(
                 "analysis.ela.max_region_area_fraction",
             ),
             pdf_metadata_online_service_points=_number(
-                pdf_metadata.get("online_service_points", 4.0),
+                pdf_metadata.get("online_service_points", 5.0),
                 source,
                 "analysis.pdf_metadata.online_service_points",
             ),
@@ -632,6 +658,31 @@ def _load_analysis(
                 pdf_metadata.get("generative_tool_points", 8.0),
                 source,
                 "analysis.pdf_metadata.generative_tool_points",
+            ),
+            invalid_signature_points=_number(
+                document_authenticity.get("invalid_signature_points", 20.0),
+                source,
+                "analysis.document_authenticity.invalid_signature_points",
+            ),
+            post_signature_change_points=_number(
+                document_authenticity.get("post_signature_change_points", 20.0),
+                source,
+                "analysis.document_authenticity.post_signature_change_points",
+            ),
+            structured_content_mismatch_points=_number(
+                document_authenticity.get("structured_content_mismatch_points", 20.0),
+                source,
+                "analysis.document_authenticity.structured_content_mismatch_points",
+            ),
+            malformed_structured_content_points=_number(
+                document_authenticity.get("malformed_structured_content_points", 4.0),
+                source,
+                "analysis.document_authenticity.malformed_structured_content_points",
+            ),
+            structured_content_minimum_matches=_integer(
+                document_authenticity.get("minimum_visible_matches", 2),
+                source,
+                "analysis.document_authenticity.minimum_visible_matches",
             ),
             ai_max_images=_integer(
                 ai_images.get("max_images", 20),

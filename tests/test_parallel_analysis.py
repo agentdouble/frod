@@ -71,6 +71,7 @@ def test_pdf_content_and_technical_branches_run_concurrently(
     assert [detector.name for detector in report.detectors] == [
         "barrier_detector",
         "ocr_content",
+        "document_authenticity",
     ]
     assert json.loads((output / "report.json").read_text(encoding="utf-8"))["schema_version"]
 

@@ -20,11 +20,15 @@ from uuid import uuid4
 
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.content_analysis import ContentAnalysisResult, analyze_recognized_content
+from fraude_detector.document_authenticity import build_document_authenticity_result
 from fraude_detector.gapl import best_available_device, create_gapl_adapter
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
 from fraude_detector.laboratory import (
     analyze_ocr_laboratory,
     analyze_pdf_laboratory,
+)
+from fraude_detector.laboratory.structured_consistency import (
+    add_extraction_consistency_checks,
 )
 from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
 from fraude_detector.llm_synthesizer import summarize_analysis
@@ -42,6 +46,7 @@ from fraude_detector.models import (
 )
 from fraude_detector.pipeline import AnalysisPipeline
 from fraude_detector.run_config import RunConfig
+from fraude_detector.scoring import assess_risk
 
 ProgressCallback = Callable[[float, str], None]
 Report = AnalysisReport | ImageAnalysisReport
@@ -290,10 +295,33 @@ class AnalysisService:
             semantic = semantic_future.result()
             laboratory = laboratory_future.result()
 
+        laboratory = add_extraction_consistency_checks(
+            laboratory,
+            semantic.extraction if semantic is not None else None,
+            minimum_matches=self.config.analysis.structured_content_minimum_matches,
+        )
+
         if cancel_event.is_set():
             raise RuntimeError("Analyse IA annulée")
+        detectors = report.detectors
+        findings = report.findings
+        if isinstance(report, AnalysisReport):
+            authenticity = build_document_authenticity_result(
+                laboratory,
+                self.config.analysis,
+            )
+            detectors = (
+                *(item for item in detectors if item.name != authenticity.name),
+                authenticity,
+            )
+            findings = tuple(
+                finding for detector in detectors for finding in detector.findings
+            )
         completed_report = replace(
             report,
+            assessment=assess_risk(findings),
+            detectors=detectors,
+            findings=findings,
             classification=semantic.classification if semantic is not None else None,
             extraction=semantic.extraction if semantic is not None else None,
             extraction_verification=semantic.verification if semantic is not None else None,
@@ -348,16 +376,21 @@ class AnalysisService:
         if cancel_event.is_set():
             return _empty_laboratory_report()
         if isinstance(report, AnalysisReport):
-            laboratory = (
-                analyze_pdf_laboratory(
+            authenticity = report._authenticity_checks or _empty_laboratory_report()
+            if self.config.laboratory.pdf_enabled:
+                experiments = analyze_pdf_laboratory(
                     source_path,
                     output_dir,
                     config=self.config.analysis,
+                    include_authenticity=False,
                     progress_callback=progress_callback,
                 )
-                if self.config.laboratory.pdf_enabled
-                else _empty_laboratory_report()
-            )
+                laboratory = LaboratoryReport(
+                    schema_version="1.0",
+                    checks=(*authenticity.checks, *experiments.checks),
+                )
+            else:
+                laboratory = authenticity
         else:
             laboratory = _empty_laboratory_report()
         progress_callback(0.95, "Contrôles expérimentaux terminés")

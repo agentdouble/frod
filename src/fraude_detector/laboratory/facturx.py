@@ -119,6 +119,7 @@ def analyze_facturx(context: AnalysisContext) -> LaboratoryCheck:
                     "flavor": flavor,
                     "level": level,
                     "xml_size_bytes": len(content),
+                    "structured_fields": _facturx_fields(root),
                 },
             )
         )
@@ -150,6 +151,43 @@ def analyze_facturx(context: AnalysisContext) -> LaboratoryCheck:
         observations=tuple(observations),
         limitations=(
             "La validation XSD est locale; le controle Schematron distant est desactive.",
-            "Sans OCR, le laboratoire ne compare pas encore les montants du XML au rendu PDF.",
+            "La comparaison avec le rendu exige plusieurs champs témoins retrouvés par l'OCR; "
+            "sinon aucune divergence n'est affirmée.",
         ),
     )
+
+
+def _facturx_fields(root: etree._Element) -> dict[str, str]:
+    """Extract a small set of values expected in both XML and visible invoice."""
+
+    paths = {
+        "invoice_number": (
+            "string((//*[local-name()='ExchangedDocument']/*[local-name()='ID'])[1])"
+        ),
+        "issue_date": (
+            "string((//*[local-name()='ExchangedDocument']//*[local-name()='IssueDateTime']"
+            "//*[local-name()='DateTimeString'])[1])"
+        ),
+        "seller_name": (
+            "string((//*[local-name()='SellerTradeParty']/*[local-name()='Name'])[1])"
+        ),
+        "buyer_name": (
+            "string((//*[local-name()='BuyerTradeParty']/*[local-name()='Name'])[1])"
+        ),
+        "grand_total": (
+            "string((//*[local-name()='SpecifiedTradeSettlementHeaderMonetarySummation']"
+            "/*[local-name()='GrandTotalAmount'])[1])"
+        ),
+        "due_amount": (
+            "string((//*[local-name()='SpecifiedTradeSettlementHeaderMonetarySummation']"
+            "/*[local-name()='DuePayableAmount'])[1])"
+        ),
+        "tax_total": "string((//*[local-name()='TaxTotalAmount'])[1])",
+        "iban": "string((//*[local-name()='IBANID'])[1])",
+    }
+    fields: dict[str, str] = {}
+    for name, xpath in paths.items():
+        value = " ".join(str(root.xpath(xpath)).split())
+        if value:
+            fields[name] = value
+    return fields

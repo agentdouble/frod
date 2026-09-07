@@ -106,10 +106,7 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
         assessment_label="Revue manuelle nécessaire",
     )
 
-    assert result.document_summary.text.startswith("Une revue manuelle est nécessaire")
-    assert result.review_summary.text == ""
-    assert result.highlights == ()
-    assert result.document_summary.evidence_ids
+    assert result.text.startswith("Une revue manuelle est nécessaire")
     assert calls[0]["url"] == "http://minimax.internal:8030/v1/chat/completions"
     payload = calls[0]["json"]
     assert payload["max_tokens"] == 32_768
@@ -119,9 +116,9 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     assert "ne décides jamais" in payload["messages"][0]["content"]
     assert "sans JSON" in payload["messages"][0]["content"]
     assert "ne cite jamais le score numérique" in payload["messages"][1]["content"]
-    assert "anomalies déterminantes" in payload["messages"][1]["content"]
-    assert "maximum absolu de 120 mots" in payload["messages"][1]["content"]
-    assert "ne dis jamais qu'une revue est inutile" in payload["messages"][1]["content"]
+    assert "indices retenus dans le score" in payload["messages"][1]["content"]
+    assert "sans dépasser 180 mots" in payload["messages"][1]["content"]
+    assert "Ne commence pas systématiquement" in payload["messages"][1]["content"]
     assert "Score global calculé" not in payload["messages"][1]["content"]
     assert "pays=LU" not in payload["messages"][1]["content"]
     assert "Aucune signature électronique" not in payload["messages"][1]["content"]
@@ -156,7 +153,6 @@ def test_synthesis_excludes_extraction_quality_and_masks_exact_signal_values(
         schema_version="0.4-experimental",
         status="attention",
         expected_targets=1,
-        reviewed_targets=1,
         reviews=(
             ExtractionReview(
                 target_id="fact-0001",
@@ -184,7 +180,7 @@ def test_synthesis_excludes_extraction_quality_and_masks_exact_signal_values(
     assert "LU280019400644750000" not in prompt
     assert "2.500,00" not in prompt
     assert "mauvaise colonne" not in prompt
-    assert "qualité des données" in prompt
+    assert "Certaines informations n'ont pas pu être extraites" in prompt
 
 
 def test_synthesis_keeps_the_model_note_without_imposing_sections(monkeypatch: Any) -> None:
@@ -207,11 +203,10 @@ def test_synthesis_keeps_the_model_note_without_imposing_sections(monkeypatch: A
         config=AnalysisConfig(synthesis_enabled=True),
     )
 
-    assert result.document_summary.text == (
+    assert result.text == (
         "Ce document contient un relevé d'opérations. "
         "Un logiciel d'édition est mentionné et demande une revue ciblée."
     )
-    assert result.review_summary.text == ""
 
 
 @pytest.mark.parametrize(
@@ -300,5 +295,5 @@ def test_low_risk_context_never_says_that_review_is_unnecessary(monkeypatch: Any
 
     prompt = calls[0]["messages"][1]["content"]
     assert "Pas de revue automatique" not in prompt
-    assert "Aucun indice prioritaire" in prompt
-    assert "ne valide pas le document" in result.document_summary.text
+    assert "Aucun indice particulier" in prompt
+    assert "ne valide pas le document" in result.text

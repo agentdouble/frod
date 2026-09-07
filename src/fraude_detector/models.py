@@ -138,7 +138,6 @@ class AdditionalExtractionField:
 
     raw_label: str
     raw_value: str
-    semantic_hint: str | None
     page: int | None
     region_ids: tuple[str, ...] = ()
     corrected_value: str | None = None
@@ -235,7 +234,6 @@ class ExtractionVerification:
     schema_version: str
     status: VerificationStatus
     expected_targets: int
-    reviewed_targets: int
     reviews: tuple[ExtractionReview, ...]
     omissions: tuple[ExtractionOmission, ...]
     limitations: tuple[str, ...] = ()
@@ -246,21 +244,11 @@ class ExtractionVerification:
 
 
 @dataclass(frozen=True, slots=True)
-class SynthesisStatement:
-    """One short synthesis statement grounded in known evidence identifiers."""
-
-    text: str
-    evidence_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class AnalysisSynthesis:
     """Concise, non-decisional summary generated after all analysis passes."""
 
     schema_version: str
-    document_summary: SynthesisStatement
-    review_summary: SynthesisStatement
-    highlights: tuple[SynthesisStatement, ...]
+    text: str
     prompt_version: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
@@ -280,9 +268,16 @@ class AnalysisReport:
     classification: DocumentClassification | None = None
     extraction: DocumentExtraction | None = None
     extraction_verification: ExtractionVerification | None = None
+    _authenticity_checks: LaboratoryReport | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        result.pop("_authenticity_checks", None)
+        return _without_repeated_detector_findings(result)
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +295,7 @@ class ImageAnalysisReport:
     extraction_verification: ExtractionVerification | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _without_repeated_detector_findings(asdict(self))
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,3 +350,12 @@ class OcrReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _without_repeated_detector_findings(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep findings once at report level instead of duplicating them per detector."""
+
+    for detector in result.get("detectors", ()):
+        if isinstance(detector, dict):
+            detector.pop("findings", None)
+    return result

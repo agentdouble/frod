@@ -18,6 +18,7 @@ from reportlab.pdfgen import canvas
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.laboratory import analyze_pdf_laboratory
 from fraude_detector.laboratory.two_d_doc import _verify_payload
+from fraude_detector.pipeline import AnalysisPipeline
 
 
 def test_laboratory_compares_every_retained_revision(tmp_path: Path) -> None:
@@ -63,6 +64,15 @@ def test_named_but_malformed_facturx_attachment_is_reported(tmp_path: Path) -> N
     assert [item.code for item in check.observations] == ["FACTURX_XML_MALFORMED"]
     assert check.observations[0].strength == "moderate"
 
+    production = AnalysisPipeline(config=AnalysisConfig(max_pages=1)).analyze(
+        pdf_path,
+        tmp_path / "production-output",
+    )
+    finding = next(
+        item for item in production.findings if item.code == "FACTURX_XML_MALFORMED"
+    )
+    assert finding.risk_points == 4
+
 
 def test_self_signed_pdf_signature_is_intact_but_not_locally_trusted(
     tmp_path: Path,
@@ -106,6 +116,17 @@ def test_visible_change_after_signature_is_reported_as_strong(
     assert check.state == "attention"
     assert check.observations[0].code == "PDF_SUSPICIOUS_POST_SIGNATURE_CHANGE"
     assert check.observations[0].strength == "strong"
+
+    production = AnalysisPipeline(config=AnalysisConfig(max_pages=1)).analyze(
+        modified_path,
+        tmp_path / "modified-production-output",
+    )
+    finding = next(
+        item
+        for item in production.findings
+        if item.code == "PDF_SUSPICIOUS_POST_SIGNATURE_CHANGE"
+    )
+    assert finding.risk_points == 20
 
 
 def test_rare_numeric_font_and_unexplained_hidden_text_are_weak_signals(
