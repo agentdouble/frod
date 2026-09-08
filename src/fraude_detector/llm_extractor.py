@@ -1242,16 +1242,34 @@ def _normalize_date(
     language: str | None = None,
     country: str | None = None,
 ) -> tuple[str | None, NormalizationStatus]:
-    match = re.search(r"\b(\d{4})[-/.,](\d{1,2})[-/.,](\d{1,2})\b", raw_value)
-    if match:
-        year, month, day = map(int, match.groups())
-        if normalized := _valid_iso_date(year, month, day):
-            return normalized, "normalized"
-    match = re.search(r"\b(\d{1,2})[-/.,](\d{1,2})[-/.,](\d{2}|\d{4})\b", raw_value)
-    if not match:
+    boundary_start = r"(?<![\d/.,-])"
+    boundary_end = r"(?!\d|[/,-]|\.\d)"
+    iso_pattern = re.compile(
+        boundary_start + r"(\d{4})([-/.,])(\d{1,2})\2(\d{1,2})" + boundary_end
+    )
+    local_pattern = re.compile(
+        boundary_start + r"(\d{1,2})([-/.,])(\d{1,2})\2(\d{2}|\d{4})" + boundary_end
+    )
+    candidates = [
+        *(("iso", match) for match in iso_pattern.finditer(raw_value)),
+        *(("local", match) for match in local_pattern.finditer(raw_value)),
+    ]
+    if not candidates:
         return None, "raw_only"
-    first, second = map(int, match.groups()[:2])
-    year = _four_digit_year(match.group(3))
+    if len(candidates) > 1:
+        return None, "ambiguous"
+
+    format_name, match = candidates[0]
+    if format_name == "iso":
+        year = int(match.group(1))
+        month = int(match.group(3))
+        day = int(match.group(4))
+        normalized = _valid_iso_date(year, month, day)
+        return (normalized, "normalized") if normalized else (None, "raw_only")
+
+    first = int(match.group(1))
+    second = int(match.group(3))
+    year = _four_digit_year(match.group(4))
     if first > 12 and 1 <= second <= 12:
         normalized = _valid_iso_date(year, second, first)
         return (normalized, "normalized") if normalized else (None, "raw_only")

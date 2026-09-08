@@ -512,6 +512,24 @@ def test_short_year_dates_use_locale_only_when_it_resolves_the_order() -> None:
     )
 
 
+def test_corrupted_or_compound_date_is_never_reconstructed_from_a_fragment() -> None:
+    assert normalize_extracted_value("date", "20,7,20.93", "fr", "LU") == (
+        None,
+        "raw_only",
+    )
+    assert normalize_extracted_value(
+        "date", "Du 20/07/23 au 21/07/23", "fr", "LU"
+    ) == (None, "ambiguous")
+    assert normalize_extracted_value("date", "Date : 20/07/23.", "fr", "LU") == (
+        "2023-07-20",
+        "normalized",
+    )
+    assert normalize_extracted_value("date", "20/07.2023", "fr", "LU") == (
+        None,
+        "raw_only",
+    )
+
+
 def test_iban_label_and_common_ocr_misread_are_removed_from_normalized_value() -> None:
     expected = ("LU280019400644750000", "normalized")
 
