@@ -94,7 +94,7 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert "Indices forts de modification" not in markdown
     assert "Plusieurs familles de signaux indépendantes" not in markdown
     assert "indicator-step danger" in sequence
-    assert "Signal fort" in sequence
+    assert "Critique" in sequence
     assert "Aucun signal détecté" in sequence
     assert "Non évalué" in sequence
     assert "--risk-value:91.7%" in sequence
@@ -166,9 +166,8 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
     assert app.segmented_control[0].value == "Général"
     assert not app.expander
     assert "Zones de texte reconnues - page 1" in app.selectbox[0].options
-    assert "Contrôles effectués" in markdown
-    assert "Qualité du texte reconnu" in markdown
-    assert "Cohérence des dates" in markdown
+    assert "Contrôles effectués" not in markdown
+    assert "Qualité du texte reconnu" not in markdown
 
 
 def test_precomputed_ocr_demo_runs_without_source_document(
@@ -201,10 +200,11 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert "--score-duration:0.45s" in markdown
     assert "100.000% { --animated-score:30; }" in markdown
     assert "Cohérence du contenu" in markdown
-    assert "Identifiants reconnus" in markdown
+    assert "Éléments reconnus" in markdown
     assert "Validité des identifiants" not in markdown
     assert "Cohérence des montants" not in markdown
-    assert "Le contrôle a relevé des écarts" in markdown
+    assert "BIC / SWIFT à vérifier" in markdown
+    assert "ne respecte pas le format BIC" in markdown
     assert "BIC / SWIFT" in markdown
     assert "Referentiels bancaires de pays differents" not in markdown
     assert "4111 1111 1111 1111" in markdown
@@ -355,7 +355,9 @@ def test_business_ui_contains_no_json_renderer() -> None:
         source.index("def _render_document_view") : source.index("def _render_review_summary")
     ]
     laboratory_view = source[
-        source.index("def _render_extraction_laboratory") : source.index("LAB_STATE_LABELS")
+        source.index("def _render_extraction_laboratory") : source.index(
+            "def _render_risk_indicators"
+        )
     ]
     report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
 
@@ -445,7 +447,7 @@ def test_business_ui_keeps_structural_component_styles() -> None:
     assert "grid-template-columns: 32px minmax(0, 1fr) 58px;" in styles
     indicator_card = _css_rule(styles, ".indicator-queue > .indicator-step")
     assert "margin: 0;" in indicator_card
-    assert "padding: .55rem .85rem;" in indicator_card
+    assert "padding: .42rem .85rem;" in indicator_card
     assert "font-variant-numeric: tabular-nums;" in styles
     assert ".view-guidance" not in styles
 

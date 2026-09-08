@@ -75,21 +75,21 @@ LOCAL_OCR_DEMO_DOCUMENTS = {
 
 LEVEL_STYLE = {
     "low": {
-        "label": "Faible",
+        "label": "Risque modéré",
         "tone": "low",
         "color": "#35d07f",
         "background": "#062d24",
         "border": "#10b981",
     },
     "review": {
-        "label": "Revue",
+        "label": "Risque important",
         "tone": "review",
         "color": "#f4b942",
         "background": "#3b2604",
         "border": "#f59e0b",
     },
     "high": {
-        "label": "Élevé",
+        "label": "Risque critique",
         "tone": "high",
         "color": "#ff6b6b",
         "background": "#3c0912",
@@ -703,6 +703,7 @@ def _render_report(
         diagnostics,
         laboratory,
         represented_findings=tuple((*scored, *diagnostics)),
+        extraction=report.extraction,
     )
 
 
@@ -766,7 +767,7 @@ def _render_ocr_demo_report(
 
     scored = [finding] if finding is not None and finding.risk_points > 0 else []
     diagnostics = [finding] if finding is not None and finding.risk_points == 0 else []
-    _render_review_summary(scored, diagnostics, laboratory)
+    _render_review_summary(scored, diagnostics, laboratory, extraction=extraction)
 
 
 def _read_ocr_layout_images(
@@ -1240,23 +1241,6 @@ def _render_extraction_verification(
         )
 
 
-LAB_STATE_LABELS = {
-    "clear": "Conforme",
-    "attention": "À examiner",
-    "detected": "Élément détecté",
-    "indeterminate": "Indéterminé",
-    "not_applicable": "Non applicable",
-    "error": "Contrôle interrompu",
-}
-
-LAB_STRENGTH_LABELS = {
-    "strong": "Indice fort",
-    "moderate": "Indice modéré",
-    "weak": "Indice faible",
-    "informational": "Information",
-}
-
-
 def _render_risk_indicators(
     findings: tuple[Finding, ...],
     detectors: tuple[DetectorResult, ...],
@@ -1269,8 +1253,8 @@ def _render_risk_indicators(
     for index, indicator in enumerate(indicators, start=1):
         label = _html(indicator.label)
         tooltip = _html(CATEGORY_DESCRIPTIONS.get(indicator.category, ""))
-        points = f"{indicator.points:g}"
-        maximum = f"{indicator.maximum:g}"
+        points = str(round(indicator.points))
+        maximum = str(round(indicator.maximum))
         icon = _indicator_icon(indicator.tone)
         delay_seconds = index * INDICATOR_STEP_SECONDS
         rows.append(
@@ -1449,11 +1433,11 @@ def _tone_for_ratio(percentage: float) -> str:
 
 def _risk_state_for_ratio(percentage: float) -> str:
     if percentage >= 75:
-        return "Signal fort"
+        return "Critique"
     if percentage >= 40:
-        return "Signal modéré"
+        return "Important"
     if percentage > 0:
-        return "Signal faible"
+        return "Modéré"
     return "Aucun signal détecté"
 
 
@@ -1518,7 +1502,7 @@ def _render_document_view(
 
 
 def _render_review_focus(scored: list[Finding]) -> None:
-    grouped_scored = _group_findings(scored)
+    grouped_scored = _group_findings_by_category(scored)
     explanation = (
         "Ces éléments ont contribué à l'indice de vigilance. Ils sont à comparer "
         "directement avec le document."
@@ -1535,8 +1519,8 @@ def _render_review_focus(scored: list[Finding]) -> None:
         unsafe_allow_html=True,
     )
     if grouped_scored:
-        for finding, occurrences in grouped_scored:
-            _finding_card(finding, occurrences=occurrences)
+        for category, findings in grouped_scored:
+            _family_finding_card(category, findings)
         return
 
     st.markdown(
@@ -1555,50 +1539,44 @@ def _render_review_details(
     laboratory: LaboratoryReport | None,
     *,
     represented_findings: tuple[Finding, ...] = (),
+    extraction: DocumentExtraction | None = None,
 ) -> None:
-    has_laboratory_details = laboratory is not None and bool(laboratory.checks)
-    if not diagnostics and not has_laboratory_details:
+    del diagnostics
+    cards = _recognized_element_cards(
+        laboratory,
+        extraction=extraction,
+        findings=represented_findings,
+    )
+    if not cards:
         return
     st.markdown(
-        '<h2 class="workspace-title analysis-details-title">Détails des contrôles</h2>',
+        """
+        <header class="recognized-elements-heading">
+          <h2>Éléments reconnus</h2>
+          <p>Informations utiles lues dans le document et disponibles pour la vérification.</p>
+        </header>
+        <section class="recognized-elements">
+        """
+        + "".join(cards)
+        + "</section>",
         unsafe_allow_html=True,
     )
-    if diagnostics:
-        software_provenance = [
-            finding for finding in diagnostics if finding.code.startswith("PDF_SOFTWARE_")
-        ]
-        for finding, occurrences in _group_findings(software_provenance):
-            _finding_card(finding, diagnostic=True, occurrences=occurrences)
-
-    represented_codes = _represented_signal_codes(represented_findings)
-    _render_ocr_field_cards(laboratory)
-    _render_attention_observations(laboratory, excluded_codes=represented_codes)
-    _render_control_matrix(laboratory, hide_active=True)
 
 
 def _render_review_summary(
     scored: list[Finding],
     diagnostics: list[Finding],
     laboratory: LaboratoryReport | None,
+    *,
+    extraction: DocumentExtraction | None = None,
 ) -> None:
     _render_review_focus(scored)
     _render_review_details(
         diagnostics,
         laboratory,
         represented_findings=tuple((*scored, *diagnostics)),
+        extraction=extraction,
     )
-
-
-def _represented_signal_codes(findings: tuple[Finding, ...]) -> frozenset[str]:
-    codes = {finding.code for finding in findings}
-    for finding in findings:
-        observations = finding.evidence.get("observations", ())
-        if not isinstance(observations, (list, tuple)):
-            continue
-        for observation in observations:
-            if isinstance(observation, dict) and observation.get("code"):
-                codes.add(str(observation["code"]))
-    return frozenset(codes)
 
 
 def _render_classification(classification: DocumentClassification | None) -> None:
@@ -1676,128 +1654,196 @@ def _render_document_type(classification: DocumentClassification | None) -> None
     )
 
 
-def _group_findings(findings: list[Finding]) -> list[tuple[Finding, int]]:
-    groups: dict[tuple[str, str, str], list[Finding]] = {}
+def _group_findings_by_category(
+    findings: list[Finding],
+) -> list[tuple[str, tuple[Finding, ...]]]:
+    groups: dict[str, list[Finding]] = {}
     for finding in findings:
-        key = (finding.category, finding.code, finding.title)
-        groups.setdefault(key, []).append(finding)
-    grouped = [
-        (
-            max(items, key=lambda item: (item.risk_points, item.confidence)),
-            len(items),
-        )
-        for items in groups.values()
-    ]
+        groups.setdefault(finding.category, []).append(finding)
+    grouped = [(category, tuple(items)) for category, items in groups.items()]
     return sorted(
         grouped,
-        key=lambda item: (item[0].risk_points, item[0].confidence),
+        key=lambda item: _family_score(item[0], item[1]),
         reverse=True,
     )
 
 
-def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
-    if laboratory is None:
-        return
-    fields = [
-        observation
-        for check in laboratory.checks
-        for observation in check.observations
-        if observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
-    ]
-    if not fields:
-        return
-
-    cards = []
-    for observation in fields:
-        evidence = observation.evidence
-        value = evidence.get("value")
-        if value is None and evidence.get("values"):
-            value = " / ".join(str(item) for item in evidence["values"])
-        value = value or "Valeur complète indisponible"
-        value = _format_identifier_value(observation.code, str(value))
-        state_label = LAB_STATE_LABELS[observation.state]
-        cards.append(
-            f"""
-            <article class="evidence-card extracted-field {observation.state}">
-              <div><span>{_html(_sentence_case(observation.title))}</span><strong>{_html(value)}</strong></div>
-              <b>{_html(state_label)}</b>
-              <p>{_html(observation.summary)}</p>
-            </article>
-            """
+_RECOGNIZED_FIELD_PRIORITY = {
+    code: index
+    for index, code in enumerate(
+        (
+            "person_name",
+            "organization_name",
+            "invoice_number",
+            "contract_number",
+            "claim_number",
+            "document_number",
+            "account_number",
+            "tax_identifier",
+            "professional_identifier",
+            "registration_identifier",
+            "iban",
+            "bic",
+            "payment_card_number",
+            "date",
+            "date_period",
+            "monetary_amount",
+            "address",
+            "service_description",
+            "product_description",
         )
-    st.markdown('<h3 class="subsection-title">Identifiants reconnus</h3>', unsafe_allow_html=True)
-    st.markdown(
-        '<section class="extracted-fields">'
-        + "".join(card.strip() for card in cards)
-        + "</section>",
-        unsafe_allow_html=True,
     )
+}
+
+_IDENTIFIER_LABELS = {
+    "OCR_CARD_": "Numéro de carte",
+    "OCR_IBAN_": "IBAN",
+    "OCR_BIC_": "BIC / SWIFT",
+    "OCR_CKYC_": "Identifiant CKYC",
+    "OCR_MICR_": "Code MICR",
+    "OCR_SIREN_": "SIREN",
+    "OCR_SIRET_": "SIRET",
+    "OCR_EU_VAT_": "Numéro de TVA",
+    "OCR_RPPS_": "Numéro RPPS",
+    "OCR_FINESS_": "Numéro FINESS",
+}
 
 
-def _render_attention_observations(
+def _recognized_element_cards(
     laboratory: LaboratoryReport | None,
     *,
-    excluded_codes: frozenset[str] = frozenset(),
-) -> None:
-    if laboratory is None:
-        return
-    observations = [
-        observation
-        for check in laboratory.checks
-        for observation in check.observations
-        if (
-            observation.state in {"attention", "error"}
-            or (observation.state == "detected" and observation.strength != "informational")
-        )
-        and not observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
-        and observation.code not in excluded_codes
-    ]
-    if not observations:
-        return
-    st.markdown('<h3 class="subsection-title">Points de contrôle</h3>', unsafe_allow_html=True)
-    for observation in observations:
-        strength = LAB_STRENGTH_LABELS[observation.strength]
-        location = f"Page {observation.page}" if observation.page is not None else "Document"
-        st.markdown(
-            f"""
-            <article class="evidence-card business-observation {observation.state}">
-              <div><strong>{_html(_business_observation_title(observation))}</strong><span>{_html(location)}</span></div>
-              <p>{_html(_business_text(observation.summary))}</p>
-              <small>{_html(strength)} - {_html(_business_text(observation.explanation))}</small>
-            </article>
-            """,
-            unsafe_allow_html=True,
-        )
+    extraction: DocumentExtraction | None,
+    findings: tuple[Finding, ...],
+) -> list[str]:
+    cards: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    covered_field_codes: set[str] = set()
 
+    for finding in findings:
+        if not finding.code.startswith("PDF_SOFTWARE_"):
+            continue
+        software_entries = finding.evidence.get("software", ())
+        if not isinstance(software_entries, (list, tuple)):
+            continue
+        for entry in software_entries:
+            if not isinstance(entry, dict) or not entry.get("value"):
+                continue
+            field = str(entry.get("field", "")).casefold()
+            label = {
+                "creator": "Logiciel créateur",
+                "producer": "Logiciel de production PDF",
+            }.get(field, "Logiciel déclaré")
+            points = float(entry.get("risk_points", 0) or 0)
+            cards.append(
+                _recognized_element_card(
+                    label=label,
+                    value=str(entry["value"]),
+                    status="À vérifier" if points > 0 else "Reconnu",
+                    state="attention" if points > 0 else "clear",
+                )
+            )
 
-def _render_control_matrix(
-    laboratory: LaboratoryReport | None,
-    *,
-    hide_active: bool = False,
-) -> None:
-    if laboratory is None or not laboratory.checks:
-        return
-    cards = []
-    for check in laboratory.checks:
-        if check.state == "not_applicable":
+    if laboratory is not None:
+        observations = (
+            observation
+            for check in laboratory.checks
+            for observation in check.observations
+            if observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
+        )
+        for observation in observations:
+            value = observation.evidence.get("value")
+            if value is None and observation.evidence.get("values"):
+                value = " / ".join(str(item) for item in observation.evidence["values"])
+            if not value:
+                continue
+            label, field_code = _identifier_label_and_field(observation.code)
+            formatted = _format_identifier_value(observation.code, str(value))
+            key = (label, re.sub(r"\W", "", formatted).casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            if field_code:
+                covered_field_codes.add(field_code)
+            status = {
+                "clear": "Format valide",
+                "attention": "Format à vérifier",
+                "indeterminate": "Non vérifiable",
+                "error": "Lecture incomplète",
+            }.get(observation.state, "Reconnu")
+            state = "clear" if observation.state == "clear" else "attention"
+            cards.append(
+                _recognized_element_card(
+                    label=label,
+                    value=formatted,
+                    status=status,
+                    state=state,
+                )
+            )
+
+    if extraction is None:
+        return cards
+
+    ignored_roles = {"transaction", "line_item", "debit", "credit", "unit_price"}
+    candidates = sorted(
+        (
+            fact
+            for fact in extraction.facts
+            if fact.field_code in _RECOGNIZED_FIELD_PRIORITY
+            and fact.field_code not in covered_field_codes
+            and fact.role not in ignored_roles
+        ),
+        key=lambda fact: (_RECOGNIZED_FIELD_PRIORITY[fact.field_code], fact.page or 0),
+    )
+    for fact in candidates:
+        value = fact.corrected_value or fact.raw_value
+        if not value:
             continue
-        if hide_active and check.state in {"attention", "detected"}:
+        key = (fact.field_code, re.sub(r"\W", "", str(value)).casefold())
+        if key in seen:
             continue
+        seen.add(key)
+        label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
+        role = EXTRACTION_ROLE_LABELS.get(fact.role)
+        if role and fact.role not in {"document", "other"}:
+            label = f"{label} · {role}"
+        normalized = fact.normalization_status == "normalized"
         cards.append(
-            f"""
-            <article class="evidence-card control-status {check.state}">
-              <span>{_html(LAB_STATE_LABELS[check.state])}</span>
-              <strong>{_html(_business_check_title(check.code, check.title))}</strong>
-              <p>{_html(_business_text(check.summary))}</p>
-            </article>
-            """
+            _recognized_element_card(
+                label=label,
+                value=str(value),
+                status="Reconnu" if normalized else "Lecture à confirmer",
+                state="clear" if normalized else "attention",
+            )
         )
-    if not cards:
-        return
-    st.markdown('<h3 class="subsection-title">Contrôles effectués</h3>', unsafe_allow_html=True)
-    st.markdown(
-        '<section class="control-matrix">' + "".join(card.strip() for card in cards) + "</section>",
-        unsafe_allow_html=True,
+        if len(cards) >= 12:
+            break
+    return cards
+
+
+def _identifier_label_and_field(code: str) -> tuple[str, str | None]:
+    field_codes = {
+        "OCR_CARD_": "payment_card_number",
+        "OCR_IBAN_": "iban",
+        "OCR_BIC_": "bic",
+        "OCR_SIREN_": "registration_identifier",
+        "OCR_SIRET_": "registration_identifier",
+        "OCR_EU_VAT_": "tax_identifier",
+        "OCR_RPPS_": "professional_identifier",
+        "OCR_FINESS_": "professional_identifier",
+        "OCR_CKYC_": "other_identifier",
+        "OCR_MICR_": "other_identifier",
+    }
+    for prefix, label in _IDENTIFIER_LABELS.items():
+        if code.startswith(prefix):
+            return label, field_codes.get(prefix)
+    return "Identifiant", None
+
+
+def _recognized_element_card(*, label: str, value: str, status: str, state: str) -> str:
+    return (
+        f'<article class="evidence-card recognized-element {state}">'
+        f'<span>{_html(label)}</span><strong>{_html(value)}</strong>'
+        f'<small><i></i>{_html(status)}</small></article>'
     )
 
 
@@ -1957,13 +2003,11 @@ def _render_compact_score(
         )
     card_animation_name = f"{animation_name}-card"
     if tone == "high":
-        action_label = "Revue manuelle urgente"
+        action_label = "Risque critique · Revue manuelle urgente"
     elif tone == "review":
-        action_label = "Revue manuelle recommandée"
-    elif displayed_score > 0:
-        action_label = "Vigilance faible"
+        action_label = "Risque important · Revue manuelle recommandée"
     else:
-        action_label = "Aucun signal prioritaire"
+        action_label = "Risque modéré"
     findings_link = (
         '<a href="#points-a-verifier">Voir les indices trouvés '
         '<span aria-hidden="true">↓</span></a>'
@@ -1993,49 +2037,125 @@ def _render_compact_score(
     )
 
 
-def _finding_card(
-    finding: Finding,
-    *,
-    diagnostic: bool = False,
-    occurrences: int = 1,
-) -> None:
-    tone = "neutral" if diagnostic else _tone_for_points(finding.risk_points, "completed")
-    location = "Document"
-    if finding.page is not None:
-        location = f"Page {finding.page}"
-        if finding.bbox is not None:
-            location += " - zone localisee"
-    if occurrences > 1:
-        location = f"{occurrences} zones détectées"
-    gapl_index = finding.evidence.get("global_index")
-    if gapl_index is not None:
-        confidence_label = f"Ressemblance estimée : {float(gapl_index):.0%}"
-    elif finding.code.startswith("PDF_SOFTWARE_"):
-        confidence_label = "Information déclarée dans les métadonnées du PDF"
-    elif finding.detector == "ocr_content":
-        confidence_label = f"Fiabilité de la lecture : {finding.confidence:.0%}"
-    else:
-        confidence_label = f"Confiance : {finding.confidence:.0%}"
-    title, description = _business_finding_copy(finding)
+def _family_finding_card(category: str, findings: tuple[Finding, ...]) -> None:
+    family_points = _family_score(category, findings)
+    cap = FAMILY_CAPS[category]
+    percentage = family_points / cap * 100 if cap else 0
+    tone = _tone_for_ratio(percentage)
+    items = _family_finding_items(findings)
+    cards = []
+    for title, description, location in items:
+        location_html = f"<small>{_html(location)}</small>" if location else ""
+        cards.append(
+            "<li><div>"
+            f"<strong>{_html(title)}</strong>{location_html}"
+            f"</div><p>{_html(description)}</p></li>"
+        )
+    count_label = "indice" if len(items) == 1 else "indices"
     st.markdown(
         f"""
-        <article class="evidence-card finding-card {tone}">
+        <article class="evidence-card family-finding-card {tone}">
           <div class="finding-score">
-            <strong>{finding.risk_points:g}</strong>
-            <span>points</span>
+            <strong>{round(family_points)}</strong>
+            <span>/{round(cap)}</span>
           </div>
-          <div class="finding-content">
-            <div class="finding-kicker">
-              <span>{_html(CATEGORY_LABELS.get(finding.category, finding.category))}</span>
-              <span>{_html(location)}</span>
+          <div class="family-finding-content">
+            <div class="family-finding-heading">
+              <h3>{_html(CATEGORY_LABELS.get(category, category))}</h3>
+              <span>{len(items)} {count_label}</span>
             </div>
-            <h3>{_html(title)}</h3>
-            <p>{_html(description)}</p>
-            <div class="confidence">{_html(confidence_label)}</div>
+            <ul>{''.join(cards)}</ul>
           </div>
         </article>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def _family_finding_items(
+    findings: tuple[Finding, ...],
+) -> list[tuple[str, str, str | None]]:
+    items: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    for finding in findings:
+        observations = finding.evidence.get("observations", ())
+        if finding.detector == "ocr_content" and isinstance(observations, (list, tuple)):
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    continue
+                code = str(observation.get("code", ""))
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                title, description = _ocr_observation_copy(observation)
+                page = observation.get("page")
+                items.append((title, description, f"Page {page}" if page else None))
+            if observations:
+                continue
+        if finding.code in seen:
+            continue
+        seen.add(finding.code)
+        title, description = _business_finding_copy(finding)
+        location = f"Page {finding.page}" if finding.page is not None else None
+        items.append((title, description, location))
+    return items
+
+
+def _ocr_observation_copy(observation: dict[str, Any]) -> tuple[str, str]:
+    code = str(observation.get("code", ""))
+    copies = {
+        "OCR_CARD_LUHN_INVALID": (
+            "Numéro de carte à vérifier",
+            "Le numéro ne passe pas le contrôle Luhn.",
+        ),
+        "OCR_IBAN_INVALID": ("IBAN à vérifier", "L'IBAN ne passe pas le contrôle de validité."),
+        "OCR_BIC_INVALID": ("BIC / SWIFT à vérifier", "Le code ne respecte pas le format BIC."),
+        "OCR_SIREN_INVALID": (
+            "SIREN à vérifier",
+            "Le numéro ne passe pas son contrôle de validité.",
+        ),
+        "OCR_SIRET_INVALID": (
+            "SIRET à vérifier",
+            "Le numéro ne passe pas son contrôle de validité.",
+        ),
+        "OCR_EU_VAT_INVALID": (
+            "Numéro de TVA à vérifier",
+            "Le numéro ne passe pas le contrôle prévu pour son pays.",
+        ),
+        "OCR_RPPS_INVALID": (
+            "Numéro RPPS à vérifier",
+            "Le numéro ne respecte pas le format attendu.",
+        ),
+        "OCR_FINESS_INVALID": (
+            "Numéro FINESS à vérifier",
+            "Le numéro ne passe pas son contrôle de validité.",
+        ),
+        "OCR_BANKING_GEOGRAPHY_MISMATCH": (
+            "Références bancaires de pays différents",
+            "Les références bancaires reconnues ne pointent pas vers le même pays.",
+        ),
+        "OCR_STATEMENT_SUMMARY_MISMATCH": (
+            "Totaux du relevé à vérifier",
+            "Les totaux reconnus ne correspondent pas au détail des opérations.",
+        ),
+        "OCR_INVOICE_TOTAL_MISMATCH": (
+            "Total de facture à vérifier",
+            "Le total reconnu ne correspond pas aux montants détaillés.",
+        ),
+        "OCR_LEDGER_MISMATCH": (
+            "Solde à vérifier",
+            "Le solde reconnu ne correspond pas aux opérations du relevé.",
+        ),
+        "OCR_DATE_INVALID": (
+            "Date à vérifier",
+            "La date reconnue n'est pas valide dans le calendrier.",
+        ),
+    }
+    if code in copies:
+        return copies[code]
+    return (
+        _sentence_case(observation.get("title", "Information à vérifier")),
+        _business_text(observation.get("summary", "Vérifiez cette information dans le document.")),
     )
 
 
@@ -2088,6 +2208,20 @@ def _laboratory_artifact_caption(path: Path) -> str:
 
 
 def _business_finding_copy(finding: Finding) -> tuple[str, str]:
+    if finding.code.startswith("PDF_SOFTWARE_"):
+        labels = {"creator": "Créateur", "producer": "Logiciel de production PDF"}
+        details = []
+        for field in ("creator", "producer"):
+            value = finding.evidence.get(field)
+            if value:
+                details.append(f"{labels[field]} : {value}")
+        description = ". ".join(details)
+        if description:
+            description += ". Ce logiciel peut avoir servi à convertir ou modifier le fichier."
+        else:
+            description = "Le logiciel déclaré par le PDF est à vérifier avec les autres indices."
+        return "Logiciel du fichier à vérifier", description
+
     concise_copy = {
         "PDF_INCREMENTAL_UPDATES": (
             "Plusieurs versions dans le PDF",
@@ -2196,27 +2330,6 @@ def _format_identifier_value(code: str, value: str) -> str:
     if code.startswith(("OCR_CARD_", "OCR_IBAN_")) and compact.isalnum():
         return " ".join(compact[index : index + 4] for index in range(0, len(compact), 4))
     return value
-
-
-def _business_observation_title(observation: Any) -> str:
-    return _sentence_case(observation.title)
-
-
-def _business_check_title(code: str, title: str) -> str:
-    labels = {
-        "pades": "Signature électronique du PDF",
-        "facturx": "Facture électronique embarquée",
-        "two_d_doc": "Code de vérification 2D-Doc",
-        "post_signature": "Modifications après signature",
-        "fonts_hidden_objects": "Polices et éléments masqués",
-        "all_revisions": "Historique complet des versions",
-        "ocr_quality": "Qualité du texte reconnu",
-        "ocr_identifiers": "Validité des identifiants",
-        "ocr_dates": "Cohérence des dates",
-        "ocr_financial_consistency": "Cohérence des montants",
-        "ocr_visual_repetition": "Éléments visuels répétés entre les pages",
-    }
-    return labels.get(code, _sentence_case(title))
 
 
 def _sentence_case(value: object) -> str:
@@ -2636,7 +2749,7 @@ def _inject_styles() -> None:
           display: inline-flex;
           align-items: baseline;
           color: var(--score-color);
-          font-size: 2.15rem;
+          font-size: 2.45rem;
           font-weight: 900;
           line-height: 1;
         }
@@ -2651,7 +2764,7 @@ def _inject_styles() -> None:
         }
         .fraud-score > strong small {
           color: var(--muted);
-          font-size: .65rem;
+          font-size: .78rem;
           font-weight: 700;
           margin-left: .12rem;
         }
@@ -2706,11 +2819,11 @@ def _inject_styles() -> None:
           --step-border: #3b3942;
           display: grid;
           grid-template-columns: 32px minmax(0, 1fr) 58px;
-          gap: .7rem;
+          gap: .6rem;
           align-items: center;
           min-width: 0;
-          min-height: 58px;
-          padding: .55rem .72rem;
+          min-height: 52px;
+          padding: .42rem .72rem;
           border: 1px solid #3b3942;
           border-radius: 6px;
           background: linear-gradient(135deg, #1d2127, #1a1d22);
@@ -2725,7 +2838,7 @@ def _inject_styles() -> None:
         }
         .indicator-queue > .indicator-step {
           margin: 0;
-          padding: .55rem .85rem;
+          padding: .42rem .85rem;
         }
         .indicator-step.notice-tone {
           --risk-color: var(--blue);
@@ -2770,7 +2883,7 @@ def _inject_styles() -> None:
         }
         .indicator-core {
           display: grid;
-          gap: .38rem;
+          gap: .3rem;
           min-width: 0;
         }
         .indicator-main {
@@ -3049,16 +3162,11 @@ def _inject_styles() -> None:
           color: var(--cyan);
           font-size: .88rem;
         }
-        div[data-testid="stMarkdownContainer"] h2.analysis-details-title {
-          margin-top: 1.35rem;
-          padding-top: 1rem;
-          border-top: 1px solid var(--line);
-        }
-        .finding-card {
+        .family-finding-card {
           display: grid;
           grid-template-columns: 54px minmax(0, 1fr);
           gap: .7rem;
-          padding: .7rem;
+          padding: .75rem;
           margin-bottom: .5rem;
           border: 1px solid var(--line);
           border-left: 5px solid var(--blue);
@@ -3074,15 +3182,15 @@ def _inject_styles() -> None:
           filter: brightness(1.045);
           box-shadow: 0 8px 22px rgba(0, 0, 0, .18);
         }
-        .finding-card.danger {
+        .family-finding-card.danger {
           border-left-color: var(--coral);
           background: linear-gradient(135deg, rgba(255, 107, 107, .13), #21191d 62%);
         }
-        .finding-card.warning {
+        .family-finding-card.warning {
           border-left-color: var(--amber);
           background: linear-gradient(135deg, rgba(244, 185, 66, .13), #211e18 62%);
         }
-        .finding-card.notice-tone {
+        .family-finding-card.notice-tone {
           border-left-color: var(--blue);
           background: linear-gradient(135deg, rgba(111, 168, 255, .12), #181e27 62%);
         }
@@ -3108,147 +3216,118 @@ def _inject_styles() -> None:
           line-height: 1;
           margin-top: .2rem;
         }
-        .finding-content h3 {
-          font-size: .94rem;
-          margin: 0 0 .2rem;
-        }
-        .finding-content p {
-          color: #c7c3bd;
-          font-size: .82rem;
-          line-height: 1.4;
-          margin: 0;
-        }
-        .finding-kicker {
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          gap: .25rem .55rem;
-          margin-bottom: .25rem;
-        }
-        .finding-kicker span {
-          border: 0;
-          border-radius: 0;
-          padding: 0;
-          background: transparent;
-          color: var(--muted);
-          font-size: .7rem;
-        }
-        .confidence {
-          margin-top: .3rem;
-          color: var(--cyan);
-          font-size: .72rem;
-        }
-        .diagnostic-count {
-          color: var(--muted);
-          font-size: .72rem;
-          margin: .25rem 0;
-        }
-        .extracted-fields {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: .45rem;
-        }
-        .extracted-field {
-          padding: .6rem;
-          border: 1px solid var(--line);
-          border-top: 4px solid #595760;
-          border-radius: 6px;
-          background: #1a191d;
-          min-width: 0;
-        }
-        .extracted-field.clear { border-top-color: var(--green); }
-        .extracted-field.attention { border-top-color: var(--amber); }
-        .extracted-field > div {
-          min-width: 0;
-        }
-        .extracted-field span,
-        .extracted-field strong {
-          display: block;
-        }
-        .extracted-field span {
-          color: var(--muted);
-          font-size: .72rem;
-        }
-        .extracted-field strong {
-          margin-top: .15rem;
-          font-size: .82rem;
-          overflow-wrap: anywhere;
-        }
-        .extracted-field b {
-          display: inline-block;
-          margin-top: .4rem;
-          color: #e7e3dc;
-          font-size: .72rem;
-        }
-        .extracted-field p {
-          margin: .22rem 0 0;
-          color: #bdb9b2;
-          font-size: .75rem;
-          line-height: 1.35;
-        }
-        .business-observation {
-          padding: .62rem .7rem;
-          margin-bottom: .4rem;
-          border: 1px solid var(--line);
-          border-left: 5px solid var(--amber);
-          border-radius: 6px;
-          background: linear-gradient(135deg, rgba(244, 185, 66, .11), #211e18 62%);
-        }
-        .business-observation.detected { border-left-color: var(--blue); }
-        .business-observation.error { border-left-color: var(--coral); }
-        .business-observation > div {
+        .family-finding-heading {
           display: flex;
           justify-content: space-between;
-          gap: .6rem;
+          align-items: center;
+          gap: .7rem;
         }
-        .business-observation strong {
+        .family-finding-heading h3 {
+          margin: 0;
+          color: var(--ink);
+          font-size: .94rem;
+        }
+        .family-finding-heading > span {
+          color: var(--muted);
+          font-size: .7rem;
+          white-space: nowrap;
+        }
+        .family-finding-content ul {
+          display: grid;
+          gap: .45rem;
+          margin: .5rem 0 0;
+          padding: 0;
+          list-style: none;
+        }
+        .family-finding-content li {
+          padding-top: .45rem;
+          border-top: 1px solid var(--line);
+          border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+        }
+        .family-finding-content li > div {
+          display: flex;
+          justify-content: space-between;
+          gap: .7rem;
+        }
+        .family-finding-content li strong {
+          color: #e8e9ec;
           font-size: .82rem;
         }
-        .business-observation span,
-        .business-observation small {
+        .family-finding-content li small {
+          color: var(--muted);
+          font-size: .68rem;
+          white-space: nowrap;
+        }
+        .family-finding-content li p {
+          margin: .18rem 0 0;
+          color: #c3c7cd;
+          font-size: .78rem;
+          line-height: 1.38;
+        }
+        .recognized-elements-heading {
+          margin: 1.35rem 0 .65rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--line);
+        }
+        .recognized-elements-heading h2 {
+          margin: 0;
+          color: var(--ink);
+          font-size: 1.08rem;
+        }
+        .recognized-elements-heading p {
+          margin: .28rem 0 0;
+          color: var(--muted);
+          font-size: .8rem;
+        }
+        .recognized-elements {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: .45rem;
+        }
+        .recognized-element {
+          display: grid;
+          align-content: start;
+          min-width: 0;
+          min-height: 92px;
+          padding: .65rem .7rem;
+          border: 1px solid var(--line);
+          border-left: 4px solid var(--blue);
+          border-radius: 6px;
+          background: var(--surface-gradient);
+        }
+        .recognized-element.clear { border-left-color: var(--green); }
+        .recognized-element.attention {
+          border-left-color: var(--amber);
+          background: linear-gradient(135deg, rgba(244, 185, 66, .09), #1d1c19 68%);
+        }
+        .recognized-element > span {
           color: var(--muted);
           font-size: .72rem;
         }
-        .business-observation p {
-          margin: .25rem 0;
-          font-size: .75rem;
+        .recognized-element > strong {
+          margin-top: .25rem;
+          color: var(--ink);
+          font-size: .86rem;
+          overflow-wrap: anywhere;
         }
-        .control-matrix {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: .4rem;
-        }
-        .control-status {
-          min-height: 78px;
-          padding: .55rem;
-          border: 1px solid var(--line);
-          border-left: 4px solid #595760;
-          border-radius: 5px;
-          background: #19191d;
-        }
-        .control-status.clear { border-left-color: var(--green); }
-        .control-status.attention { border-left-color: var(--amber); }
-        .control-status.detected { border-left-color: var(--blue); }
-        .control-status.indeterminate { border-left-color: var(--amber); }
-        .control-status.error { border-left-color: var(--coral); }
-        .control-status span,
-        .control-status strong {
-          display: block;
-        }
-        .control-status span {
+        .recognized-element > small {
+          display: flex;
+          align-items: center;
+          gap: .3rem;
+          margin-top: auto;
+          padding-top: .45rem;
           color: var(--muted);
           font-size: .7rem;
         }
-        .control-status strong {
-          margin-top: .15rem;
-          font-size: .8rem;
+        .recognized-element > small i {
+          width: 7px;
+          height: 7px;
+          flex: 0 0 7px;
+          border-radius: 50%;
+          background: var(--blue);
         }
-        .control-status p {
-          margin: .25rem 0 0;
-          color: #bcb8b1;
-          font-size: .72rem;
-          line-height: 1.3;
-        }
+        .recognized-element.clear > small i { background: var(--green); }
+        .recognized-element.attention > small i { background: var(--amber); }
         .recognized-text {
           white-space: pre-wrap;
           max-height: 240px;
@@ -3596,8 +3675,7 @@ def _inject_styles() -> None:
             min-height: 44px;
             width: auto;
           }
-          .extracted-fields,
-          .control-matrix,
+          .recognized-elements,
           .additional-extractions,
           .extraction-overview,
           .indicator-queue {
@@ -3690,7 +3768,7 @@ def _inject_styles() -> None:
             animation: none;
           }
         }
-        /* Classification card styles - matching finding-card style */
+        /* Classification card styles */
         .classification-card {
           padding: 0.85rem 0.9rem;
           margin-bottom: 0.5rem;
