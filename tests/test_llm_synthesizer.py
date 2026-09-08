@@ -117,7 +117,7 @@ def test_synthesis_is_short_grounded_and_non_decisional(monkeypatch: Any) -> Non
     assert "sans JSON" in payload["messages"][0]["content"]
     assert "ne cite jamais le score numérique" in payload["messages"][1]["content"]
     assert "indices retenus dans le score" in payload["messages"][1]["content"]
-    assert "sans dépasser 180 mots" in payload["messages"][1]["content"]
+    assert "sans dépasser 150 mots" in payload["messages"][1]["content"]
     assert "Ne commence pas systématiquement" in payload["messages"][1]["content"]
     assert "Score global calculé" not in payload["messages"][1]["content"]
     assert "pays=LU" not in payload["messages"][1]["content"]

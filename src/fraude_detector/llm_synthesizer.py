@@ -19,7 +19,23 @@ from fraude_detector.models import (
 )
 from fraude_detector.structured_llm import StructuredLlmError, request_text_completion
 
-SYNTHESIS_PROMPT_VERSION = "analysis-synthesis-business-2026-09-07-v5"
+SYNTHESIS_PROMPT_VERSION = "analysis-synthesis-business-2026-09-08-v7"
+
+_FAMILY_LABELS = {
+    "facture_recu": "facture ou reçu",
+    "devis": "devis",
+    "releve_bancaire": "relevé bancaire",
+    "justificatif_bancaire": "justificatif bancaire",
+    "document_medical": "document médical",
+    "declaration_sinistre": "déclaration de sinistre",
+    "constat_accident": "constat d'accident",
+    "contrat_attestation": "contrat ou attestation",
+    "piece_identite": "pièce d'identité",
+    "justificatif_revenus_fiscal": "justificatif de revenus ou fiscal",
+    "justificatif_domicile": "justificatif de domicile",
+    "correspondance": "correspondance",
+    "autre": "document dont le type reste à confirmer",
+}
 
 _SYSTEM_PROMPT = """Tu rédiges une synthèse claire destinée à un gestionnaire chargé de contrôler
 des documents.
@@ -28,7 +44,10 @@ pourraient contenir. Tu résumes uniquement les constats déjà présents. Tu ne
 document est frauduleux, authentique ou légitime. Tu n'inventes aucun fait, aucun contrôle et aucune
 cause. Écris en français courant, avec des phrases simples et naturelles. Le lecteur connaît son
 métier mais pas l'analyse forensique: explique concrètement ce qui a été observé et pourquoi cela
-mérite éventuellement une vérification, sans expliquer le fonctionnement technique du moteur. Ne
+doit éventuellement être vérifié, sans expliquer le fonctionnement technique du moteur. Utilise
+des mots courants, des phrases courtes et des verbes directs. Écris comme un collègue qui résume
+les points utiles avant une vérification, pas comme un rapport juridique ou académique. Évite le
+style administratif, les formules soutenues et les longues précautions oratoires. Ne
 reproduis jamais une valeur, un identifiant, un nom, une date ou un montant du document: reformule
 seulement la nature de l'information concernée. Réponds sans JSON, titre, rubrique, liste ni
 Markdown."""
@@ -140,7 +159,11 @@ def build_evidence_digest(
         add("review_decision", decision)
 
     if classification is not None:
-        add("classification", f"Famille documentaire estimée: {classification.family}.")
+        family_label = _FAMILY_LABELS.get(
+            classification.family,
+            "document dont le type reste à confirmer",
+        )
+        add("classification", f"Type de document reconnu: {family_label}.")
 
     active_findings = sorted(
         (finding for finding in findings if finding.risk_points > 0),
@@ -264,9 +287,11 @@ L'inventaire est déjà filtré et ne contient aucun score numérique:
 - classification et document_structure servent seulement à comprendre la nature du document;
 - extraction_quality indique seulement qu'une partie du document a été imparfaitement extraite.
 
-Rédige une synthèse dont la longueur s'adapte au résultat, sans dépasser 180 mots:
-- commence par expliquer en une phrase de quel document il s'agit et quelles informations il
-  contient, à partir de classification et document_structure;
+Rédige une synthèse dont la longueur s'adapte au résultat, le plus souvent en trois à cinq phrases
+et sans dépasser 150 mots:
+- commence obligatoirement par une phrase courte indiquant le type de document reconnu, puis ce
+  qu'il contient si cette information est disponible. Utilise le libellé courant fourni dans
+  classification, sans le compléter ni le rendre plus technique;
 - reprends tous les types d'indices actifs utiles. Regroupe les répétitions et les constats proches
   au lieu de faire une liste mécanique. Pour chacun, explique simplement ce qui a été observé,
   pourquoi cela peut être inhabituel et ce que le gestionnaire peut comparer sur le document;
@@ -288,6 +313,9 @@ Rédige une synthèse dont la longueur s'adapte au résultat, sans dépasser 180
 - ne cite pas les noms internes des modèles ou détecteurs; traduis chaque signal en termes métier;
 - ne transforme jamais une limitation en anomalie et ne conclus jamais que le document est
   frauduleux, authentique ou légitime;
+- utilise un français quotidien et professionnel. Préfère « montre », « contient », « semble
+  différent » ou « est à vérifier » à des formulations comme « fait apparaître », « présente une
+  incohérence », « nécessite une corroboration » ou « au regard des éléments »;
 - n'invente aucun fait, ne montre pas ton raisonnement interne et évite toute conclusion générale,
   formule de politesse ou phrase de remplissage.
 

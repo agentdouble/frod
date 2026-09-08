@@ -77,21 +77,21 @@ LEVEL_STYLE = {
     "low": {
         "label": "Faible",
         "tone": "low",
-        "color": "#34d399",
+        "color": "#35d07f",
         "background": "#062d24",
         "border": "#10b981",
     },
     "review": {
         "label": "Revue",
         "tone": "review",
-        "color": "#fbbf24",
+        "color": "#f4b942",
         "background": "#3b2604",
         "border": "#f59e0b",
     },
     "high": {
         "label": "Élevé",
         "tone": "high",
-        "color": "#fb7185",
+        "color": "#ff6b6b",
         "background": "#3c0912",
         "border": "#f43f5e",
     },
@@ -123,6 +123,22 @@ CATEGORY_DESCRIPTIONS = {
     "revision_history": "Réenregistrements et versions conservées dans le fichier.",
     "revision_visual": "Différences visibles entre les versions du document.",
     "synthetic_media": "Ressemblance visuelle avec des images générées par IA.",
+}
+
+DOCUMENT_FAMILY_LABELS = {
+    "facture_recu": "Facture ou reçu",
+    "devis": "Devis",
+    "releve_bancaire": "Relevé bancaire",
+    "justificatif_bancaire": "Justificatif bancaire",
+    "document_medical": "Document médical",
+    "declaration_sinistre": "Déclaration de sinistre",
+    "constat_accident": "Constat d'accident",
+    "contrat_attestation": "Contrat ou attestation",
+    "piece_identite": "Pièce d'identité",
+    "justificatif_revenus_fiscal": "Justificatif de revenus ou fiscal",
+    "justificatif_domicile": "Justificatif de domicile",
+    "correspondance": "Correspondance",
+    "autre": "Type non déterminé",
 }
 
 CATEGORY_DETECTORS = {
@@ -666,7 +682,8 @@ def _render_report(
         )
         return
 
-    document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
+    _render_document_type(report.classification)
+    document_column, indicators_column = st.columns([0.54, 0.46], gap="large")
     with document_column:
         _render_document_view(
             report=report,
@@ -678,9 +695,15 @@ def _render_report(
         )
     with indicators_column:
         _render_score(report)
+        _render_laboratory_synthesis(synthesis, synthesis_error=synthesis_error, compact=True)
         _render_risk_indicators(report.findings, report.detectors)
 
-    _render_review_summary(scored, diagnostics, laboratory)
+    _render_review_focus(scored)
+    _render_review_details(
+        diagnostics,
+        laboratory,
+        represented_findings=tuple((*scored, *diagnostics)),
+    )
 
 
 def _render_ocr_demo_report(
@@ -715,7 +738,8 @@ def _render_ocr_demo_report(
         )
         return
 
-    document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
+    _render_document_type(classification)
+    document_column, indicators_column = st.columns([0.54, 0.46], gap="large")
     with document_column:
         st.markdown(
             f'<h2 class="workspace-title document-name">{_html(name)}</h2>',
@@ -1068,12 +1092,13 @@ def _render_laboratory_synthesis(
     synthesis: AnalysisSynthesis | None,
     *,
     synthesis_error: str | None,
+    compact: bool = False,
 ) -> None:
     if synthesis is None:
         if synthesis_error:
             st.markdown(
                 f"""
-                <section class="laboratory-synthesis unavailable">
+                <section class="laboratory-synthesis unavailable{' compact' if compact else ''}">
                   <span>Synthèse de l'analyse</span>
                   <strong>Synthèse indisponible</strong>
                   <p>{_html(synthesis_error)}</p>
@@ -1085,10 +1110,9 @@ def _render_laboratory_synthesis(
 
     st.markdown(
         f"""
-        <section class="laboratory-synthesis">
-          <span>Synthèse de l'analyse</span>
+        <section class="laboratory-synthesis{' compact' if compact else ''}">
+          <span>Résumé de l'analyse</span>
           <p>{_html(synthesis.text)}</p>
-          <small>Résumé fondé uniquement sur les contrôles et informations affichés.</small>
         </section>
         """,
         unsafe_allow_html=True,
@@ -1244,6 +1268,7 @@ def _render_risk_indicators(
     accessible_rows = []
     for index, indicator in enumerate(indicators, start=1):
         label = _html(indicator.label)
+        tooltip = _html(CATEGORY_DESCRIPTIONS.get(indicator.category, ""))
         points = f"{indicator.points:g}"
         maximum = f"{indicator.maximum:g}"
         icon = _indicator_icon(indicator.tone)
@@ -1253,6 +1278,7 @@ def _render_risk_indicators(
             <li
               class="indicator-step {indicator.tone}"
               data-state="{indicator.tone}"
+              title="{tooltip}"
               style="--step-delay:calc(var(--result-entry-delay, 0s) + {delay_seconds:.2f}s);
                 --risk-value:{indicator.bar_percentage:.1f}%"
             >
@@ -1368,11 +1394,13 @@ def _indicator_presentation(
         )
 
     expected_detectors = CATEGORY_DETECTORS.get(category, frozenset())
-    statuses = {detector.status for detector in detectors if detector.name in expected_detectors}
+    statuses = tuple(
+        detector.status for detector in detectors if detector.name in expected_detectors
+    )
+    if "partial" in statuses:
+        return "partial", "Contrôle partiel", 35.0
     if "completed" in statuses:
         return "clear", "Aucun signal détecté", 100.0
-    if "partial" in statuses:
-        return "partial", "Contrôle partiel", 100.0
     if statuses:
         return "unavailable", "Non applicable", 0.0
     return "unavailable", "Non évalué", 0.0
@@ -1421,11 +1449,11 @@ def _tone_for_ratio(percentage: float) -> str:
 
 def _risk_state_for_ratio(percentage: float) -> str:
     if percentage >= 75:
-        return "Risque élevé"
+        return "Signal fort"
     if percentage >= 40:
-        return "Risque modéré"
+        return "Signal modéré"
     if percentage > 0:
-        return "Risque faible"
+        return "Signal faible"
     return "Aucun signal détecté"
 
 
@@ -1489,50 +1517,88 @@ def _render_document_view(
     st.image(str(selected_path), caption=selected, width="stretch")
 
 
-def _render_review_summary(
-    scored: list[Finding],
-    diagnostics: list[Finding],
-    laboratory: LaboratoryReport | None,
-) -> None:
-    st.markdown('<h2 class="workspace-title">Synthèse de revue</h2>', unsafe_allow_html=True)
+def _render_review_focus(scored: list[Finding]) -> None:
     grouped_scored = _group_findings(scored)
+    explanation = (
+        "Ces éléments ont contribué à l'indice de vigilance. Ils sont à comparer "
+        "directement avec le document."
+        if grouped_scored
+        else "Aucun élément prioritaire n'a été relevé par les contrôles exécutés."
+    )
+    st.markdown(
+        f"""
+        <header class="review-focus-heading" id="points-a-verifier">
+          <h2>Points à vérifier</h2>
+          <p>{_html(explanation)}</p>
+        </header>
+        """,
+        unsafe_allow_html=True,
+    )
     if grouped_scored:
-        st.markdown(
-            f"""
-            <div class="review-banner attention">
-              <strong>{len(grouped_scored)} type(s) d'indice à contrôler</strong>
-              <span>Comparer les zones signalées avec le document.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
         for finding, occurrences in grouped_scored:
             _finding_card(finding, occurrences=occurrences)
-    else:
-        st.markdown(
-            """
-            <div class="review-banner clear">
-              <strong>Aucun signal pris en compte dans le score</strong>
-              <span>Les contrôles réalisés n'ont pas relevé d'anomalie forte.</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        return
 
+    st.markdown(
+        """
+        <div class="review-banner clear compact">
+          <strong>Aucun signal pris en compte dans le score</strong>
+          <span>Les contrôles exécutés n'ont pas relevé d'élément prioritaire.</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_review_details(
+    diagnostics: list[Finding],
+    laboratory: LaboratoryReport | None,
+    *,
+    represented_findings: tuple[Finding, ...] = (),
+) -> None:
+    has_laboratory_details = laboratory is not None and bool(laboratory.checks)
+    if not diagnostics and not has_laboratory_details:
+        return
+    st.markdown(
+        '<h2 class="workspace-title analysis-details-title">Détails des contrôles</h2>',
+        unsafe_allow_html=True,
+    )
     if diagnostics:
-        st.markdown(
-            f'<div class="diagnostic-count">{len(diagnostics)} observation(s) informative(s)</div>',
-            unsafe_allow_html=True,
-        )
         software_provenance = [
             finding for finding in diagnostics if finding.code.startswith("PDF_SOFTWARE_")
         ]
         for finding, occurrences in _group_findings(software_provenance):
             _finding_card(finding, diagnostic=True, occurrences=occurrences)
 
+    represented_codes = _represented_signal_codes(represented_findings)
     _render_ocr_field_cards(laboratory)
-    _render_attention_observations(laboratory)
-    _render_control_matrix(laboratory)
+    _render_attention_observations(laboratory, excluded_codes=represented_codes)
+    _render_control_matrix(laboratory, hide_active=True)
+
+
+def _render_review_summary(
+    scored: list[Finding],
+    diagnostics: list[Finding],
+    laboratory: LaboratoryReport | None,
+) -> None:
+    _render_review_focus(scored)
+    _render_review_details(
+        diagnostics,
+        laboratory,
+        represented_findings=tuple((*scored, *diagnostics)),
+    )
+
+
+def _represented_signal_codes(findings: tuple[Finding, ...]) -> frozenset[str]:
+    codes = {finding.code for finding in findings}
+    for finding in findings:
+        observations = finding.evidence.get("observations", ())
+        if not isinstance(observations, (list, tuple)):
+            continue
+        for observation in observations:
+            if isinstance(observation, dict) and observation.get("code"):
+                codes.add(str(observation["code"]))
+    return frozenset(codes)
 
 
 def _render_classification(classification: DocumentClassification | None) -> None:
@@ -1545,22 +1611,10 @@ def _render_classification(classification: DocumentClassification | None) -> Non
         unsafe_allow_html=True,
     )
 
-    family_labels = {
-        "facture_recu": "Facture ou reçu",
-        "devis": "Devis",
-        "releve_bancaire": "Relevé bancaire",
-        "justificatif_bancaire": "Justificatif bancaire",
-        "document_medical": "Document médical",
-        "declaration_sinistre": "Déclaration de sinistre",
-        "constat_accident": "Constat d'accident",
-        "contrat_attestation": "Contrat ou attestation",
-        "piece_identite": "Pièce d'identité",
-        "justificatif_revenus_fiscal": "Justificatif de revenus ou fiscal",
-        "justificatif_domicile": "Justificatif de domicile",
-        "correspondance": "Correspondance",
-        "autre": "Type non déterminé",
-    }
-    family_label = family_labels.get(classification.family, "Type non déterminé")
+    family_label = DOCUMENT_FAMILY_LABELS.get(
+        classification.family,
+        "Type non déterminé",
+    )
     if classification.family == "autre":
         tone = "undetermined"
     elif classification.reliability >= 0.75:
@@ -1602,6 +1656,24 @@ def _render_classification(classification: DocumentClassification | None) -> Non
                 ),
                 unsafe_allow_html=True,
             )
+
+
+def _render_document_type(classification: DocumentClassification | None) -> None:
+    if classification is None:
+        return
+    family_label = DOCUMENT_FAMILY_LABELS.get(
+        classification.family,
+        "Type non déterminé",
+    )
+    st.markdown(
+        f"""
+        <div class="document-type-strip">
+          <span>Type de document</span>
+          <strong>{_html(family_label)}</strong>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _group_findings(findings: list[Finding]) -> list[tuple[Finding, int]]:
@@ -1646,7 +1718,7 @@ def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
         state_label = LAB_STATE_LABELS[observation.state]
         cards.append(
             f"""
-            <article class="extracted-field {observation.state}">
+            <article class="evidence-card extracted-field {observation.state}">
               <div><span>{_html(_sentence_case(observation.title))}</span><strong>{_html(value)}</strong></div>
               <b>{_html(state_label)}</b>
               <p>{_html(observation.summary)}</p>
@@ -1662,7 +1734,11 @@ def _render_ocr_field_cards(laboratory: LaboratoryReport | None) -> None:
     )
 
 
-def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
+def _render_attention_observations(
+    laboratory: LaboratoryReport | None,
+    *,
+    excluded_codes: frozenset[str] = frozenset(),
+) -> None:
     if laboratory is None:
         return
     observations = [
@@ -1674,6 +1750,7 @@ def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
             or (observation.state == "detected" and observation.strength != "informational")
         )
         and not observation.code.startswith(OCR_IDENTIFIER_PREFIXES)
+        and observation.code not in excluded_codes
     ]
     if not observations:
         return
@@ -1683,7 +1760,7 @@ def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
         location = f"Page {observation.page}" if observation.page is not None else "Document"
         st.markdown(
             f"""
-            <article class="business-observation {observation.state}">
+            <article class="evidence-card business-observation {observation.state}">
               <div><strong>{_html(_business_observation_title(observation))}</strong><span>{_html(location)}</span></div>
               <p>{_html(_business_text(observation.summary))}</p>
               <small>{_html(strength)} - {_html(_business_text(observation.explanation))}</small>
@@ -1693,16 +1770,22 @@ def _render_attention_observations(laboratory: LaboratoryReport | None) -> None:
         )
 
 
-def _render_control_matrix(laboratory: LaboratoryReport | None) -> None:
+def _render_control_matrix(
+    laboratory: LaboratoryReport | None,
+    *,
+    hide_active: bool = False,
+) -> None:
     if laboratory is None or not laboratory.checks:
         return
     cards = []
     for check in laboratory.checks:
         if check.state == "not_applicable":
             continue
+        if hide_active and check.state in {"attention", "detected"}:
+            continue
         cards.append(
             f"""
-            <article class="control-status {check.state}">
+            <article class="evidence-card control-status {check.state}">
               <span>{_html(LAB_STATE_LABELS[check.state])}</span>
               <strong>{_html(_business_check_title(check.code, check.title))}</strong>
               <p>{_html(_business_text(check.summary))}</p>
@@ -1825,7 +1908,7 @@ def _render_score(
         maximum=100,
         tone=style["tone"],
         color=style["color"],
-        label="Score de fraude",
+        label="Indice de vigilance",
         score_steps=_build_score_steps(
             report.findings,
             categories=tuple(FAMILY_CAPS),
@@ -1852,14 +1935,53 @@ def _render_compact_score(
         + hashlib.sha256(repr(normalized_steps).encode("utf-8")).hexdigest()[:10]
     )
     keyframes = ["0% { --animated-score:0; }"]
+    card_keyframes = [
+        "0% { background:linear-gradient(135deg,rgba(53,208,127,.12),#181d1b 58%); "
+        "border-left-color:#35d07f; box-shadow:0 0 0 rgba(53,208,127,0); }"
+    ]
     for index, step in enumerate(normalized_steps, start=1):
         percentage = index / len(normalized_steps) * 100
         keyframes.append(f"{percentage:.3f}% {{ --animated-score:{step}; }}")
+        if step >= 70:
+            accent, glow = "#ff6b6b", "rgba(255,107,107,.22)"
+            surface = "linear-gradient(135deg,rgba(255,107,107,.16),#24191d 58%)"
+        elif step >= 30:
+            accent, glow = "#f4b942", "rgba(244,185,66,.19)"
+            surface = "linear-gradient(135deg,rgba(244,185,66,.14),#211d17 58%)"
+        else:
+            accent, glow = "#35d07f", "rgba(53,208,127,.16)"
+            surface = "linear-gradient(135deg,rgba(53,208,127,.12),#181d1b 58%)"
+        card_keyframes.append(
+            f"{percentage:.3f}% {{ background:{surface}; border-left-color:{accent}; "
+            f"box-shadow:0 0 18px {glow}; }}"
+        )
+    card_animation_name = f"{animation_name}-card"
+    if tone == "high":
+        action_label = "Revue manuelle urgente"
+    elif tone == "review":
+        action_label = "Revue manuelle recommandée"
+    elif displayed_score > 0:
+        action_label = "Vigilance faible"
+    else:
+        action_label = "Aucun signal prioritaire"
+    findings_link = (
+        '<a href="#points-a-verifier">Voir les indices trouvés '
+        '<span aria-hidden="true">↓</span></a>'
+        if displayed_score > 0
+        else ""
+    )
     st.markdown(
         f"""
         <style>@keyframes {animation_name} {{ {" ".join(keyframes)} }}</style>
-        <section class="fraud-score {tone}" aria-label="{_html(label)} : {score:g} sur {maximum}">
-          <span>{_html(label)}</span>
+        <style>@keyframes {card_animation_name} {{ {" ".join(card_keyframes)} }}</style>
+        <section class="fraud-score {tone}" aria-label="{_html(label)} : {score:g} sur {maximum}"
+          style="--score-duration:{duration_seconds:.2f}s;
+            --score-card-animation:{card_animation_name}">
+          <div class="fraud-score-copy">
+            <span>{_html(label)}</span>
+            <strong>{_html(action_label)}</strong>
+            {findings_link}
+          </div>
           <strong style="--score-color:{color};--score-target:{displayed_score};
             --score-duration:{duration_seconds:.2f}s;--score-animation:{animation_name}">
             <span class="fraud-score-number" aria-hidden="true"></span>
@@ -1897,7 +2019,7 @@ def _finding_card(
     title, description = _business_finding_copy(finding)
     st.markdown(
         f"""
-        <article class="finding-card {tone}">
+        <article class="evidence-card finding-card {tone}">
           <div class="finding-score">
             <strong>{finding.risk_points:g}</strong>
             <span>points</span>
@@ -1966,6 +2088,72 @@ def _laboratory_artifact_caption(path: Path) -> str:
 
 
 def _business_finding_copy(finding: Finding) -> tuple[str, str]:
+    concise_copy = {
+        "PDF_INCREMENTAL_UPDATES": (
+            "Plusieurs versions dans le PDF",
+            "Le fichier garde la trace de plusieurs enregistrements. Cela peut être normal, "
+            "mais les changements sont à comparer.",
+        ),
+        "PDF_DATE_CONTRADICTION": (
+            "Dates du fichier incohérentes",
+            "La date de modification enregistrée précède la date de création. Ces dates peuvent "
+            "être modifiées, mais cet ordre est inhabituel.",
+        ),
+        "PDF_TRAILING_DATA": (
+            "Données ajoutées à la fin du fichier",
+            "Le PDF contient des données après sa fin normale. Elles peuvent venir d'un assemblage "
+            "ou d'une modification du fichier.",
+        ),
+        "SCAN_IMAGE_OVERLAY": (
+            "Image ajoutée sur une page scannée",
+            "Une image distincte recouvre une partie du scan. Vérifiez si cet ajout correspond au "
+            "processus habituel.",
+        ),
+        "SCAN_VISIBLE_TEXT_OVERLAY": (
+            "Texte ajouté sur une page scannée",
+            "Du texte a été placé au-dessus du scan. Un formulaire prérempli peut aussi expliquer "
+            "cet ajout.",
+        ),
+        "PDF_REVIEW_ANNOTATION": (
+            "Annotation ajoutée au PDF",
+            "Le document contient une annotation encore modifiable. Vérifiez si elle était prévue "
+            "dans le traitement du dossier.",
+        ),
+        "PDF_REVISION_PAGE_COUNT_CHANGED": (
+            "Nombre de pages modifié",
+            "Des pages ont été ajoutées ou retirées entre deux versions conservées du PDF.",
+        ),
+        "PDF_REVISION_VISUAL_CHANGE": (
+            "Zone modifiée entre deux versions",
+            "Une zone visible diffère entre deux versions conservées du PDF. Comparez-la avec "
+            "l'aperçu du document.",
+        ),
+        "RASTER_LOCAL_COMPRESSION_ANOMALY": (
+            "Compression différente dans une zone",
+            "Une zone ne réagit pas comme le reste de l'image à la compression. Un scan ou des "
+            "contours nets peuvent aussi produire cet effet.",
+        ),
+        "IMAGE_C2PA_INVALID": (
+            "Informations d'origine invalides",
+            "Les informations signées sur l'origine de l'image ne sont pas valides. Cela ne prouve "
+            "pas à lui seul une modification frauduleuse.",
+        ),
+        "AI_IMAGE_C2PA_DECLARATION": (
+            "Création par IA déclarée",
+            "Les informations d'origine indiquent une création ou une composition par IA.",
+        ),
+        "AI_PDF_C2PA_DECLARATION": (
+            "Création par IA déclarée",
+            "Les informations d'origine indiquent une création ou une composition par IA.",
+        ),
+        "AI_GENERATOR_METADATA_MENTIONED": (
+            "Outil de génération IA mentionné",
+            "Les métadonnées mentionnent un outil ou des paramètres de génération. Elles peuvent "
+            "toutefois être modifiées.",
+        ),
+    }
+    if finding.code in concise_copy:
+        return concise_copy[finding.code]
     if finding.code == "AI_GAPL_GLOBAL_TRACE":
         index = float(finding.evidence.get("global_index", 0.0))
         if index >= 0.9:
@@ -1976,14 +2164,27 @@ def _business_finding_copy(finding: Finding) -> tuple[str, str]:
             title = "Faible ressemblance avec une image générée par IA"
         return (
             title,
-            "Plusieurs zones présentent des caractéristiques souvent observées dans des "
-            "images générées par IA. La compression, le redimensionnement ou certains motifs "
-            "visuels peuvent produire un résultat similaire : ce signal ne prouve pas une fraude.",
+            "Plusieurs zones ressemblent à des images générées par IA. La compression ou le "
+            "redimensionnement peuvent aussi produire ce résultat : ce signal ne suffit pas seul.",
         )
     if finding.detector == "ocr_content":
+        groups = finding.evidence.get("groups", {})
+        labels = (
+            [str(group.get("label", "")).lower() for group in groups.values()]
+            if isinstance(groups, dict)
+            else []
+        )
+        subject = ", ".join(label for label in labels if label)
+        description = (
+            f"Le contrôle a relevé des écarts dans les éléments suivants : {subject}. "
+            "Vérifiez les valeurs directement dans le document."
+            if subject
+            else "Certaines informations reconnues ne sont pas cohérentes. Vérifiez-les "
+            "directement dans le document."
+        )
         return (
             "Cohérence du contenu à vérifier",
-            _business_text(finding.description),
+            description,
         )
     return _sentence_case(finding.title), _business_text(finding.description)
 
@@ -2089,17 +2290,22 @@ def _inject_styles() -> None:
         """
         <style>
         :root {
-          --ink: #f5f3ef;
-          --muted: #aaa6a0;
-          --line: #36343a;
-          --panel: #1b1a1e;
-          --panel-soft: #242329;
-          --bg: #111114;
+          --ink: #f7f8fa;
+          --muted: #aeb4bd;
+          --line: #343942;
+          --line-strong: #46505d;
+          --panel: #191c21;
+          --panel-soft: #20252c;
+          --panel-raised: #252b33;
+          --bg: #101216;
           --green: #35d07f;
           --amber: #f4b942;
           --coral: #ff6b6b;
-          --cyan: #4cc9d8;
-          --blue: #70a7ff;
+          --cyan: #45d6e6;
+          --blue: #6fa8ff;
+          --violet: #a78bfa;
+          --accent-gradient: linear-gradient(90deg, var(--cyan), var(--blue));
+          --surface-gradient: linear-gradient(145deg, #1c2026 0%, #171a1f 100%);
         }
         @property --animated-score {
           syntax: "<integer>";
@@ -2112,7 +2318,7 @@ def _inject_styles() -> None:
           display: none;
         }
         .stApp {
-          background: var(--bg);
+          background: linear-gradient(180deg, #12151a 0, var(--bg) 420px);
           color: var(--ink);
         }
         .block-container {
@@ -2149,9 +2355,9 @@ def _inject_styles() -> None:
         }
         .brandbar h1 {
           color: var(--ink);
-          font-size: 1.5rem;
-          font-weight: 950;
-          letter-spacing: .16em;
+          font-size: 1.18rem;
+          font-weight: 900;
+          letter-spacing: 0;
           line-height: 1;
           margin: 0;
         }
@@ -2162,13 +2368,16 @@ def _inject_styles() -> None:
           margin: 0 0 .3rem;
         }
         div[data-testid="stFileUploader"] {
-          background: #19191d;
-          border: 2px dashed #595760;
+          background: var(--surface-gradient);
+          border: 2px dashed #596574;
           border-radius: 8px;
           padding: .5rem .75rem;
+          transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
         }
         div[data-testid="stFileUploader"]:hover {
           border-color: var(--cyan);
+          box-shadow: 0 0 0 1px rgba(69, 214, 230, .14), 0 12px 30px rgba(0, 0, 0, .18);
+          transform: translateY(-1px);
         }
         div[data-testid="stFileUploader"] label {
           color: var(--ink);
@@ -2178,7 +2387,7 @@ def _inject_styles() -> None:
           min-height: 3rem;
           border-radius: 6px;
           font-weight: 850;
-          background: #f5f3ef;
+          background: linear-gradient(135deg, #f8fafc, #dfe8ee);
           color: #17171a;
           border: 0;
         }
@@ -2211,7 +2420,7 @@ def _inject_styles() -> None:
           margin: .4rem 0 1rem;
           border: 1px solid var(--line);
           border-radius: 6px;
-          background: #19191d;
+          background: var(--surface-gradient);
           padding: .7rem .9rem;
         }
         .analysis-progress-head {
@@ -2233,11 +2442,23 @@ def _inject_styles() -> None:
           overflow: hidden;
         }
         .analysis-progress-track i {
+          position: relative;
           display: block;
           height: 100%;
-          background: var(--cyan);
+          overflow: hidden;
+          background: var(--accent-gradient);
           border-radius: inherit;
           transition: width .18s ease;
+          box-shadow: 0 0 20px rgba(69, 214, 230, .42);
+          filter: saturate(1.15) brightness(1.05);
+        }
+        .analysis-progress-track i::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .68), transparent);
+          transform: translateX(-100%);
+          animation: progress-sheen 1.4s ease-in-out infinite;
         }
         .content-progress {
           display: grid;
@@ -2250,7 +2471,7 @@ def _inject_styles() -> None:
           gap: .28rem;
           min-width: 0;
           color: #77747d;
-          font-size: .63rem;
+          font-size: .72rem;
           font-weight: 750;
         }
         .content-progress-stage b {
@@ -2350,33 +2571,72 @@ def _inject_styles() -> None:
           font-size: .82rem;
         }
         .fraud-score {
+          --score-surface: linear-gradient(135deg, #1d2229, #181b20);
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 1rem;
-          min-height: 58px;
-          padding: .55rem .8rem;
+          min-height: 74px;
+          padding: .7rem .85rem;
           margin: .15rem 0 .55rem;
-          background: #19191d;
+          background: var(--score-surface);
           border: 1px solid var(--line);
           border-left: 4px solid #595760;
           border-radius: 6px;
+          animation: var(--score-card-animation) var(--score-duration) steps(1, end)
+            var(--result-entry-delay, 0s) forwards;
+          transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
         }
-        .fraud-score.low { border-left-color: var(--green); }
-        .fraud-score.review { border-left-color: var(--amber); }
-        .fraud-score.high { border-left-color: var(--coral); }
-        .fraud-score > span {
-          color: #aaa6a0;
-          font-size: .72rem;
+        .fraud-score.low {
+          --score-surface: linear-gradient(135deg, rgba(53, 208, 127, .12), #181d1b 58%);
+          border-left-color: var(--green);
+        }
+        .fraud-score.review {
+          --score-surface: linear-gradient(135deg, rgba(244, 185, 66, .14), #211d17 58%);
+          border-left-color: var(--amber);
+        }
+        .fraud-score.high {
+          --score-surface: linear-gradient(135deg, rgba(255, 107, 107, .16), #24191d 58%);
+          border-left-color: var(--coral);
+        }
+        .fraud-score:hover {
+          transform: translateY(-1px);
+        }
+        .fraud-score-copy {
+          display: grid;
+          justify-items: start;
+          gap: .13rem;
+        }
+        .fraud-score-copy > span {
+          color: var(--muted);
+          font-size: .68rem;
           font-weight: 800;
-          letter-spacing: .02em;
           text-transform: uppercase;
         }
-        .fraud-score strong {
+        .fraud-score-copy > strong {
+          color: var(--ink);
+          font-size: .88rem;
+          line-height: 1.2;
+        }
+        .fraud-score.low .fraud-score-copy > strong { color: var(--green); }
+        .fraud-score.review .fraud-score-copy > strong { color: var(--amber); }
+        .fraud-score.high .fraud-score-copy > strong { color: var(--coral); }
+        .fraud-score-copy a {
+          margin-top: .1rem;
+          color: var(--cyan);
+          font-size: .7rem;
+          font-weight: 750;
+          text-decoration: none;
+        }
+        .fraud-score-copy a:hover {
+          color: #8ceaf3;
+          text-decoration: underline;
+        }
+        .fraud-score > strong {
           display: inline-flex;
           align-items: baseline;
           color: var(--score-color);
-          font-size: 1.85rem;
+          font-size: 2.15rem;
           font-weight: 900;
           line-height: 1;
         }
@@ -2389,7 +2649,7 @@ def _inject_styles() -> None:
         .fraud-score-number::after {
           content: counter(fraud-score);
         }
-        .fraud-score small {
+        .fraud-score > strong small {
           color: var(--muted);
           font-size: .65rem;
           font-weight: 700;
@@ -2431,9 +2691,7 @@ def _inject_styles() -> None:
           padding: .9rem;
           border: 1px solid #313139;
           border-radius: 9px;
-          background:
-            radial-gradient(circle at 100% 0, rgba(34, 211, 238, .07), transparent 32%),
-            #141419;
+          background: linear-gradient(145deg, rgba(69, 214, 230, .045), #14171b 40%);
         }
         .indicator-queue {
           display: grid;
@@ -2451,12 +2709,19 @@ def _inject_styles() -> None:
           gap: .7rem;
           align-items: center;
           min-width: 0;
-          min-height: 54px;
+          min-height: 58px;
           padding: .55rem .72rem;
           border: 1px solid #3b3942;
           border-radius: 6px;
-          background: #1b1b20;
+          background: linear-gradient(135deg, #1d2127, #1a1d22);
           animation: indicator-step-validate .42s ease-out var(--step-delay) both;
+          transition: transform .18s ease, filter .18s ease, box-shadow .18s ease;
+        }
+        .indicator-step:hover {
+          z-index: 1;
+          transform: translateX(2px);
+          filter: brightness(1.07);
+          box-shadow: 0 7px 20px rgba(0, 0, 0, .2);
         }
         .indicator-queue > .indicator-step {
           margin: 0;
@@ -2464,22 +2729,22 @@ def _inject_styles() -> None:
         }
         .indicator-step.notice-tone {
           --risk-color: var(--blue);
-          --step-bg: #171d25;
+          --step-bg: linear-gradient(135deg, rgba(111, 168, 255, .13), #181d25 62%);
           --step-border: #31526d;
         }
         .indicator-step.warning {
           --risk-color: var(--amber);
-          --step-bg: #242015;
+          --step-bg: linear-gradient(135deg, rgba(244, 185, 66, .15), #242015 62%);
           --step-border: #685727;
         }
         .indicator-step.danger {
           --risk-color: var(--coral);
-          --step-bg: #27181c;
+          --step-bg: linear-gradient(135deg, rgba(255, 107, 107, .17), #27181c 62%);
           --step-border: #733543;
         }
         .indicator-step.clear {
           --risk-color: var(--green);
-          --step-bg: #142019;
+          --step-bg: linear-gradient(135deg, rgba(53, 208, 127, .1), #16201b 62%);
           --step-border: #24543a;
         }
         .indicator-step.partial {
@@ -2519,7 +2784,7 @@ def _inject_styles() -> None:
           min-width: 0;
           margin: 0;
           color: #ddd9d3;
-          font-size: .78rem;
+          font-size: .8rem;
           line-height: 1.2;
         }
         .indicator-pending,
@@ -2530,7 +2795,7 @@ def _inject_styles() -> None:
           justify-content: flex-end;
           gap: .32rem;
           flex: 0 0 auto;
-          font-size: .64rem;
+          font-size: .7rem;
           font-weight: 800;
           white-space: nowrap;
         }
@@ -2573,6 +2838,12 @@ def _inject_styles() -> None:
           height: 100%;
           border-radius: inherit;
           background: var(--risk-color);
+          background: linear-gradient(
+            90deg,
+            color-mix(in srgb, var(--risk-color) 72%, white),
+            var(--risk-color)
+          );
+          box-shadow: 0 0 10px color-mix(in srgb, var(--risk-color) 45%, transparent);
           transform: scaleX(0);
           transform-origin: left center;
           animation: indicator-meter-fill .34s ease-out var(--step-delay) forwards;
@@ -2672,6 +2943,10 @@ def _inject_styles() -> None:
           from { transform: translateX(0); opacity: .55; }
           to { transform: translateX(138%); opacity: 1; }
         }
+        @keyframes progress-sheen {
+          0%, 35% { transform: translateX(-100%); }
+          75%, 100% { transform: translateX(100%); }
+        }
         @keyframes pdf-loading-spin {
           to { transform: rotate(360deg); }
         }
@@ -2692,7 +2967,7 @@ def _inject_styles() -> None:
           to { opacity: 1; transform: translateY(0); }
         }
         div[data-testid="stMarkdownContainer"] h2.workspace-title {
-          font-size: 1.02rem;
+          font-size: 1.08rem;
           line-height: 1.3;
           margin: .15rem 0 .55rem;
           padding: 0;
@@ -2725,18 +3000,59 @@ def _inject_styles() -> None:
           border: 1px solid var(--line);
           border-left: 5px solid #595760;
           border-radius: 6px;
-          background: #1a191d;
+          background: var(--surface-gradient);
           margin-bottom: .55rem;
         }
         .review-banner.attention { border-left-color: var(--coral); }
         .review-banner.clear { border-left-color: var(--green); }
         .review-banner strong {
-          font-size: .9rem;
+          font-size: .95rem;
         }
         .review-banner span {
           color: var(--muted);
-          font-size: .76rem;
+          font-size: .8rem;
           text-align: right;
+        }
+        .review-banner.compact {
+          align-items: flex-start;
+          flex-direction: column;
+          margin: .55rem 0 .7rem;
+        }
+        .review-banner.compact span { text-align: left; }
+        .review-focus-heading {
+          margin: 1.25rem 0 .65rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--line);
+        }
+        .review-focus-heading h2 {
+          margin: 0;
+          color: var(--ink);
+          font-size: 1.08rem;
+          line-height: 1.3;
+        }
+        .review-focus-heading p {
+          max-width: 760px;
+          margin: .28rem 0 0;
+          color: var(--muted);
+          font-size: .8rem;
+          line-height: 1.4;
+        }
+        .document-type-strip {
+          display: flex;
+          align-items: baseline;
+          gap: .65rem;
+          margin: .1rem 0 .7rem;
+          color: var(--muted);
+          font-size: .78rem;
+        }
+        .document-type-strip strong {
+          color: var(--cyan);
+          font-size: .88rem;
+        }
+        div[data-testid="stMarkdownContainer"] h2.analysis-details-title {
+          margin-top: 1.35rem;
+          padding-top: 1rem;
+          border-top: 1px solid var(--line);
         }
         .finding-card {
           display: grid;
@@ -2747,11 +3063,29 @@ def _inject_styles() -> None:
           border: 1px solid var(--line);
           border-left: 5px solid var(--blue);
           border-radius: 6px;
-          background: #1b1a1e;
+          background: var(--surface-gradient);
         }
-        .finding-card.danger { border-left-color: var(--coral); background: #25191c; }
-        .finding-card.warning { border-left-color: var(--amber); background: #252117; }
-        .finding-card.notice-tone { border-left-color: var(--blue); background: #181e28; }
+        .evidence-card {
+          transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease,
+            filter .18s ease;
+        }
+        .evidence-card:hover {
+          transform: translateY(-1px);
+          filter: brightness(1.045);
+          box-shadow: 0 8px 22px rgba(0, 0, 0, .18);
+        }
+        .finding-card.danger {
+          border-left-color: var(--coral);
+          background: linear-gradient(135deg, rgba(255, 107, 107, .13), #21191d 62%);
+        }
+        .finding-card.warning {
+          border-left-color: var(--amber);
+          background: linear-gradient(135deg, rgba(244, 185, 66, .13), #211e18 62%);
+        }
+        .finding-card.notice-tone {
+          border-left-color: var(--blue);
+          background: linear-gradient(135deg, rgba(111, 168, 255, .12), #181e27 62%);
+        }
         .finding-score {
           display: flex;
           flex-direction: column;
@@ -2770,7 +3104,7 @@ def _inject_styles() -> None:
         }
         .finding-score span {
           display: block;
-          font-size: .58rem;
+          font-size: .68rem;
           line-height: 1;
           margin-top: .2rem;
         }
@@ -2780,7 +3114,7 @@ def _inject_styles() -> None:
         }
         .finding-content p {
           color: #c7c3bd;
-          font-size: .78rem;
+          font-size: .82rem;
           line-height: 1.4;
           margin: 0;
         }
@@ -2797,7 +3131,7 @@ def _inject_styles() -> None:
           padding: 0;
           background: transparent;
           color: var(--muted);
-          font-size: .64rem;
+          font-size: .7rem;
         }
         .confidence {
           margin-top: .3rem;
@@ -2823,7 +3157,7 @@ def _inject_styles() -> None:
           min-width: 0;
         }
         .extracted-field.clear { border-top-color: var(--green); }
-        .extracted-field.attention { border-top-color: var(--coral); }
+        .extracted-field.attention { border-top-color: var(--amber); }
         .extracted-field > div {
           min-width: 0;
         }
@@ -2833,7 +3167,7 @@ def _inject_styles() -> None:
         }
         .extracted-field span {
           color: var(--muted);
-          font-size: .65rem;
+          font-size: .72rem;
         }
         .extracted-field strong {
           margin-top: .15rem;
@@ -2844,22 +3178,24 @@ def _inject_styles() -> None:
           display: inline-block;
           margin-top: .4rem;
           color: #e7e3dc;
-          font-size: .65rem;
+          font-size: .72rem;
         }
         .extracted-field p {
           margin: .22rem 0 0;
           color: #bdb9b2;
-          font-size: .68rem;
+          font-size: .75rem;
           line-height: 1.35;
         }
         .business-observation {
           padding: .62rem .7rem;
           margin-bottom: .4rem;
           border: 1px solid var(--line);
-          border-left: 5px solid var(--coral);
+          border-left: 5px solid var(--amber);
           border-radius: 6px;
-          background: #24191c;
+          background: linear-gradient(135deg, rgba(244, 185, 66, .11), #211e18 62%);
         }
+        .business-observation.detected { border-left-color: var(--blue); }
+        .business-observation.error { border-left-color: var(--coral); }
         .business-observation > div {
           display: flex;
           justify-content: space-between;
@@ -2871,7 +3207,7 @@ def _inject_styles() -> None:
         .business-observation span,
         .business-observation small {
           color: var(--muted);
-          font-size: .65rem;
+          font-size: .72rem;
         }
         .business-observation p {
           margin: .25rem 0;
@@ -2891,26 +3227,26 @@ def _inject_styles() -> None:
           background: #19191d;
         }
         .control-status.clear { border-left-color: var(--green); }
-        .control-status.attention { border-left-color: var(--coral); }
+        .control-status.attention { border-left-color: var(--amber); }
         .control-status.detected { border-left-color: var(--blue); }
         .control-status.indeterminate { border-left-color: var(--amber); }
-        .control-status.error { border-left-color: #b28cff; }
+        .control-status.error { border-left-color: var(--coral); }
         .control-status span,
         .control-status strong {
           display: block;
         }
         .control-status span {
           color: var(--muted);
-          font-size: .62rem;
+          font-size: .7rem;
         }
         .control-status strong {
           margin-top: .15rem;
-          font-size: .74rem;
+          font-size: .8rem;
         }
         .control-status p {
           margin: .25rem 0 0;
           color: #bcb8b1;
-          font-size: .64rem;
+          font-size: .72rem;
           line-height: 1.3;
         }
         .recognized-text {
@@ -2985,7 +3321,7 @@ def _inject_styles() -> None:
           border: 1px solid #31526d;
           border-left: 6px solid var(--cyan);
           border-radius: 7px;
-          background: #161d24;
+          background: linear-gradient(135deg, rgba(69, 214, 230, .1), #161d24 56%);
         }
         .laboratory-synthesis::after {
           content: "";
@@ -3023,8 +3359,16 @@ def _inject_styles() -> None:
           max-width: 1180px;
           margin: .45rem 0 0;
           color: #d0ccc5;
-          font-size: .82rem;
+          font-size: .86rem;
           line-height: 1.5;
+        }
+        .laboratory-synthesis.compact {
+          margin: .55rem 0 .7rem;
+          padding: .75rem .85rem .8rem 1rem;
+        }
+        .laboratory-synthesis.compact p {
+          margin-top: .3rem;
+          line-height: 1.45;
         }
         .laboratory-synthesis ul {
           display: flex;
@@ -3072,10 +3416,10 @@ def _inject_styles() -> None:
         .verification-issue span,
         .verification-issue small {
           color: var(--muted);
-          font-size: .62rem;
+          font-size: .7rem;
         }
         .verification-issue strong {
-          font-size: .75rem;
+          font-size: .8rem;
           overflow-wrap: anywhere;
         }
         .extraction-overview {
@@ -3114,7 +3458,7 @@ def _inject_styles() -> None:
           display: block;
           margin-top: .35rem;
           color: var(--muted);
-          font-size: .68rem;
+          font-size: .74rem;
         }
         .extraction-coverage {
           border-left: 5px solid var(--amber) !important;
@@ -3147,7 +3491,7 @@ def _inject_styles() -> None:
         .extraction-table {
           width: 100%;
           border-collapse: collapse;
-          font-size: .72rem;
+          font-size: .78rem;
         }
         .extraction-table th,
         .extraction-table td {
@@ -3162,14 +3506,14 @@ def _inject_styles() -> None:
           z-index: 1;
           color: var(--muted);
           background: #202025;
-          font-size: .62rem;
+          font-size: .68rem;
           text-transform: uppercase;
         }
         .extraction-table th span {
           display: block;
           margin-top: .16rem;
           color: var(--cyan);
-          font-size: .56rem;
+          font-size: .66rem;
           text-transform: none;
         }
         .extraction-table td strong,
@@ -3179,7 +3523,7 @@ def _inject_styles() -> None:
         .extraction-table td span {
           margin-top: .15rem;
           color: var(--muted);
-          font-size: .62rem;
+          font-size: .7rem;
         }
         .extraction-table td .extraction-row-role {
           display: inline-flex;
@@ -3189,7 +3533,7 @@ def _inject_styles() -> None:
           border-radius: 4px;
           color: #bdebf3;
           background: #17252b;
-          font-size: .58rem;
+          font-size: .68rem;
           font-weight: 800;
           white-space: nowrap;
         }
@@ -3214,12 +3558,12 @@ def _inject_styles() -> None:
         .additional-extraction span,
         .additional-extraction small {
           color: var(--muted);
-          font-size: .64rem;
+          font-size: .7rem;
         }
         .additional-extraction strong {
           margin: .2rem 0;
           overflow-wrap: anywhere;
-          font-size: .78rem;
+          font-size: .82rem;
         }
         @media (max-width: 700px) {
           .block-container {
@@ -3255,7 +3599,8 @@ def _inject_styles() -> None:
           .extracted-fields,
           .control-matrix,
           .additional-extractions,
-          .extraction-overview {
+          .extraction-overview,
+          .indicator-queue {
             grid-template-columns: 1fr;
           }
           .indicator-sequence {
@@ -3298,12 +3643,23 @@ def _inject_styles() -> None:
             display: none;
             animation: none;
           }
+          .analysis-progress-track i::after {
+            animation: none;
+          }
           [class*="st-key-analysis_results_entering"] {
             --result-entry-delay: 0s;
             animation: none;
           }
           .fraud-score-number {
             --animated-score: var(--score-target);
+            animation: none;
+          }
+          .fraud-score,
+          .evidence-card,
+          .indicator-step {
+            transition: none;
+          }
+          .fraud-score {
             animation: none;
           }
           .indicator-step {

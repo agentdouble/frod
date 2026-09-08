@@ -54,11 +54,10 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert not app.exception
     assert "<h1>FROD</h1>" in markdown
-    assert "Analyse de fraude documentaire" not in markdown
     assert [button.label for button in app.button] == ["Tester un nouveau document"]
     assert '<h2 class="workspace-title document-name">assurance-fraude.pdf</h2>' in markdown
     assert '<h2 class="workspace-title">Document</h2>' not in markdown
-    assert "Synthèse de revue" in markdown
+    assert "Points à vérifier" in markdown
     assert not app.tabs
     assert app.segmented_control[0].value == "Général"
     assert 'class="analysis-handoff"' not in markdown
@@ -77,11 +76,14 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert "risk-animation-toggle" not in markdown
     assert 'aria-hidden="true"' in sequence
     assert "Modifications visuelles" in sequence
-    assert "Différences visibles entre les versions du document." not in sequence
+    assert 'title="Différences visibles entre les versions du document."' in sequence
     assert "Structure du fichier" in sequence
-    assert "Signatures, structure interne et altérations du fichier." not in sequence
+    assert 'title="Signatures, structure interne et altérations du fichier."' in sequence
     assert "fraud-score high" in markdown
-    assert "Score de fraude" in markdown
+    assert "Indice de vigilance" in markdown
+    assert "Revue manuelle urgente" in markdown
+    assert 'href="#points-a-verifier"' in markdown
+    assert 'id="points-a-verifier"' in markdown
     assert "fraud-score-number" in markdown
     assert "--score-target:71" in markdown
     assert "--score-duration:4.50s" in markdown
@@ -92,9 +94,10 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert "Indices forts de modification" not in markdown
     assert "Plusieurs familles de signaux indépendantes" not in markdown
     assert "indicator-step danger" in sequence
-    assert "Risque élevé" in sequence
+    assert "Signal fort" in sequence
     assert "Aucun signal détecté" in sequence
     assert "Non évalué" in sequence
+    assert "--risk-value:91.7%" in sequence
     assert "--risk-value:100.0%" in sequence
     assert "--step-delay:calc(var(--result-entry-delay, 0s) + 0.45s)" in sequence
     assert "--step-delay:calc(var(--result-entry-delay, 0s) + 4.50s)" in sequence
@@ -107,7 +110,7 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert "Signature électronique du PDF" not in markdown
     assert "Facture électronique embarquée" not in markdown
     assert "Code de vérification 2D-Doc" not in markdown
-    assert "Historique complet des versions" in markdown
+    assert "Historique complet des versions" not in markdown
 
     app.segmented_control[0].set_value("Glossaire").run(timeout=30)
     glossary = _component_markup(app, '<section class="indicator-glossary"')
@@ -188,7 +191,7 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert not app.expander
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert sequence.count('class="indicator-step ') == 1
-    assert "Cohérence des dates, montants et identifiants reconnus." not in sequence
+    assert 'title="Cohérence des dates, montants et identifiants reconnus."' in sequence
     assert "Score de contrôle" in markdown
     assert (
         '<h2 class="workspace-title document-name">OCR - Relevé bancaire à anomalies</h2>'
@@ -199,11 +202,11 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert "100.000% { --animated-score:30; }" in markdown
     assert "Cohérence du contenu" in markdown
     assert "Identifiants reconnus" in markdown
-    assert "Validité des identifiants" in markdown
-    assert "Cohérence des montants" in markdown
-    assert "anomalie(s)" in markdown
+    assert "Validité des identifiants" not in markdown
+    assert "Cohérence des montants" not in markdown
+    assert "Le contrôle a relevé des écarts" in markdown
     assert "BIC / SWIFT" in markdown
-    assert "Referentiels bancaires de pays differents" in markdown
+    assert "Referentiels bancaires de pays differents" not in markdown
     assert "4111 1111 1111 1111" in markdown
     assert "********" not in markdown
 
@@ -368,7 +371,7 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert "_render_classification(classification)" in laboratory_view
     assert "_render_classification(report.classification)" not in report_view
     assert "raw_response" not in source
-    assert 'st.columns([0.56, 0.44], gap="large")' in report_view
+    assert 'st.columns([0.54, 0.46], gap="large")' in report_view
     assert (
         report_view.index("with document_column:")
         < report_view.index("with indicators_column:")
@@ -411,7 +414,7 @@ def test_business_ui_keeps_structural_component_styles() -> None:
     assert "@media (prefers-reduced-motion: reduce)" in styles
     assert "display: flex;" in fraud_score
     assert "justify-content: space-between;" in fraud_score
-    assert "min-height: 58px;" in fraud_score
+    assert "min-height: 74px;" in fraud_score
     assert "animation: var(--score-animation)" in fraud_score_number
     assert "steps(1, end)" in fraud_score_number
     assert "var(--result-entry-delay, 0s)" in fraud_score_number
