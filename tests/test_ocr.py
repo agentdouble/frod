@@ -10,6 +10,12 @@ from PIL import Image
 from fraude_detector.config import AnalysisConfig
 from fraude_detector.detectors.ocr import OcrDetector
 from fraude_detector.image_pipeline import ImageAnalysisPipeline
+from fraude_detector.models import (
+    DocumentClassification,
+    DocumentExtraction,
+    ExtractionCoverage,
+    ExtractionVerification,
+)
 from fraude_detector.pipeline import AnalysisPipeline
 
 
@@ -33,7 +39,7 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
     output = tmp_path / "analysis"
     calls: list[dict[str, Any]] = []
 
-    def fake_post(url: str, **kwargs: Any) -> _Response:
+    def fake_post(_session: requests.Session, url: str, **kwargs: Any) -> _Response:
         calls.append({"url": url, **kwargs})
         return _Response(
             {
@@ -53,8 +59,9 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
             }
         )
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests.Session, "post", fake_post)
     detector = OcrDetector(AnalysisConfig(ocr_enabled=True, ocr_url="http://ocr.internal:8007"))
+    assert detector._session.trust_env is False
     report = detector.detect(source, output)
 
     assert report.success
@@ -71,6 +78,45 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
     assert detector.result(report).status == "completed"
 
 
+def test_ocr_detector_removes_cjk_noise_from_all_text_outputs(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "document.png"
+    Image.new("RGB", (100, 50), "white").save(source)
+
+    monkeypatch.setattr(
+        requests.Session,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {
+                "json_result": [
+                    [
+                        {
+                            "index": 0,
+                            "label": "text",
+                            "content": "Total 锟斤拷 500 EUR テスト",
+                            "bbox_2d": [10, 10, 900, 900],
+                        }
+                    ]
+                ],
+                "markdown_result": "Total 锟斤拷 500 EUR テスト",
+            }
+        ),
+    )
+
+    report = OcrDetector(AnalysisConfig(ocr_enabled=True)).detect(
+        source,
+        tmp_path / "analysis",
+        save_layout=False,
+    )
+
+    assert report.success
+    assert report.markdown == "Total  500 EUR"
+    assert report.json_result[0][0]["content"] == "Total  500 EUR"
+    assert "锟" not in (tmp_path / "analysis/ocr/document.json").read_text(encoding="utf-8")
+
+
 def test_ocr_unavailability_is_non_fatal(monkeypatch: Any, tmp_path: Path) -> None:
     source = tmp_path / "document.png"
     Image.new("RGB", (32, 24), "white").save(source)
@@ -78,7 +124,7 @@ def test_ocr_unavailability_is_non_fatal(monkeypatch: Any, tmp_path: Path) -> No
     def fail(*args: Any, **kwargs: Any) -> None:
         raise requests.ConnectionError("offline")
 
-    monkeypatch.setattr(requests, "post", fail)
+    monkeypatch.setattr(requests.Session, "post", fail)
     detector = OcrDetector(AnalysisConfig(ocr_enabled=True))
     report = detector.detect(source, tmp_path / "analysis")
 
@@ -93,7 +139,7 @@ def test_pdf_pipeline_exposes_clean_ocr_content_without_scoring_it(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -129,6 +175,118 @@ def test_pdf_pipeline_exposes_clean_ocr_content_without_scoring_it(
     assert report.assessment.score >= 0
 
 
+def test_pdf_pipeline_exposes_classification_outside_artifacts(
+    monkeypatch: Any,
+    vector_pdf: Path,
+    tmp_path: Path,
+) -> None:
+    markdown = "Relevé de compte\nSolde précédent\nOpérations du mois"
+    monkeypatch.setattr(
+        requests.Session,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {
+                "json_result": [[{"index": 0, "label": "text", "content": markdown}]],
+                "markdown_result": markdown,
+            }
+        ),
+    )
+    classifier_calls: list[tuple[str, AnalysisConfig]] = []
+
+    def fake_classify(text: str, config: AnalysisConfig) -> DocumentClassification:
+        classifier_calls.append((text, config))
+        return DocumentClassification(
+            family="releve_bancaire",
+            reliability=0.82,
+            language="fr",
+            country=None,
+            evidence=("Relevé de compte", "Opérations du mois"),
+        )
+
+    monkeypatch.setattr("fraude_detector.content_analysis.classify_document", fake_classify)
+    extraction = DocumentExtraction(
+        schema_version="0.1-experimental",
+        family="releve_bancaire",
+        language="fr",
+        country=None,
+        facts=(),
+        additional_fields=(),
+        tables=(),
+        coverage=ExtractionCoverage(
+            total_regions=1,
+            accounted_regions=1,
+            mapped_regions=0,
+            table_regions=0,
+            boilerplate_regions=1,
+            unstructured_regions=0,
+            unreadable_regions=0,
+        ),
+        passes=1,
+    )
+    extractor_calls: list[tuple[Any, DocumentClassification | None, AnalysisConfig]] = []
+
+    def fake_extract(
+        payload: Any,
+        classification: DocumentClassification | None,
+        extraction_config: AnalysisConfig,
+    ) -> DocumentExtraction:
+        extractor_calls.append((payload, classification, extraction_config))
+        return extraction
+
+    monkeypatch.setattr("fraude_detector.content_analysis.extract_document", fake_extract)
+    verification = ExtractionVerification(
+        schema_version="0.1-experimental",
+        status="clean",
+        expected_targets=0,
+        reviews=(),
+        omissions=(),
+    )
+    verifier_calls: list[
+        tuple[Any, DocumentExtraction, DocumentClassification | None, AnalysisConfig]
+    ] = []
+
+    def fake_verify(
+        payload: Any,
+        extracted: DocumentExtraction,
+        classification: DocumentClassification | None,
+        verification_config: AnalysisConfig,
+    ) -> ExtractionVerification:
+        verifier_calls.append((payload, extracted, classification, verification_config))
+        return verification
+
+    monkeypatch.setattr("fraude_detector.content_analysis.verify_extraction", fake_verify)
+    config = AnalysisConfig(
+        render_dpi=72,
+        max_pages=1,
+        ocr_enabled=True,
+        classification_enabled=True,
+        extraction_enabled=True,
+        verification_enabled=True,
+    )
+    output = tmp_path / "classification-analysis"
+    report = AnalysisPipeline(config=config).analyze(vector_pdf, output)
+
+    assert classifier_calls == [(markdown, config)]
+    assert report.classification is not None
+    assert report.classification.family == "releve_bancaire"
+    assert len(extractor_calls) == 1
+    assert extractor_calls[0][1] == report.classification
+    assert extractor_calls[0][2] == config
+    assert report.extraction == extraction
+    assert len(verifier_calls) == 1
+    assert verifier_calls[0][1] == extraction
+    assert verifier_calls[0][2] == report.classification
+    assert verifier_calls[0][3] == config
+    assert report.extraction_verification == verification
+    assert "classification" not in report.artifacts
+    assert "extraction" not in report.artifacts
+    assert all(isinstance(paths, tuple) for paths in report.artifacts.values())
+    serialized = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert serialized["classification"]["reliability"] == 0.82
+    assert serialized["extraction"]["coverage"]["accounted_regions"] == 1
+    assert serialized["extraction_verification"]["status"] == "clean"
+
+
 def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(
     monkeypatch: Any,
     tmp_path: Path,
@@ -136,7 +294,7 @@ def test_image_pipeline_exposes_clean_ocr_content_without_scoring_it(
     source = tmp_path / "document.png"
     Image.new("RGB", (200, 100), "white").save(source)
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -176,7 +334,7 @@ def test_image_pipeline_scores_corroborated_ocr_content(
     payload = json.loads((fixture / "document.json").read_text(encoding="utf-8"))
     markdown = (fixture / "document.md").read_text(encoding="utf-8")
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {

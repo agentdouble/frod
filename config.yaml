@@ -52,6 +52,26 @@ analysis:
     # Une zone plus grande que cette fraction est trop globale pour être localisée.
     max_region_area_fraction: 0.25
 
+  pdf_metadata:
+    # Les métadonnées sont déclaratives et modifiables: ces poids restent volontairement faibles.
+    # Générateurs bureautiques, bibliothèques PDF, scanners et signatures restent à 0 point.
+    online_service_points: 5
+    pdf_editor_points: 3
+    design_tool_points: 5
+    visual_editor_points: 8
+    generative_tool_points: 8
+
+  document_authenticity:
+    # Les contrôles cryptographiques invalides et les divergences démontrées sont des
+    # indices forts. L'absence de signature ou de format structuré reste neutre.
+    invalid_signature_points: 20
+    post_signature_change_points: 20
+    structured_content_mismatch_points: 20
+    # Un XML ou code annoncé mais illisible est une anomalie de format plus faible.
+    malformed_structured_content_points: 4
+    # Une divergence n'est retenue que si l'OCR retrouve aussi plusieurs champs témoins.
+    minimum_visible_matches: 2
+
   ai_images:
     # Par défaut, les modèles IA analysent les images autonomes mais pas celles
     # embarquées dans un PDF, souvent recompressées ou issues d'un scanner.
@@ -77,9 +97,64 @@ ocr:
   # Active ou désactive totalement l'appel au serveur OCR local.
   enabled: false
   # URL du serveur GLM-OCR. Aucune donnée n'est envoyée si enabled vaut false.
-  url: "http://127.0.0.1:8007"
+  url: "http://127.0.0.1:8010"
   # Durée maximale d'une requête OCR avant abandon, en secondes.
   timeout_seconds: 300
+
+classification:
+  # Classe le document après OCR. Ce traitement peut être désactivé séparément.
+  enabled: false
+  # API locale exposée par vLLM.
+  url: "http://127.0.0.1:8030"
+  # Nom servi par vLLM, à adapter sur le poste qui héberge le modèle.
+  model: "minimax_m2_1"
+  # Limites destinées à éviter qu'un serveur indisponible bloque longtemps l'analyse.
+  timeout_seconds: 900
+  max_input_chars: 20000
+  # Plafond de sortie; le raisonnement est désactivé par le client vLLM.
+  max_tokens: 32768
+  # Une température nulle favorise un classement reproductible.
+  temperature: 0.0
+
+extraction:
+  # Extraction sémantique expérimentale, sans effet sur le score de fraude.
+  enabled: false
+  # API locale vLLM; elle peut partager le serveur de classification.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 1800
+  # Un contexte plus large évite de multiplier les appels pour les documents de plusieurs pages.
+  max_input_chars: 48000
+  # Les tableaux sont reconstruits depuis l'OCR et ne consomment plus la sortie du modèle.
+  max_tokens: 32768
+  temperature: 0.0
+  # Désactivée par défaut: cette seconde passe peut presque doubler le temps d'extraction.
+  coverage_retry: false
+
+verification:
+  # Troisième appel expérimental et indépendant; seules les anomalies sont renvoyées.
+  enabled: false
+  # Le même serveur MiniMax peut être utilisé; chaque vérification ouvre une nouvelle conversation.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 1800
+  # La vérification reçoit les régions OCR et l'extraction structurée dans un seul contexte.
+  max_input_chars: 80000
+  max_tokens: 32768
+  temperature: 0.0
+
+synthesis:
+  # Résumé métier final, généré après tous les contrôles et sans effet sur le score.
+  enabled: true
+  # Cette passe peut partager le serveur et le modèle des autres traitements sémantiques.
+  url: "http://127.0.0.1:8030"
+  model: "minimax_m2_1"
+  timeout_seconds: 900
+  # Seul un condensé des preuves est transmis, jamais la totalité de l'OCR.
+  max_input_chars: 24000
+  # Plafond de sortie; le raisonnement est désactivé par le client vLLM.
+  max_tokens: 32768
+  temperature: 0.0
 
 models:
   gapl:
@@ -89,20 +164,10 @@ models:
     # auto choisit CUDA, MPS ou CPU selon la machine. Valeurs: auto, cpu, cuda, mps.
     device: "auto"
 
-  trufor:
-    # Recherche expérimentale d'incohérences et de retouches locales sur les images.
-    enabled: true
-    weights_path: "models/trufor/trufor.pth.tar"
-    # Budget de pixels analysés. Une valeur élevée augmente fortement la mémoire.
-    max_pixels: 400000
-    # Durée maximale du processus isolé TruFor, en secondes.
-    timeout_seconds: 900
-
 laboratory:
-  # Contrôles PDF expérimentaux: signatures, Factur-X, 2D-Doc, révisions et objets.
+  # Active les contrôles PDF encore expérimentaux (polices, objets et historique complet).
+  # Les signatures, Factur-X et 2D-Doc restent actifs car ils alimentent le score principal.
   pdf_enabled: true
-  # Contrôles expérimentaux réservés aux images, notamment TruFor.
-  image_enabled: true
   # Compare les zones image, cachet ou signature proposées par l'OCR sur plusieurs pages.
   # Le résultat reste dans le laboratoire et n'ajoute aucun point au score.
   visual_repetition_enabled: true

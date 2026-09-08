@@ -41,8 +41,9 @@ CLI. Il regroupe notamment :
 - l'adresse, le port, le répertoire de travail et la limite d'upload ;
 - les limites de rendu et de mémoire pour les PDF et les images ;
 - les seuils de composition, d'ELA et de sélection des photos ;
+- les faibles pondérations associées aux familles de logiciels déclarées dans les PDF ;
 - l'activation, l'URL et le délai du serveur OCR local ;
-- l'activation, les poids et les budgets de GAPL et TruFor ;
+- l'activation, les poids et les budgets de GAPL ;
 - l'activation des contrôles expérimentaux du laboratoire.
 
 Les chemins relatifs sont résolus depuis le dossier du YAML. Les variables
@@ -50,11 +51,16 @@ d'environnement `FROD_*` restent disponibles comme surcharges de déploiement, m
 une installation locale peut être configurée uniquement en modifiant ce fichier.
 Redémarrer `./start.sh` après une modification.
 
+Le client OCR utilise une session directe qui ignore les proxies déclarés dans
+l'environnement. Lorsque l'OCR est activé, `start.sh` ajoute également son hôte à
+`NO_PROXY` et `no_proxy` sans modifier le routage des autres destinations.
+
 ## Indices verifies dans le MVP
 
 - historique de mises a jour incrementales encore present dans le PDF ;
 - difference visuelle localisee entre les deux dernieres revisions conservees ;
-- contradictions de dates et logiciels de retouche declares dans les metadonnees ;
+- contradictions de dates et provenance logicielle déclarée dans les champs `Creator` et
+  `Producer`, avec une faible pondération pour les outils de transformation ou d'édition ;
 - couches image ou texte au-dessus d'un scan, sans points lorsqu'elles correspondent
   a une construction de scanner ou qu'aucune revision posterieure n'est conservee ;
 - annotations PDF visibles ;
@@ -64,8 +70,6 @@ Redémarrer `./start.sh` après une modification.
 - noms explicites de generateurs IA dans les metadonnees EXIF/XMP ;
 - analyse passive GAPL des images autonomes, avec aggregation multi-fenetre et
   controle de stabilite ; l'analyse des images embarquees dans un PDF est optionnelle.
-- localisation experimentale de retouches sur les images autonomes avec TruFor,
-  sans contribution au score Frod.
 - controles OCR de coherence interne : identifiants internationaux, contradictions
   de valeurs, dates, totaux, soldes et referentiels bancaires incompatibles.
 - comparaison experimentale, non scoree, des zones image, cachet ou signature que
@@ -111,19 +115,6 @@ Les fixtures OCR pre-calculees de l'interface permettent de tester ces controles
 serveur OCR. Pour executer le worker reel sur une machine adaptee, voir
 `start-ocr-server.sh`.
 
-## Retouches locales
-
-Le laboratoire des images autonomes execute TruFor apres l'analyse Frod. Le modele
-compare les informations visuelles avec une empreinte de bruit Noiseprint++ et
-produit un indice global, une carte d'anomalie et une carte de fiabilite. Frod
-affiche une carte dans laquelle les anomalies sont ponderees par cette fiabilite.
-
-Ce controle vise les retouches locales et les montages. Il est complementaire a
-GAPL, qui recherche des caracteristiques apprises sur les images generees par IA.
-TruFor n'est jamais execute sur un PDF, ne modifie aucun `Finding` et n'ajoute aucun
-point au score. Ses seuils restent experimentaux tant qu'ils ne sont pas calibres
-sur un corpus representatif de documents d'assurance.
-
 Le champ s'appelle `incremental_updates_detected`, jamais `save_count` : une
 reecriture complete peut supprimer tout l'historique precedent. Une signature, un
 formulaire rempli, un tampon ou une annotation sont aussi des explications legitimes.
@@ -151,11 +142,10 @@ src/fraude_detector/
 ├── community_forensics.py # adaptateur optionnel, chargement explicite
 ├── gapl.py                 # adaptateur GAPL local
 ├── gapl_windows.py         # grille, indice global et contribution au score
+├── pdf_software.py         # classification prudente des Creator/Producer PDF
 ├── financial_identifiers.py # Luhn, IBAN et BIC internationaux
 ├── ocr_consistency.py      # fiabilite OCR et contribution contenu
 ├── ocr_rendering.py        # visualisation des zones reconnues
-├── trufor.py               # execution isolee et artefacts TruFor
-├── trufor_worker.py        # worker court pour liberer la memoire du modele
 ├── pdf_revisions.py       # validation des revisions conservees
 ├── scoring.py             # aggregation prudente
 ├── rendering.py           # rendus et overlays de revue
@@ -222,10 +212,6 @@ uv run frod tests/fixtures/assurance-fraude.pdf -o output/fixture-fraude
 - les images PNG ou sans compression JPEG ne sont pas analysees par ELA ;
 - les detecteurs passifs d'images IA se degradent sur scans, texte dense,
   recompressions et generateurs absents de leur corpus d'entrainement ;
-- TruFor est non calibre sur les documents d'assurance et peut manquer une retouche
-  IA recente, une petite zone ou une image fortement recomprimee ;
-- la licence amont de TruFor limite son utilisation aux finalites informatives et
-  non lucratives ;
 - le routage des images vers GAPL reste geometrique : il peut exclure une vraie
   photo pleine page ou accepter une facture partielle comme photo ;
 - les masques alpha PDF separes ne sont pas recomposes dans le decodage natif ;

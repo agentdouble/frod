@@ -23,6 +23,16 @@ class AnalysisConfig:
     ela_robust_z_threshold: float = 3.5
     ela_max_image_dimension: int = 2400
     ela_max_region_area_fraction: float = 0.25
+    pdf_metadata_online_service_points: float = 5.0
+    pdf_metadata_pdf_editor_points: float = 3.0
+    pdf_metadata_design_tool_points: float = 5.0
+    pdf_metadata_visual_editor_points: float = 8.0
+    pdf_metadata_generative_tool_points: float = 8.0
+    invalid_signature_points: float = 20.0
+    post_signature_change_points: float = 20.0
+    structured_content_mismatch_points: float = 20.0
+    malformed_structured_content_points: float = 4.0
+    structured_content_minimum_matches: int = 2
     ai_max_images: int = 20
     ai_max_inventory_images: int = 100
     ai_analyze_pdf_images: bool = False
@@ -36,6 +46,35 @@ class AnalysisConfig:
     ocr_enabled: bool = False
     ocr_url: str = "http://127.0.0.1:8007"
     ocr_timeout_seconds: int = 300
+    classification_enabled: bool = False
+    classification_url: str = "http://127.0.0.1:8030"
+    classification_model: str = "minimax_m2_1"
+    classification_timeout_seconds: int = 900
+    classification_max_input_chars: int = 20_000
+    classification_max_tokens: int = 32_768
+    classification_temperature: float = 0.0
+    extraction_enabled: bool = False
+    extraction_url: str = "http://127.0.0.1:8030"
+    extraction_model: str = "minimax_m2_1"
+    extraction_timeout_seconds: int = 1_800
+    extraction_max_input_chars: int = 48_000
+    extraction_max_tokens: int = 32_768
+    extraction_temperature: float = 0.0
+    extraction_coverage_retry: bool = False
+    verification_enabled: bool = False
+    verification_url: str = "http://127.0.0.1:8030"
+    verification_model: str = "minimax_m2_1"
+    verification_timeout_seconds: int = 1_800
+    verification_max_input_chars: int = 80_000
+    verification_max_tokens: int = 32_768
+    verification_temperature: float = 0.0
+    synthesis_enabled: bool = False
+    synthesis_url: str = "http://127.0.0.1:8030"
+    synthesis_model: str = "minimax_m2_1"
+    synthesis_timeout_seconds: int = 900
+    synthesis_max_input_chars: int = 24_000
+    synthesis_max_tokens: int = 32_768
+    synthesis_temperature: float = 0.0
 
     def __post_init__(self) -> None:
         if self.render_dpi < 72:
@@ -66,6 +105,27 @@ class AnalysisConfig:
             raise ValueError("ela_max_image_dimension must be at least 64")
         if not 0 < self.ela_max_region_area_fraction <= 1:
             raise ValueError("ela_max_region_area_fraction must be between 0 and 1")
+        provenance_points = {
+            "pdf_metadata_online_service_points": self.pdf_metadata_online_service_points,
+            "pdf_metadata_pdf_editor_points": self.pdf_metadata_pdf_editor_points,
+            "pdf_metadata_design_tool_points": self.pdf_metadata_design_tool_points,
+            "pdf_metadata_visual_editor_points": self.pdf_metadata_visual_editor_points,
+            "pdf_metadata_generative_tool_points": self.pdf_metadata_generative_tool_points,
+        }
+        for name, points in provenance_points.items():
+            if not 0 <= points <= 15:
+                raise ValueError(f"{name} must be between 0 and 15")
+        authenticity_points = {
+            "invalid_signature_points": self.invalid_signature_points,
+            "post_signature_change_points": self.post_signature_change_points,
+            "structured_content_mismatch_points": self.structured_content_mismatch_points,
+            "malformed_structured_content_points": self.malformed_structured_content_points,
+        }
+        for name, points in authenticity_points.items():
+            if not 0 <= points <= 30:
+                raise ValueError(f"{name} must be between 0 and 30")
+        if self.structured_content_minimum_matches < 1:
+            raise ValueError("structured_content_minimum_matches must be at least 1")
         if self.ai_max_images < 1:
             raise ValueError("ai_max_images must be at least 1")
         if self.ai_max_inventory_images < self.ai_max_images:
@@ -88,3 +148,53 @@ class AnalysisConfig:
             raise ValueError("ocr_url must not be empty when OCR is enabled")
         if self.ocr_timeout_seconds < 1:
             raise ValueError("ocr_timeout_seconds must be at least 1")
+        if self.classification_enabled and not self.classification_url.strip():
+            raise ValueError("classification_url must not be empty when classification is enabled")
+        if self.classification_enabled and not self.classification_model.strip():
+            raise ValueError(
+                "classification_model must not be empty when classification is enabled"
+            )
+        if self.classification_timeout_seconds < 1:
+            raise ValueError("classification_timeout_seconds must be at least 1")
+        if self.classification_max_input_chars < 100:
+            raise ValueError("classification_max_input_chars must be at least 100")
+        if self.classification_max_tokens < 100:
+            raise ValueError("classification_max_tokens must be at least 100")
+        if not 0 <= self.classification_temperature <= 2:
+            raise ValueError("classification_temperature must be between 0 and 2")
+        if self.extraction_enabled and not self.extraction_url.strip():
+            raise ValueError("extraction_url must not be empty when extraction is enabled")
+        if self.extraction_enabled and not self.extraction_model.strip():
+            raise ValueError("extraction_model must not be empty when extraction is enabled")
+        if self.extraction_timeout_seconds < 1:
+            raise ValueError("extraction_timeout_seconds must be at least 1")
+        if self.extraction_max_input_chars < 500:
+            raise ValueError("extraction_max_input_chars must be at least 500")
+        if self.extraction_max_tokens < 500:
+            raise ValueError("extraction_max_tokens must be at least 500")
+        if not 0 <= self.extraction_temperature <= 2:
+            raise ValueError("extraction_temperature must be between 0 and 2")
+        if self.verification_enabled and not self.verification_url.strip():
+            raise ValueError("verification_url must not be empty when verification is enabled")
+        if self.verification_enabled and not self.verification_model.strip():
+            raise ValueError("verification_model must not be empty when verification is enabled")
+        if self.verification_timeout_seconds < 1:
+            raise ValueError("verification_timeout_seconds must be at least 1")
+        if self.verification_max_input_chars < 1_000:
+            raise ValueError("verification_max_input_chars must be at least 1000")
+        if self.verification_max_tokens < 500:
+            raise ValueError("verification_max_tokens must be at least 500")
+        if not 0 <= self.verification_temperature <= 2:
+            raise ValueError("verification_temperature must be between 0 and 2")
+        if self.synthesis_enabled and not self.synthesis_url.strip():
+            raise ValueError("synthesis_url must not be empty when synthesis is enabled")
+        if self.synthesis_enabled and not self.synthesis_model.strip():
+            raise ValueError("synthesis_model must not be empty when synthesis is enabled")
+        if self.synthesis_timeout_seconds < 1:
+            raise ValueError("synthesis_timeout_seconds must be at least 1")
+        if self.synthesis_max_input_chars < 1_000:
+            raise ValueError("synthesis_max_input_chars must be at least 1000")
+        if self.synthesis_max_tokens < 100:
+            raise ValueError("synthesis_max_tokens must be at least 100")
+        if not 0 <= self.synthesis_temperature <= 2:
+            raise ValueError("synthesis_temperature must be between 0 and 2")

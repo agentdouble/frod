@@ -155,7 +155,10 @@ def _verify_payload(payload: bytes, page: int) -> LaboratoryObservation:
             "liste de confiance locale."
         ),
         page=page,
-        evidence=_document_evidence(document),
+        evidence={
+            **_document_evidence(document),
+            "structured_fields": document.named_fields,
+        },
     )
 
 

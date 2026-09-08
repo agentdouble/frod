@@ -21,11 +21,12 @@ IFS=$'\t' read -r \
   configured_max_upload \
   gapl_enabled \
   gapl_path \
-  trufor_enabled \
-  trufor_path \
+  ocr_enabled \
+  ocr_no_proxy_host \
   < <(
     uv run python - "$config_path" <<'PY'
 import sys
+from urllib.parse import urlsplit
 
 from fraude_detector.run_config import load_run_config
 
@@ -38,20 +39,26 @@ print(
             str(config.application.max_upload_size_mb),
             str(config.gapl.enabled).lower(),
             str(config.gapl.weights_path),
-            str(config.trufor.enabled).lower(),
-            str(config.trufor.weights_path),
+            str(config.analysis.ocr_enabled).lower(),
+            urlsplit(config.analysis.ocr_url).hostname or "",
         )
     )
 )
 PY
   )
 
+if [[ "$ocr_enabled" == true ]] && [[ -n "$ocr_no_proxy_host" ]]; then
+  current_no_proxy="${NO_PROXY:-${no_proxy:-}}"
+  case ",$current_no_proxy," in
+    *,"$ocr_no_proxy_host",*) ;;
+    *) current_no_proxy="${current_no_proxy:+$current_no_proxy,}$ocr_no_proxy_host" ;;
+  esac
+  export NO_PROXY="$current_no_proxy"
+  export no_proxy="$current_no_proxy"
+fi
+
 gapl_url="https://huggingface.co/AbyssLumine/GAPL/resolve/main/checkpoint.pt"
 gapl_sha256="ffbcb5eb526f0df0fd197d7266bdd0325b66813e95010f1285685acf2d267235"
-
-trufor_url="https://www.grip.unina.it/download/prog/TruFor/TruFor_weights.zip"
-trufor_archive_md5="7bee48f3476c75616c3c5721ab256ff8"
-trufor_sha256="ac1d90e329a72e0d66e8665e123a19e94bfae3209c3ef8a4f9ca3b91578c7844"
 
 file_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -61,18 +68,6 @@ file_sha256() {
   else
     uv run python -c \
       'import hashlib, sys; print(hashlib.file_digest(open(sys.argv[1], "rb"), "sha256").hexdigest())' \
-      "$1"
-  fi
-}
-
-file_md5() {
-  if command -v md5sum >/dev/null 2>&1; then
-    md5sum "$1" | awk '{print $1}'
-  elif command -v md5 >/dev/null 2>&1; then
-    md5 -q "$1"
-  else
-    uv run python -c \
-      'import hashlib, sys; print(hashlib.file_digest(open(sys.argv[1], "rb"), "md5").hexdigest())' \
       "$1"
   fi
 }
@@ -111,52 +106,6 @@ if [[ "$gapl_enabled" == true ]]; then
   fi
 fi
 
-if [[ "$trufor_enabled" == true ]]; then
-  trufor_ready=false
-  if [[ -f "$trufor_path" ]] && [[ "$(file_sha256 "$trufor_path")" == "$trufor_sha256" ]]; then
-    trufor_ready=true
-  fi
-
-  if [[ "$trufor_ready" != true ]]; then
-    printf '%s\n' "Telechargement du modele TruFor (premier demarrage uniquement)..."
-    mkdir -p "$(dirname -- "$trufor_path")"
-    trufor_archive="${trufor_path}.zip.part"
-    trufor_partial="${trufor_path}.part"
-    trap 'rm -f -- "$trufor_archive" "$trufor_partial"' EXIT
-    download_file "$trufor_url" "$trufor_archive"
-    if [[ "$(file_md5 "$trufor_archive")" != "$trufor_archive_md5" ]]; then
-      printf '%s\n' "L'archive TruFor telechargee est invalide (MD5 incorrect)."
-      exit 1
-    fi
-    uv run python - "$trufor_archive" "$trufor_partial" <<'PY'
-import shutil
-import sys
-from pathlib import Path
-from zipfile import ZipFile
-
-archive = Path(sys.argv[1])
-destination = Path(sys.argv[2])
-with ZipFile(archive) as zipped:
-    matches = [
-        name for name in zipped.namelist()
-        if name.rstrip("/").endswith("/trufor.pth.tar")
-        or name.rstrip("/") == "trufor.pth.tar"
-    ]
-    if len(matches) != 1:
-        raise SystemExit("Checkpoint TruFor absent ou ambigu dans l'archive.")
-    with zipped.open(matches[0]) as source, destination.open("wb") as target:
-        shutil.copyfileobj(source, target)
-PY
-    if [[ "$(file_sha256 "$trufor_partial")" != "$trufor_sha256" ]]; then
-      printf '%s\n' "Le checkpoint TruFor extrait est invalide (SHA-256 incorrect)."
-      exit 1
-    fi
-    mv -f -- "$trufor_partial" "$trufor_path"
-    rm -f -- "$trufor_archive"
-    trap - EXIT
-  fi
-fi
-
 requested_port="$configured_port"
 port="$(
   uv run python - "$configured_host" "$requested_port" <<'PY'
@@ -180,7 +129,6 @@ PY
 
 export FROD_CONFIG="$config_path"
 export FROD_GAPL_WEIGHTS="$gapl_path"
-export FROD_TRUFOR_WEIGHTS="$trufor_path"
 printf '\nApplication disponible sur http://%s:%s\n\n' "$configured_host" "$port"
 exec uv run streamlit run app/streamlit_app.py \
   --server.address "$configured_host" \

@@ -47,6 +47,8 @@ def test_pipeline_writes_report_and_page_render(vector_pdf: Path, tmp_path: Path
     serialized = json.dumps(payload)
     assert "fraud_confirmed" not in serialized
     assert "authentic" not in payload["assessment"]["level"]
+    assert "findings" in payload
+    assert all("findings" not in detector for detector in payload["detectors"])
     for paths in payload["artifacts"].values():
         for relative_path in paths:
             assert ".." not in Path(relative_path).parts

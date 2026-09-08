@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -9,25 +12,25 @@ from streamlit.testing.v1 import AppTest
 
 def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
-    assert app.segmented_control[0].options == ["Analyse", "Glossaire"]
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].options == ["Général", "Analyse IA", "Glossaire"]
+    assert app.segmented_control[0].value == "Général"
     assert len(app.file_uploader) == 1
     assert [selectbox.label for selectbox in app.selectbox] == ["Document de démonstration"]
     assert not app.button
 
     app.selectbox[0].select("Montant modifié").run(timeout=30)
 
-    markdown = "\n".join(element.value for element in app.markdown)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
     assert not app.exception
     assert not app.file_uploader
     assert [selectbox.label for selectbox in app.selectbox] == ["Vue affichée"]
     assert [button.label for button in app.button] == ["Tester un nouveau document"]
     assert "Fichier prêt pour analyse" not in markdown
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.slider
     assert not app.select_slider
 
@@ -37,17 +40,17 @@ def test_demo_runs_immediately_and_can_reset(monkeypatch, tmp_path: Path) -> Non
     assert [selectbox.label for selectbox in app.selectbox] == ["Document de démonstration"]
     assert not app.button
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
 
 
 def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("Montant modifié").run(timeout=30)
 
-    markdown = "\n".join(element.value for element in app.markdown)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert not app.exception
     assert "<h1>FROD</h1>" in markdown
@@ -57,7 +60,7 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert '<h2 class="workspace-title">Document</h2>' not in markdown
     assert "Synthèse de revue" in markdown
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert 'class="analysis-handoff"' not in markdown
     assert "Document reçu" not in markdown
     assert "Préparation des contrôles" not in markdown
@@ -99,6 +102,8 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
     assert not app.expander
     assert "Zones à revoir - page 1" in app.selectbox[0].options
 
+    app = _wait_for_ai(app)
+    markdown = "\n".join(element.value for element in app.markdown)
     assert "Signature électronique du PDF" not in markdown
     assert "Facture électronique embarquée" not in markdown
     assert "Code de vérification 2D-Doc" not in markdown
@@ -117,17 +122,23 @@ def test_modified_demo_renders_single_review_workspace(monkeypatch, tmp_path: Pa
         '<section class="indicator-sequence"' in element.value for element in app.markdown
     )
 
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
+
+    assert not app.exception
+    assert app.segmented_control[0].value == "Analyse IA"
+    assert [selectbox.label for selectbox in app.selectbox] == ["Vue affichée"]
+    assert "Zones à revoir - page 1" in app.selectbox[0].options
+
 
 def test_ocr_results_are_integrated_into_the_review_workspace(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
     monkeypatch.setenv("FROD_OCR_URL", "http://ocr.test:8007")
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "post",
         lambda *args, **kwargs: _Response(
             {
@@ -144,11 +155,12 @@ def test_ocr_results_are_integrated_into_the_review_workspace(
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
     app.selectbox[0].select("Montant modifié").run(timeout=30)
+    app = _wait_for_ai(app)
 
     markdown = "\n".join(element.value for element in app.markdown)
     assert not app.exception
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.expander
     assert "Zones de texte reconnues - page 1" in app.selectbox[0].options
     assert "Contrôles effectués" in markdown
@@ -161,7 +173,6 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
@@ -173,7 +184,7 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert not app.slider
     assert not app.select_slider
     assert not app.tabs
-    assert app.segmented_control[0].value == "Analyse"
+    assert app.segmented_control[0].value == "Général"
     assert not app.expander
     sequence = _component_markup(app, '<section class="indicator-sequence"')
     assert sequence.count('class="indicator-step ') == 1
@@ -201,6 +212,123 @@ def test_precomputed_ocr_demo_runs_without_source_document(
     assert "Cohérence des dates, montants et identifiants reconnus." in glossary
 
 
+def test_extraction_laboratory_has_a_business_readable_empty_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
+    monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
+
+    app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
+    app.selectbox[0].select("OCR - Relevé bancaire à anomalies").run(timeout=30)
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
+    markdown = "\n".join(element.value for element in app.markdown)
+
+    assert not app.exception
+    assert app.segmented_control[0].value == "Analyse IA"
+    assert "OCR - Relevé bancaire à anomalies" in markdown
+    assert "Aucune extraction disponible" in markdown
+    assert "Texte reconnu" in markdown
+    assert "TRANSACTION SUMMARY" in markdown
+    assert [expander.label for expander in app.expander] == ["Texte reconnu par OCR"]
+
+
+def test_extraction_laboratory_exposes_final_json_on_demand(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
+    monkeypatch.setenv("FROD_WORK_DIR", str(tmp_path / "frod"))
+    monkeypatch.setenv("FROD_CLASSIFICATION_URL", "http://extract.test:8030")
+    monkeypatch.setenv("FROD_EXTRACTION_URL", "http://extract.test:8030")
+    monkeypatch.setenv("FROD_VERIFICATION_URL", "http://extract.test:8030")
+    monkeypatch.setenv("FROD_SYNTHESIS_URL", "http://extract.test:8030")
+    calls: list[list[str]] = []
+
+    def fake_post(url: str, **kwargs: Any) -> _Response:
+        assert url == "http://extract.test:8030/v1/chat/completions"
+        roles = [message["role"] for message in kwargs["json"]["messages"]]
+        calls.append(roles)
+        prompt = kwargs["json"]["messages"][1]["content"]
+        if "<document_ocr>" in prompt:
+            result = {
+                "category": "declaration_sinistre",
+                "model_confidence": 0.96,
+                "ambiguous": False,
+                "language": "fr",
+                "country": None,
+                "category_evidence": ["Le document décrit un sinistre."],
+                "country_evidence": None,
+            }
+            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
+        if "<extraction_targets>" in prompt:
+            result = {
+                "issues": [],
+                "possible_omissions": [],
+            }
+            return _Response({"choices": [{"message": {"content": json.dumps(result)}}]})
+        if "<evidence_inventory>" in prompt:
+            result = (
+                "Déclaration de sinistre : aucun indice prioritaire n'a été relevé par les "
+                "contrôles disponibles. Cette absence ne valide pas le document."
+            )
+            return _Response({"choices": [{"message": {"content": result}}]})
+        region_ids = sorted(set(re.findall(r'<region id="([^"]+)"', prompt)))
+        result = {
+            "facts": [
+                {
+                    "field_code": "document_number",
+                    "role": "document",
+                    "raw_label": "Document",
+                    "raw_value": "DECLARATION DE SINISTRE",
+                    "region_ids": ["p001-r000"],
+                }
+            ],
+            "additional_fields": [],
+            "tables": [],
+            "region_dispositions": {
+                "boilerplate": [],
+                "unstructured": region_ids,
+                "unreadable": [],
+            },
+        }
+        return _Response(
+            {"choices": [{"message": {"content": json.dumps(result)}}]},
+        )
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
+    app.selectbox[0].select("OCR - Déclaration cohérente").run(timeout=30)
+    app.segmented_control[0].set_value("Analyse IA").run(timeout=30)
+    markdown_blocks = [element.value for element in app.markdown]
+    markdown = "\n".join(markdown_blocks)
+
+    assert not app.exception
+    assert [expander.label for expander in app.expander] == [
+        "Pourquoi ce classement ?",
+        "Texte reconnu par OCR",
+        "JSON final de l'extraction",
+    ]
+    assert "Extraction cohérente avec l'OCR" in markdown
+    assert "Déclaration de sinistre : aucun indice prioritaire" in markdown
+    assert "Cette absence ne valide pas le document" in markdown
+    classification_index = next(
+        index for index, value in enumerate(markdown_blocks) if "Type de document reconnu" in value
+    )
+    extraction_index = next(
+        index
+        for index, value in enumerate(markdown_blocks)
+        if '<section class="extraction-overview">' in value
+    )
+    assert classification_index < extraction_index
+    assert calls == [
+        ["system", "user"],
+        ["system", "user"],
+        ["system", "user"],
+        ["system", "user"],
+    ]
+
+
 def test_local_original_ocr_demo_is_discovered_when_present(
     monkeypatch,
     tmp_path: Path,
@@ -211,7 +339,6 @@ def test_local_original_ocr_demo_is_discovered_when_present(
     (fixture_dir / "document.json").write_text("[]\n", encoding="utf-8")
     (fixture_dir / "document.md").write_text("Original local\n", encoding="utf-8")
     monkeypatch.setenv("FROD_GAPL_WEIGHTS", "/tmp/frod-missing-gapl.pt")
-    monkeypatch.setenv("FROD_TRUFOR_WEIGHTS", "/tmp/frod-missing-trufor.pth.tar")
     monkeypatch.setenv("FROD_WORK_DIR", str(work_dir))
 
     app = AppTest.from_file("app/streamlit_app.py", default_timeout=30).run()
@@ -224,12 +351,23 @@ def test_business_ui_contains_no_json_renderer() -> None:
     document_view = source[
         source.index("def _render_document_view") : source.index("def _render_review_summary")
     ]
+    laboratory_view = source[
+        source.index("def _render_extraction_laboratory") : source.index("LAB_STATE_LABELS")
+    ]
+    report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
 
-    assert "st.json" not in source
+    assert source.count("st.json(") == 1
+    assert '"extraction": extraction.to_dict()' in laboratory_view
+    assert '"verification": verification.to_dict()' in laboratory_view
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
-    assert "st.expander" not in source
-    report_view = source[source.index("def _render_report") : source.index("def _read_ocr")]
+    assert source.count("st.expander(") == 4
+    assert "JSON final de l'extraction" in laboratory_view
+    assert "Pourquoi ce classement ?" in source
+    assert "Texte reconnu par OCR" in laboratory_view
+    assert "_render_classification(classification)" in laboratory_view
+    assert "_render_classification(report.classification)" not in report_view
+    assert "raw_response" not in source
     assert 'st.columns([0.56, 0.44], gap="large")' in report_view
     assert (
         report_view.index("with document_column:")
@@ -333,14 +471,14 @@ def test_document_action_is_reserved_in_the_app_header() -> None:
         source.index("def _render_app_header") : source.index("def _render_input_panel")
     ]
 
-    assert "workspace_view, header_action = _render_app_header()" in main_view
+    assert "workspace_view, header_action = _render_app_header(" in main_view
     assert "_render_header_document_action(header_action)" in main_view
     assert app_header.index("st.segmented_control(") < app_header.index("action_slot = st.empty()")
     assert 'key="header_actions"' in app_header
     assert 'horizontal_alignment="right"' in app_header
     assert 'width="content"' in app_header
     assert 'with st.container(key="header_navigation", width="content"):' in app_header
-    assert 'return selected or "Analyse", action_slot' in app_header
+    assert 'return selected or "Général", action_slot' in app_header
 
 
 def _css_rule(styles: str, selector: str) -> str:
@@ -351,6 +489,17 @@ def _css_rule(styles: str, selector: str) -> str:
 
 def _component_markup(app: AppTest, marker: str) -> str:
     return next(element.value for element in app.markdown if marker in element.value)
+
+
+def _wait_for_ai(app: AppTest, *, timeout_seconds: float = 5.0) -> AppTest:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        analysis = app.session_state["analysis"]
+        if analysis.get("status") == "ready":
+            return app.run(timeout=30)
+        time.sleep(0.05)
+        app.run(timeout=30)
+    raise AssertionError("L'analyse IA de test n'a pas terminé dans le délai imparti")
 
 
 class _Response:

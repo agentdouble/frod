@@ -41,7 +41,8 @@ def test_committed_clean_fixture_has_no_detected_signal(
     assert report.document.page_count == 1
     assert report.assessment.level == "low"
     assert report.assessment.score == 0
-    assert report.findings == ()
+    assert not any(finding.risk_points for finding in report.findings)
+    assert {finding.code for finding in report.findings} == {"PDF_SOFTWARE_UNKNOWN"}
     assert detector_statuses["pdf_structure"] == "completed"
     assert detector_statuses["revision_diff"] == "not_applicable"
     assert (output_dir / "pages/page-001.png").is_file()

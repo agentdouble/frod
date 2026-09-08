@@ -2,59 +2,42 @@
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import html as html_lib
 import json
 import os
 import re
-import shutil
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-from fraude_detector.config import AnalysisConfig
+from fraude_detector.analysis_service import AnalysisRunHandle, AnalysisService
 from fraude_detector.errors import AnalysisError
-from fraude_detector.gapl import (
-    best_available_device,
-    create_gapl_adapter,
-)
-from fraude_detector.image_pipeline import ImageAnalysisPipeline
-from fraude_detector.laboratory import (
-    analyze_image_laboratory,
-    analyze_ocr_laboratory,
-    analyze_pdf_laboratory,
-)
-from fraude_detector.laboratory.visual_repetition import analyze_repeated_visual_regions
 from fraude_detector.models import (
     AnalysisReport,
+    AnalysisSynthesis,
     DetectorResult,
+    DocumentClassification,
+    DocumentExtraction,
+    ExtractionVerification,
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
-    OcrReport,
 )
-from fraude_detector.ocr_consistency import build_ocr_content_result
-from fraude_detector.pipeline import AnalysisPipeline
-from fraude_detector.run_config import load_run_config
+from fraude_detector.run_config import RunConfig, load_run_config
 from fraude_detector.scoring import FAMILY_CAPS, assess_risk
 
 CONFIG_PATH = Path(os.environ.get("FROD_CONFIG", "config.yaml"))
 PROJECT_CONFIG = load_run_config(CONFIG_PATH)
 WORK_DIR = PROJECT_CONFIG.application.work_dir
-UPLOAD_DIR = WORK_DIR / "uploads"
-RUN_DIR = WORK_DIR / "runs"
-GAPL_WEIGHTS = PROJECT_CONFIG.gapl.weights_path
-TRUFOR_WEIGHTS = PROJECT_CONFIG.trufor.weights_path
-TRUFOR_PIXEL_BUDGET = PROJECT_CONFIG.trufor.max_pixels
 CONFIG_FINGERPRINT = hashlib.sha256(repr(PROJECT_CONFIG).encode("utf-8")).hexdigest()[:12]
 ANALYSIS_POLICY_VERSION = (
-    f"gapl-p25-90-v2-trufor-lab-v1-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
+    f"gapl-p25-90-v2-ocr-content-v3-structured-identifiers-{CONFIG_FINGERPRINT}"
 )
 INDICATOR_STEP_SECONDS = 0.45
+AI_PENDING_VIEW = "Analyse IA · en cours"
 OCR_IDENTIFIER_PREFIXES = (
     "OCR_CARD_",
     "OCR_IBAN_",
@@ -145,10 +128,12 @@ CATEGORY_DESCRIPTIONS = {
 CATEGORY_DETECTORS = {
     "annotations": frozenset({"page_composition"}),
     "content_consistency": frozenset({"ocr_content"}),
-    "document_integrity": frozenset({"pdf_structure"}),
+    "document_integrity": frozenset({"pdf_structure", "document_authenticity"}),
     "metadata": frozenset({"pdf_structure"}),
     "page_composition": frozenset({"page_composition"}),
-    "provenance_integrity": frozenset({"image_provenance"}),
+    "provenance_integrity": frozenset(
+        {"image_provenance", "document_authenticity"}
+    ),
     "raster_forensics": frozenset({"raster_anomaly"}),
     "revision_history": frozenset({"pdf_structure"}),
     "revision_visual": frozenset({"revision_diff"}),
@@ -166,6 +151,68 @@ class InputDocument:
 class OcrDemoDocument:
     name: str
     fixture_dir: Path
+
+
+def _analysis_is_pending(state: object) -> bool:
+    return isinstance(state, dict) and state.get("status") in {"core_running", "ai_running"}
+
+
+def _cancel_analysis(state: object) -> None:
+    if not isinstance(state, dict):
+        return
+    handle = state.get("ai_handle")
+    if isinstance(handle, AnalysisRunHandle):
+        handle.cancel()
+
+
+@st.fragment(run_every=0.5)
+def _poll_ai_analysis(current_key: tuple[str, str, str]) -> None:
+    state = st.session_state.get("analysis")
+    if (
+        not isinstance(state, dict)
+        or state.get("key") != current_key
+        or state.get("status") != "ai_running"
+    ):
+        return
+
+    handle = state.get("ai_handle")
+    if isinstance(handle, AnalysisRunHandle):
+        for event in handle.drain_progress():
+            state["progress"] = max(float(state.get("progress", 0.0)), event.value)
+            state["progress_label"] = event.label
+
+    if isinstance(handle, AnalysisRunHandle) and handle.done():
+        try:
+            result = handle.result()
+        except Exception as error:
+            state.update(
+                status="ready",
+                laboratory=_empty_laboratory_report(),
+                synthesis=None,
+                synthesis_error=(
+                    "L'analyse IA n'a pas pu être terminée : "
+                    f"{type(error).__name__}: {str(error)[:180]}"
+                ),
+            )
+        else:
+            state.update(
+                status="ready",
+                report=result.report,
+                laboratory=result.laboratory,
+                synthesis=result.synthesis,
+                synthesis_error=result.synthesis_error,
+                progress=1.0,
+                progress_label="Analyse IA terminée",
+            )
+        state.pop("ai_handle", None)
+        st.session_state["analysis"] = state
+        st.rerun()
+
+    _render_analysis_progress(
+        st,
+        0.5 + 0.5 * float(state.get("progress", 0.0)),
+        str(state.get("progress_label", "Analyse IA en cours")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,7 +234,9 @@ def main() -> None:
         initial_sidebar_state="collapsed",
     )
     _inject_styles()
-    workspace_view, header_action = _render_app_header()
+    workspace_view, header_action = _render_app_header(
+        ai_pending=_analysis_is_pending(st.session_state.get("analysis"))
+    )
     uploaded_file = _render_input_panel(hidden=workspace_view == "Glossaire")
 
     if uploaded_file is None:
@@ -205,9 +254,6 @@ def main() -> None:
 
     file_bytes = uploaded_file.data
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    config = _config_from_state()
-
-    progress = st.empty()
 
     current_key = (
         ANALYSIS_POLICY_VERSION,
@@ -215,42 +261,71 @@ def main() -> None:
         uploaded_file.name,
     )
     cached = st.session_state.get("analysis")
-    if cached is not None and cached.get("key") == current_key:
-        report = cached["report"]
-        laboratory = cached.get("laboratory")
-        output_dir = cached["output_dir"]
-        source_path = cached["source_path"]
-    else:
+    if not isinstance(cached, dict) or cached.get("key") != current_key:
+        _cancel_analysis(cached)
+        st.session_state["analysis"] = {
+            "key": current_key,
+            "status": "core_running",
+            "progress": 0.0,
+            "progress_label": "Préparation de l'analyse",
+        }
+        st.rerun()
+
+    cached = st.session_state["analysis"]
+    status = cached.get("status")
+    if status == "core_running":
+        progress = st.empty()
         _render_analysis_progress(progress, 0.0, "Préparation de l'analyse")
         try:
-            report, laboratory, output_dir, source_path = _run_analysis(
+            core = _analysis_service(PROJECT_CONFIG).run_core(
                 file_name=uploaded_file.name,
                 file_bytes=file_bytes,
                 file_hash=file_hash,
-                config=config,
                 progress_callback=lambda value, text: _render_analysis_progress(
                     progress,
-                    value,
+                    0.5 * value,
                     text,
                 ),
             )
-            _render_analysis_progress(progress, 1.0, "Analyse terminée")
         except AnalysisError as error:
             progress.empty()
+            cached.update(status="core_failed", error=f"Erreur [{error.code}] : {error}")
             st.error(f"Erreur [{error.code}] : {error}")
             return
         except Exception as error:
             progress.empty()
-            st.error(f"Erreur inattendue : {type(error).__name__}: {str(error)[:240]}")
+            message = f"Erreur inattendue : {type(error).__name__}: {str(error)[:240]}"
+            cached.update(status="core_failed", error=message)
+            st.error(message)
             return
-        progress.empty()
-        st.session_state["analysis"] = {
-            "key": current_key,
-            "report": report,
-            "laboratory": laboratory,
-            "output_dir": output_dir,
-            "source_path": source_path,
-        }
+        handle = _analysis_service(PROJECT_CONFIG).start_ai(core)
+        cached.update(
+            status="ai_running",
+            report=core.report,
+            laboratory=None,
+            synthesis=None,
+            synthesis_error=None,
+            output_dir=core.output_dir,
+            source_path=core.source_path,
+            progress=0.0,
+            progress_label="Préparation de l'analyse IA",
+            ai_handle=handle,
+        )
+        st.rerun()
+
+    if status == "core_failed":
+        st.error(str(cached.get("error", "L'analyse principale a échoué.")))
+        return
+
+    report = cached["report"]
+    laboratory = cached.get("laboratory")
+    synthesis = cached.get("synthesis")
+    synthesis_error = cached.get("synthesis_error")
+    output_dir = cached["output_dir"]
+    source_path = cached["source_path"]
+
+    if status == "ai_running":
+        _poll_ai_analysis(current_key)
 
     entering = _render_pdf_loading_if_pending(
         workspace_view,
@@ -258,18 +333,37 @@ def main() -> None:
     )
     result_key = "analysis_results_entering" if entering else "analysis_results_ready"
     with st.container(key=result_key):
-        _render_report(
-            report,
-            laboratory,
-            output_dir,
-            source_path,
-            document_name=uploaded_file.name,
-            workspace_view=workspace_view,
-        )
+        if workspace_view == AI_PENDING_VIEW:
+            _render_ai_pending_state()
+        else:
+            _render_report(
+                report,
+                laboratory,
+                synthesis,
+                output_dir,
+                source_path,
+                document_name=uploaded_file.name,
+                workspace_view=workspace_view,
+                synthesis_error=synthesis_error,
+            )
     _render_pending_scroll_reset()
 
 
-def _render_app_header() -> tuple[str, Any]:
+def _render_app_header(*, ai_pending: bool = False) -> tuple[str, Any]:
+    legacy_view = st.session_state.get("workspace_view")
+    if legacy_view == "Analyse":
+        st.session_state["workspace_view"] = "Général"
+    elif legacy_view == "Laboratoire":
+        st.session_state["workspace_view"] = "Analyse IA"
+    elif ai_pending and legacy_view == "Analyse IA":
+        st.session_state["workspace_view"] = "Général"
+    elif not ai_pending and legacy_view == AI_PENDING_VIEW:
+        st.session_state["workspace_view"] = "Analyse IA"
+    navigation = (
+        ("Général", AI_PENDING_VIEW, "Glossaire")
+        if ai_pending
+        else ("Général", "Analyse IA", "Glossaire")
+    )
     with st.container(
         key="app_header",
         horizontal=True,
@@ -292,18 +386,20 @@ def _render_app_header() -> tuple[str, Any]:
             with st.container(key="header_navigation", width="content"):
                 selected = st.segmented_control(
                     "Navigation principale",
-                    ("Analyse", "Glossaire"),
-                    default="Analyse",
+                    navigation,
+                    default="Général",
                     key="workspace_view",
                     label_visibility="collapsed",
                 )
             action_slot = st.empty()
-    return selected or "Analyse", action_slot
+    return selected or "Général", action_slot
 
 
 def _render_input_panel(*, hidden: bool = False) -> InputDocument | OcrDemoDocument | None:
     selected_document = st.session_state.get("selected_document")
     if isinstance(selected_document, dict):
+        input_slot = st.empty()
+        input_slot.empty()
         if selected_document.get("kind") == "input":
             return InputDocument(
                 name=str(selected_document["name"]),
@@ -371,6 +467,7 @@ def _render_input_panel(*, hidden: bool = False) -> InputDocument | OcrDemoDocum
         st.session_state["pending_scroll_reset"] = True
         st.session_state["pending_pdf_loading"] = True
         input_slot.empty()
+        st.rerun()
     return document
 
 
@@ -386,7 +483,7 @@ def _reset_document_input() -> None:
     revision = int(st.session_state.get("document_input_revision", 0))
     st.session_state["document_input_revision"] = revision + 1
     st.session_state.pop("selected_document", None)
-    st.session_state.pop("analysis", None)
+    _cancel_analysis(st.session_state.pop("analysis", None))
     st.session_state.pop("pending_pdf_loading", None)
 
 
@@ -412,7 +509,7 @@ def _render_pending_scroll_reset() -> None:
 
 
 def _render_pdf_loading_if_pending(workspace_view: str, *, label: str) -> bool:
-    if workspace_view != "Analyse":
+    if workspace_view != "Général":
         return False
     if not st.session_state.pop("pending_pdf_loading", False):
         return False
@@ -433,7 +530,7 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
     json_bytes = json_path.read_bytes()
     markdown = markdown_path.read_text(encoding="utf-8")
     fixture_hash = hashlib.sha256(json_bytes + markdown.encode("utf-8")).hexdigest()
-    current_key = ("ocr-demo-v2", document.name, fixture_hash)
+    current_key = ("ocr-demo-v3", document.name, fixture_hash)
 
     cached = st.session_state.get("analysis")
     if cached is not None and cached.get("key") == current_key:
@@ -441,30 +538,39 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
         markdown = cached["ocr_markdown"]
         laboratory = cached["laboratory"]
         ocr_detector = cached["ocr_detector"]
+        classification = cached.get("classification")
+        extraction = cached.get("extraction")
+        verification = cached.get("verification")
+        synthesis = cached.get("synthesis")
+        synthesis_error = cached.get("synthesis_error")
     else:
         try:
             payload = json.loads(json_bytes)
         except json.JSONDecodeError as error:
             st.error(f"Fixture OCR invalide : {error}")
             return
-        laboratory = LaboratoryReport(
-            schema_version="0.1-experimental",
-            checks=analyze_ocr_laboratory(payload),
+        result = _analysis_service(PROJECT_CONFIG).analyze_ocr_fixture(
+            payload=payload,
+            markdown=markdown,
         )
-        ocr_detector = build_ocr_content_result(
-            OcrReport(
-                success=True,
-                error_message=None,
-                markdown=markdown,
-                json_result=payload,
-            )
-        )
+        laboratory = result.laboratory
+        ocr_detector = result.ocr_detector
+        classification = result.classification
+        extraction = result.extraction
+        verification = result.verification
+        synthesis = result.synthesis
+        synthesis_error = result.synthesis_error
         st.session_state["analysis"] = {
             "key": current_key,
             "ocr_payload": payload,
             "ocr_markdown": markdown,
             "laboratory": laboratory,
             "ocr_detector": ocr_detector,
+            "classification": classification,
+            "extraction": extraction,
+            "verification": verification,
+            "synthesis": synthesis,
+            "synthesis_error": synthesis_error,
         }
 
     entering = _render_pdf_loading_if_pending(
@@ -478,164 +584,22 @@ def _handle_ocr_demo(document: OcrDemoDocument, *, workspace_view: str) -> None:
             markdown=markdown,
             laboratory=laboratory,
             ocr_detector=ocr_detector,
+            classification=classification,
+            extraction=extraction,
+            verification=verification,
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
             workspace_view=workspace_view,
         )
 
 
-def _config_from_state() -> AnalysisConfig:
-    return PROJECT_CONFIG.analysis
-
-
-def _run_analysis(
-    *,
-    file_name: str,
-    file_bytes: bytes,
-    file_hash: str,
-    config: AnalysisConfig,
-    progress_callback: Callable[[float, str], None] | None = None,
-) -> tuple[
-    AnalysisReport | ImageAnalysisReport,
-    LaboratoryReport | None,
-    Path,
-    Path,
-]:
-    def report_progress(value: float, text: str) -> None:
-        if progress_callback is not None:
-            progress_callback(value, text)
-
-    report_progress(0.02, "Preparation du fichier")
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    RUN_DIR.mkdir(parents=True, exist_ok=True)
-
-    safe_name = _safe_filename(file_name)
-    source = UPLOAD_DIR / f"{file_hash[:16]}-{safe_name}"
-    source.write_bytes(file_bytes)
-
-    output_dir = RUN_DIR / file_hash[:16]
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-
-    adapters = ()
-    gapl_adapter = None
-    if PROJECT_CONFIG.gapl.enabled and GAPL_WEIGHTS.is_file():
-        report_progress(0.06, "Chargement de l'analyse des images générées par IA")
-        device = (
-            best_available_device()
-            if PROJECT_CONFIG.gapl.device == "auto"
-            else PROJECT_CONFIG.gapl.device
-        )
-        gapl_adapter = _load_gapl_adapter(
-            str(GAPL_WEIGHTS.resolve()),
-            device,
-        )
-        adapters = (gapl_adapter,)
-
-    if _is_pdf_bytes(file_bytes):
-
-        def pipeline_progress(value: float, text: str) -> None:
-            report_progress(0.12 + 0.62 * value, text)
-
-        report = AnalysisPipeline(
-            config=config,
-            ai_image_adapters=adapters,
-        ).analyze(
-            source,
-            output_dir,
-            progress_callback=pipeline_progress,
-        )
-
-        laboratory = (
-            analyze_pdf_laboratory(
-                source,
-                output_dir,
-                config=config,
-                progress_callback=lambda value, text: report_progress(
-                    0.74 + 0.26 * value,
-                    text,
-                ),
-            )
-            if PROJECT_CONFIG.laboratory.pdf_enabled
-            else _empty_laboratory_report()
-        )
-        laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
-        return report, laboratory, output_dir, source
-
-    def pipeline_progress(value: float, text: str) -> None:
-        report_progress(0.12 + 0.60 * value, text)
-
-    report = ImageAnalysisPipeline(
-        config=config,
-        ai_image_adapters=adapters,
-    ).analyze(
-        source,
-        output_dir,
-        progress_callback=pipeline_progress,
-    )
-    _release_transient_memory()
-    laboratory = (
-        analyze_image_laboratory(
-            source,
-            output_dir,
-            trufor_weights=TRUFOR_WEIGHTS,
-            trufor_max_pixels=TRUFOR_PIXEL_BUDGET,
-            trufor_timeout_seconds=PROJECT_CONFIG.trufor.timeout_seconds,
-            progress_callback=lambda value, text: report_progress(
-                0.72 + 0.28 * value,
-                text,
-            ),
-        )
-        if PROJECT_CONFIG.laboratory.image_enabled and PROJECT_CONFIG.trufor.enabled
-        else _empty_laboratory_report()
-    )
-    laboratory = _with_ocr_laboratory(report, laboratory, output_dir, source)
-    return report, laboratory, output_dir, source
+@st.cache_resource(show_spinner=False)
+def _analysis_service(config: RunConfig) -> AnalysisService:
+    return AnalysisService(config)
 
 
 def _empty_laboratory_report() -> LaboratoryReport:
     return LaboratoryReport(schema_version="1.0", checks=())
-
-
-def _with_ocr_laboratory(
-    report: AnalysisReport | ImageAnalysisReport,
-    laboratory: LaboratoryReport,
-    output_dir: Path,
-    source_path: Path,
-) -> LaboratoryReport:
-    json_paths = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("ocr_json", ()),
-    )
-    if not json_paths:
-        return laboratory
-    try:
-        payload = json.loads(json_paths[0].read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return laboratory
-    page_images = _existing_artifacts(
-        output_dir,
-        report.artifacts.get("page_renders", ()),
-    )
-    if not page_images and isinstance(report, ImageAnalysisReport) and source_path.is_file():
-        page_images = [source_path]
-    visual_repetition = (
-        analyze_repeated_visual_regions(
-            payload,
-            tuple(page_images),
-            output_dir / "laboratory",
-            minimum_pages=PROJECT_CONFIG.laboratory.visual_repetition_min_pages,
-            minimum_similarity=PROJECT_CONFIG.laboratory.visual_repetition_similarity,
-        )
-        if PROJECT_CONFIG.laboratory.visual_repetition_enabled
-        else None
-    )
-    return LaboratoryReport(
-        schema_version=laboratory.schema_version,
-        checks=(
-            *laboratory.checks,
-            *analyze_ocr_laboratory(payload),
-            *((visual_repetition,) if visual_repetition is not None else ()),
-        ),
-    )
 
 
 def _render_empty_state() -> None:
@@ -650,14 +614,28 @@ def _render_empty_state() -> None:
     )
 
 
+def _render_ai_pending_state() -> None:
+    st.markdown(
+        """
+        <section class="ai-pending-state" role="status" aria-live="polite">
+          <strong>Analyse IA en cours</strong>
+          <span>Les résultats seront affichés dès que tous les traitements seront terminés.</span>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_report(
     report: AnalysisReport | ImageAnalysisReport,
     laboratory: LaboratoryReport | None,
+    synthesis: AnalysisSynthesis | None,
     output_dir: Path,
     source_path: Path,
     *,
     document_name: str,
     workspace_view: str,
+    synthesis_error: str | None = None,
 ) -> None:
     findings = sorted(
         report.findings,
@@ -670,6 +648,22 @@ def _render_report(
 
     if workspace_view == "Glossaire":
         _render_indicator_glossary()
+        return
+    if workspace_view == "Analyse IA":
+        _render_extraction_laboratory(
+            report.extraction,
+            classification=report.classification,
+            verification=report.extraction_verification,
+            recognized_text=_read_ocr_markdown(report, output_dir),
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
+            report=report,
+            laboratory=laboratory,
+            output_dir=output_dir,
+            source_path=source_path,
+            layout_images=layout_images,
+            document_name=document_name,
+        )
         return
 
     document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
@@ -695,6 +689,11 @@ def _render_ocr_demo_report(
     markdown: str,
     laboratory: LaboratoryReport,
     ocr_detector: DetectorResult,
+    classification: DocumentClassification | None,
+    extraction: DocumentExtraction | None,
+    verification: ExtractionVerification | None,
+    synthesis: AnalysisSynthesis | None,
+    synthesis_error: str | None,
     workspace_view: str,
 ) -> None:
     finding = ocr_detector.findings[0] if ocr_detector.findings else None
@@ -703,6 +702,17 @@ def _render_ocr_demo_report(
     color = LEVEL_STYLE[tone]["color"]
     if workspace_view == "Glossaire":
         _render_indicator_glossary(categories=("content_consistency",))
+        return
+    if workspace_view == "Analyse IA":
+        _render_extraction_laboratory(
+            extraction,
+            classification=classification,
+            verification=verification,
+            recognized_text=markdown,
+            synthesis=synthesis,
+            synthesis_error=synthesis_error,
+            document_name=name,
+        )
         return
 
     document_column, indicators_column = st.columns([0.56, 0.44], gap="large")
@@ -743,6 +753,467 @@ def _read_ocr_layout_images(
         output_dir,
         report.artifacts.get("ocr_layout", ()),
     )
+
+
+def _read_ocr_markdown(
+    report: AnalysisReport | ImageAnalysisReport,
+    output_dir: Path,
+) -> str:
+    paths = _existing_artifacts(output_dir, report.artifacts.get("ocr_markdown", ()))
+    if not paths:
+        return ""
+    try:
+        return paths[0].read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+EXTRACTION_FIELD_LABELS = {
+    "person_name": "Personne",
+    "organization_name": "Organisation",
+    "address": "Adresse",
+    "phone_number": "Téléphone",
+    "email_address": "Adresse e-mail",
+    "document_number": "Numéro de document",
+    "invoice_number": "Numéro de facture",
+    "contract_number": "Numéro de contrat",
+    "claim_number": "Numéro de sinistre",
+    "account_number": "Numéro de compte",
+    "tax_identifier": "Identifiant fiscal",
+    "professional_identifier": "Identifiant professionnel",
+    "registration_identifier": "Numéro d'enregistrement",
+    "other_identifier": "Autre identifiant",
+    "iban": "IBAN",
+    "bic": "BIC",
+    "payment_card_number": "Numéro de carte",
+    "date": "Date",
+    "date_period": "Période",
+    "monetary_amount": "Montant",
+    "quantity": "Quantité",
+    "percentage": "Pourcentage",
+    "service_description": "Service",
+    "service_code": "Code de service",
+    "product_description": "Produit",
+    "product_code": "Code produit",
+    "transaction_description": "Transaction",
+}
+
+EXTRACTION_ROLE_LABELS = {
+    "issuer": "Émetteur",
+    "recipient": "Destinataire",
+    "customer": "Client",
+    "patient": "Patient",
+    "practitioner": "Professionnel",
+    "provider": "Prestataire",
+    "beneficiary": "Bénéficiaire",
+    "payer": "Payeur",
+    "account_holder": "Titulaire",
+    "bank": "Banque",
+    "insurer": "Assureur",
+    "employer": "Employeur",
+    "supplier": "Fournisseur",
+    "document": "Document",
+    "invoice": "Facture",
+    "contract": "Contrat",
+    "claim": "Sinistre",
+    "transaction": "Transaction",
+    "line_item": "Ligne",
+    "subtotal": "Sous-total",
+    "tax": "Taxe",
+    "total": "Total",
+    "opening_balance": "Solde initial",
+    "closing_balance": "Solde final",
+    "debit": "Débit",
+    "credit": "Crédit",
+    "unit_price": "Prix unitaire",
+    "issue": "Émission",
+    "due": "Échéance",
+    "payment": "Paiement",
+    "declaration": "Déclaration",
+    "event": "Événement",
+    "signature": "Signature",
+    "purchase": "Achat",
+    "service": "Prestation",
+    "start": "Début",
+    "end": "Fin",
+    "birth": "Naissance",
+    "expiry": "Expiration",
+    "other": "Autre",
+}
+
+EXTRACTION_COLUMN_ROLE_LABELS = {
+    "transaction_date": "Date de transaction",
+    "value_date": "Date de valeur",
+    "description": "Libellé",
+    "debit_amount": "Débit",
+    "credit_amount": "Crédit",
+    "amount": "Montant",
+    "currency": "Devise",
+    "balance": "Solde",
+    "quantity": "Quantité",
+    "unit_price": "Prix unitaire",
+    "tax_rate": "Taux de taxe",
+    "tax_amount": "Montant de taxe",
+    "line_total": "Total de ligne",
+    "service_code": "Code de service",
+    "product_code": "Code produit",
+    "other": "Autre",
+}
+
+EXTRACTION_ROW_ROLE_LABELS = {
+    "transaction": "Opération",
+    "opening_balance": "Solde initial",
+    "closing_balance": "Solde final",
+    "subtotal": "Sous-total",
+    "total": "Total",
+    "section_header": "En-tête",
+    "line_item": "Ligne détaillée",
+    "informational": "Information",
+    "other": "Autre",
+}
+
+
+def _render_extraction_laboratory(
+    extraction: DocumentExtraction | None,
+    *,
+    classification: DocumentClassification | None = None,
+    verification: ExtractionVerification | None = None,
+    recognized_text: str = "",
+    synthesis: AnalysisSynthesis | None = None,
+    synthesis_error: str | None = None,
+    report: AnalysisReport | ImageAnalysisReport | None = None,
+    laboratory: LaboratoryReport | None = None,
+    output_dir: Path | None = None,
+    source_path: Path | None = None,
+    layout_images: list[Path] | None = None,
+    document_name: str = "Document analysé",
+) -> None:
+    _render_laboratory_synthesis(synthesis, synthesis_error=synthesis_error)
+
+    has_visual_workspace = (
+        report is not None and output_dir is not None and source_path is not None
+    )
+    if has_visual_workspace:
+        document_column, context_column = st.columns([0.56, 0.44], gap="large")
+        with document_column:
+            _render_document_view(
+                report=report,
+                laboratory=laboratory,
+                output_dir=output_dir,
+                source_path=source_path,
+                layout_images=layout_images or [],
+                document_name=document_name,
+            )
+        with context_column, st.container(key="laboratory_context"):
+            _render_classification(classification)
+            if extraction is not None:
+                _render_extraction_overview(extraction)
+            _render_extraction_verification(verification)
+    else:
+        st.markdown(
+            f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
+            unsafe_allow_html=True,
+        )
+        _render_classification(classification)
+        if extraction is not None:
+            _render_extraction_overview(extraction)
+        _render_extraction_verification(verification)
+
+    if extraction is None:
+        st.markdown(
+            """
+            <div class="extraction-empty">
+              <strong>Aucune extraction disponible</strong>
+              <span>Activer l'OCR et l'extraction locale, puis relancer l'analyse.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if recognized_text:
+            with st.expander("Texte reconnu par OCR", expanded=False):
+                _render_recognized_text(recognized_text)
+        return
+
+    coverage = extraction.coverage
+
+    if extraction.facts:
+        rows = []
+        for fact in extraction.facts:
+            field_label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
+            role_label = EXTRACTION_ROLE_LABELS.get(fact.role, fact.role)
+            normalized = (
+                str(fact.normalized_value)
+                if fact.normalized_value is not None
+                else "Non normalisée"
+            )
+            if fact.normalized_currency is not None:
+                normalized = f"{normalized} {fact.normalized_currency}"
+            displayed_value = fact.corrected_value or fact.raw_value
+            source_value = (
+                f"<span>Lecture OCR : {_html(fact.raw_value)}</span>"
+                if fact.corrected_value is not None
+                else ""
+            )
+            page = f"Page {fact.page}" if fact.page is not None else "Source non localisée"
+            rows.append(
+                "<tr>"
+                f"<td><strong>{_html(field_label)}</strong><span>{_html(role_label)}</span></td>"
+                f"<td><strong>{_html(displayed_value)}</strong>{source_value}</td>"
+                f"<td>{_html(normalized)}</td>"
+                f"<td>{_html(page)}</td>"
+                "</tr>"
+            )
+        st.markdown(
+            '<h3 class="subsection-title">Informations comparables</h3>'
+            '<div class="extraction-table-wrap"><table class="extraction-table">'
+            "<thead><tr><th>Champ</th><th>Valeur lue</th><th>Valeur de comparaison</th>"
+            "<th>Source</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>",
+            unsafe_allow_html=True,
+        )
+
+    if extraction.additional_fields:
+        cards = []
+        for field in extraction.additional_fields:
+            page = f"Page {field.page}" if field.page is not None else "Source non localisée"
+            displayed_value = field.corrected_value or field.raw_value
+            source_value = (
+                f"<small>Lecture OCR : {_html(field.raw_value)}</small>"
+                if field.corrected_value is not None
+                else ""
+            )
+            cards.append(
+                '<article class="additional-extraction">'
+                f"<span>{_html(field.raw_label)}</span>"
+                f"<strong>{_html(displayed_value)}</strong>"
+                f"{source_value}"
+                f"<small>{_html(page)}</small>"
+                "</article>"
+            )
+        st.markdown(
+            '<h3 class="subsection-title">Autres informations présentes</h3>'
+            '<section class="additional-extractions">' + "".join(cards) + "</section>",
+            unsafe_allow_html=True,
+        )
+
+    for index, table in enumerate(extraction.tables, start=1):
+        title = table.title or f"Tableau {index}"
+        transaction_count = sum(role == "transaction" for role in table.row_roles)
+        table_summary = (
+            f" · {transaction_count} opération(s) identifiée(s)"
+            if table.semantic_type == "transactions"
+            else ""
+        )
+        headers = table.headers or tuple(
+            f"Colonne {column + 1}"
+            for column in range(max((len(row) for row in table.rows), default=0))
+        )
+        roles = (*table.column_roles, *("other" for _ in range(len(headers))))[: len(headers)]
+        head = "<th>Nature</th>" + "".join(
+            "<th>"
+            f"{_html(header or f'Colonne {index + 1}')}"
+            f"<span>{_html(EXTRACTION_COLUMN_ROLE_LABELS.get(role, role))}</span>"
+            "</th>"
+            for index, (header, role) in enumerate(zip(headers, roles, strict=True))
+        )
+        body_rows = []
+        row_roles = (*table.row_roles, *("other" for _ in range(len(table.rows))))[
+            : len(table.rows)
+        ]
+        for row, row_role in zip(table.rows, row_roles, strict=True):
+            cells = (*row, *("" for _ in range(max(0, len(headers) - len(row)))))
+            body_rows.append(
+                "<tr>"
+                '<td><span class="extraction-row-role">'
+                f"{_html(EXTRACTION_ROW_ROLE_LABELS.get(row_role, row_role))}"
+                "</span></td>"
+                + "".join(f"<td>{_html(cell)}</td>" for cell in cells[: len(headers)])
+                + "</tr>"
+            )
+        st.markdown(
+            f'<h3 class="subsection-title">{_html(title + table_summary)}</h3>'
+            '<div class="extraction-table-wrap"><table class="extraction-table">'
+            f"<thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody>"
+            "</table></div>",
+            unsafe_allow_html=True,
+        )
+
+    if coverage.uncovered_region_ids:
+        st.markdown(
+            f"""
+            <div class="extraction-coverage-warning">
+              <strong>{len(coverage.uncovered_region_ids)} zone(s)
+                restent sans interprétation</strong>
+              <span>Elles sont conservées dans la sortie OCR et pourront être retraitées.</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    if recognized_text:
+        with st.expander("Texte reconnu par OCR", expanded=False):
+            _render_recognized_text(recognized_text, compact=True)
+
+    with st.expander("JSON final de l'extraction", expanded=False):
+        st.json(
+            {
+                "extraction": extraction.to_dict(),
+                "verification": verification.to_dict() if verification is not None else None,
+            }
+        )
+
+
+def _render_laboratory_synthesis(
+    synthesis: AnalysisSynthesis | None,
+    *,
+    synthesis_error: str | None,
+) -> None:
+    if synthesis is None:
+        if synthesis_error:
+            st.markdown(
+                f"""
+                <section class="laboratory-synthesis unavailable">
+                  <span>Synthèse de l'analyse</span>
+                  <strong>Synthèse indisponible</strong>
+                  <p>{_html(synthesis_error)}</p>
+                </section>
+                """,
+                unsafe_allow_html=True,
+            )
+        return
+
+    st.markdown(
+        f"""
+        <section class="laboratory-synthesis">
+          <span>Synthèse de l'analyse</span>
+          <p>{_html(synthesis.text)}</p>
+          <small>Résumé fondé uniquement sur les contrôles et informations affichés.</small>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_extraction_overview(extraction: DocumentExtraction) -> None:
+    coverage = extraction.coverage
+    coverage_tone = "clear" if coverage.ratio >= 0.95 else "attention"
+    st.markdown(
+        f"""
+        <section class="extraction-overview">
+          <article class="extraction-coverage {coverage_tone}">
+            <div><strong>{coverage.ratio:.0%}</strong><span>Couverture des zones OCR</span></div>
+            <i><b style="width:{coverage.ratio:.1%}"></b></i>
+            <small>{coverage.accounted_regions} zone(s) comptabilisée(s)
+              sur {coverage.total_regions}</small>
+          </article>
+          <article><strong>{len(extraction.facts)}</strong><span>Faits comparables</span></article>
+          <article><strong>{len(extraction.additional_fields)}</strong>
+            <span>Informations additionnelles</span></article>
+          <article><strong>{len(extraction.tables)}</strong>
+            <span>Tableaux conservés</span></article>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_extraction_verification(
+    verification: ExtractionVerification | None,
+) -> None:
+    if verification is None:
+        st.markdown(
+            """
+            <section class="verification-summary unavailable">
+              <strong>Vérification indépendante non exécutée</strong>
+              <span>L'extraction affichée reste le résultat initial du modèle.</span>
+            </section>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    attention_reviews = tuple(
+        review
+        for review in verification.reviews
+        if review.verdict in {"ambiguous", "contradicted"} and not review.correction_applied
+    )
+    corrected_count = sum(review.correction_applied for review in verification.reviews)
+    if verification.status == "clean":
+        if corrected_count:
+            title = "Extraction corrigée et cohérente avec l'OCR"
+            detail = (
+                f"{corrected_count} correction(s) structurée(s) appliquée(s), "
+                "sans contradiction restante avec le texte reconnu."
+            )
+        else:
+            title = "Extraction cohérente avec l'OCR"
+            detail = (
+                f"{verification.expected_targets} élément(s) comparé(s) au texte reconnu, "
+                "sans contradiction concrète relevée."
+            )
+    elif verification.status == "incomplete":
+        title = "Vérification partielle"
+        detail = (
+            "La vérification n'a pas pu couvrir toute l'extraction. "
+            "L'extraction initiale n'a pas été modifiée."
+        )
+    else:
+        title = "Qualité de l'extraction à contrôler"
+        detail = (
+            f"{len(attention_reviews)} interprétation(s) discutée(s) et "
+            f"{len(verification.omissions)} omission(s) possible(s). "
+            "Ces points n'entrent pas dans le score de risque."
+        )
+    st.markdown(
+        f"""
+        <section class="verification-summary {verification.status}">
+          <strong>{_html(title)}</strong>
+          <span>{_html(detail)}</span>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    issue_cards = []
+    for review in attention_reviews:
+        label = (
+            "Correction d'extraction proposée"
+            if review.verdict == "contradicted"
+            else "Interprétation de l'extraction à confirmer"
+        )
+        affected_rows = (
+            "<small>Ligne(s) concernée(s) : "
+            + ", ".join(str(index + 1) for index in review.problematic_row_indexes)
+            + "</small>"
+            if review.problematic_row_indexes
+            else ""
+        )
+        suggestion = (
+            f"<small>Proposition : {_html(review.suggested_value)}</small>"
+            if review.suggested_value
+            else ""
+        )
+        issue_cards.append(
+            '<article class="verification-issue">'
+            f"<span>{_html(label)} · {_html(review.target_id)}</span>"
+            f"<strong>{_html(review.explanation)}</strong>"
+            f"{affected_rows}"
+            f"{suggestion}</article>"
+        )
+    for omission in verification.omissions:
+        value = f" · {_html(omission.proposed_value)}" if omission.proposed_value else ""
+        issue_cards.append(
+            '<article class="verification-issue omission">'
+            f"<span>Information possiblement omise par l'extraction{value}</span>"
+            f"<strong>{_html(omission.description)}</strong>"
+            "</article>"
+        )
+    if issue_cards:
+        st.markdown(
+            '<section class="verification-issues">' + "".join(issue_cards) + "</section>",
+            unsafe_allow_html=True,
+        )
 
 
 LAB_STATE_LABELS = {
@@ -1002,8 +1473,6 @@ def _render_document_view(
                     observation.artifacts,
                 ):
                     if path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}:
-                        if _is_secondary_localization_artifact(path):
-                            continue
                         choices[_laboratory_artifact_caption(path)] = path
 
     if not choices:
@@ -1055,10 +1524,84 @@ def _render_review_summary(
             f'<div class="diagnostic-count">{len(diagnostics)} observation(s) informative(s)</div>',
             unsafe_allow_html=True,
         )
+        software_provenance = [
+            finding for finding in diagnostics if finding.code.startswith("PDF_SOFTWARE_")
+        ]
+        for finding, occurrences in _group_findings(software_provenance):
+            _finding_card(finding, diagnostic=True, occurrences=occurrences)
 
     _render_ocr_field_cards(laboratory)
     _render_attention_observations(laboratory)
     _render_control_matrix(laboratory)
+
+
+def _render_classification(classification: DocumentClassification | None) -> None:
+    """Render the semantic family without exposing model internals."""
+    if not classification:
+        return
+
+    st.markdown(
+        '<h2 class="workspace-title">Type de document reconnu</h2>',
+        unsafe_allow_html=True,
+    )
+
+    family_labels = {
+        "facture_recu": "Facture ou reçu",
+        "devis": "Devis",
+        "releve_bancaire": "Relevé bancaire",
+        "justificatif_bancaire": "Justificatif bancaire",
+        "document_medical": "Document médical",
+        "declaration_sinistre": "Déclaration de sinistre",
+        "constat_accident": "Constat d'accident",
+        "contrat_attestation": "Contrat ou attestation",
+        "piece_identite": "Pièce d'identité",
+        "justificatif_revenus_fiscal": "Justificatif de revenus ou fiscal",
+        "justificatif_domicile": "Justificatif de domicile",
+        "correspondance": "Correspondance",
+        "autre": "Type non déterminé",
+    }
+    family_label = family_labels.get(classification.family, "Type non déterminé")
+    if classification.family == "autre":
+        tone = "undetermined"
+    elif classification.reliability >= 0.75:
+        tone = "reliable"
+    elif classification.reliability >= 0.50:
+        tone = "attention"
+    else:
+        tone = "uncertain"
+
+    language = classification.language.upper() if classification.language else "Non déterminée"
+    country = classification.country or "Non déterminé"
+
+    st.markdown(
+        f"""
+        <div class="classification-card {tone}">
+            <div class="classification-content">
+                <div class="classification-category">{_html(family_label)}</div>
+                <div class="classification-metadata">
+                    <span>Langue <strong>{_html(language)}</strong></span>
+                    <span>Pays <strong>{_html(country)}</strong></span>
+                    <span>Fiabilité du classement
+                      <strong>{classification.reliability:.0%}</strong>
+                    </span>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if classification.evidence:
+        with st.expander("Pourquoi ce classement ?", expanded=False):
+            st.markdown(
+                '<div class="classification-evidence-title">'
+                "Éléments ayant guidé le classement</div>"
+                + "".join(
+                    f'<blockquote class="classification-evidence">{_html(excerpt)}</blockquote>'
+                    for excerpt in classification.evidence
+                ),
+                unsafe_allow_html=True,
+            )
 
 
 def _group_findings(findings: list[Finding]) -> list[tuple[Finding, int]]:
@@ -1190,6 +1733,7 @@ def _render_recognized_text(markdown: str, *, compact: bool = False) -> None:
 def _render_analysis_progress(target: Any, value: float, label: str) -> None:
     bounded = min(1.0, max(0.0, value))
     percentage = round(bounded * 100)
+    content_progress = _content_progress_markup(label, bounded)
     target.markdown(
         f"""
         <div class="analysis-progress">
@@ -1200,15 +1744,75 @@ def _render_analysis_progress(target: Any, value: float, label: str) -> None:
           <div class="analysis-progress-track">
             <i style="width:{percentage}%"></i>
           </div>
+          {content_progress}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-@st.cache_resource(show_spinner=False)
-def _load_gapl_adapter(weights_path: str, device: str) -> Any:
-    return create_gapl_adapter(weights_path=weights_path, device=device)
+def _content_progress_markup(label: str, progress: float) -> str:
+    config = PROJECT_CONFIG.analysis
+    if not config.ocr_enabled:
+        return ""
+    stages = [
+        ("ocr", "OCR", True),
+        ("classification", "Classement", config.classification_enabled),
+        ("extraction", "Extraction", config.extraction_enabled),
+        ("verification", "Vérification", config.verification_enabled),
+        ("synthesis", "Synthèse", config.synthesis_enabled),
+    ]
+    enabled_stages = tuple((key, title) for key, title, enabled in stages if enabled)
+    if not enabled_stages:
+        return ""
+
+    state_key = "_analysis_content_progress_stage"
+    if progress <= 0.02:
+        st.session_state[state_key] = -1
+    detected = _content_stage_from_label(label)
+    if detected is not None:
+        detected_index = next(
+            (index for index, (key, _) in enumerate(enabled_stages) if key == detected),
+            None,
+        )
+        if detected_index is not None:
+            st.session_state[state_key] = max(
+                int(st.session_state.get(state_key, -1)),
+                detected_index,
+            )
+    if progress >= 1:
+        current_index = len(enabled_stages)
+    else:
+        current_index = int(st.session_state.get(state_key, -1))
+
+    items = []
+    for index, (_, title) in enumerate(enabled_stages):
+        state = "completed" if index < current_index else "active" if index == current_index else ""
+        items.append(
+            f'<span class="content-progress-stage {state}"><b>{_html(title)}</b><i></i></span>'
+        )
+    return (
+        '<div class="content-progress" aria-label="Progression de l’analyse du contenu">'
+        + "".join(items)
+        + "</div>"
+    )
+
+
+def _content_stage_from_label(label: str) -> str | None:
+    lowered = label.casefold()
+    if "synthèse" in lowered or "synthese" in lowered:
+        return "synthesis"
+    if "vérification" in lowered or "verification" in lowered:
+        return "verification"
+    if "extraction" in lowered:
+        return "extraction"
+    if "classification" in lowered:
+        return "classification"
+    if "reconnaissance" in lowered or "contenu reconnu" in lowered:
+        return "ocr"
+    if "analyse du contenu terminée" in lowered:
+        return "verification"
+    return None
 
 
 def _render_score(
@@ -1284,6 +1888,8 @@ def _finding_card(
     gapl_index = finding.evidence.get("global_index")
     if gapl_index is not None:
         confidence_label = f"Ressemblance estimée : {float(gapl_index):.0%}"
+    elif finding.code.startswith("PDF_SOFTWARE_"):
+        confidence_label = "Information déclarée dans les métadonnées du PDF"
     elif finding.detector == "ocr_content":
         confidence_label = f"Fiabilité de la lecture : {finding.confidence:.0%}"
     else:
@@ -1320,6 +1926,10 @@ def _existing_artifacts(output_dir: Path, relatives: tuple[str, ...]) -> list[Pa
     return paths
 
 
+def _is_pdf_bytes(file_bytes: bytes) -> bool:
+    return b"%PDF-" in file_bytes[:1024]
+
+
 def _tone_for_points(points: float, status: str) -> str:
     if points >= 45:
         return "danger"
@@ -1330,27 +1940,6 @@ def _tone_for_points(points: float, status: str) -> str:
     if status == "partial":
         return "partial"
     return "neutral"
-
-
-def _is_pdf_bytes(file_bytes: bytes) -> bool:
-    return b"%PDF-" in file_bytes[:1024]
-
-
-def _safe_filename(name: str) -> str:
-    clean = re.sub(r"[^a-zA-Z0-9_.-]+", "-", Path(name).name).strip("-")
-    return clean or "uploaded-file"
-
-
-def _release_transient_memory() -> None:
-    gc.collect()
-    try:
-        import ctypes
-
-        malloc_trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
-        if malloc_trim is not None:
-            malloc_trim(0)
-    except (AttributeError, OSError):
-        pass
 
 
 def _friendly_artifact_caption(path: Path) -> str:
@@ -1369,17 +1958,11 @@ def _friendly_artifact_caption(path: Path) -> str:
 
 
 def _laboratory_artifact_caption(path: Path) -> str:
-    if "trufor-localization" in path.name:
-        return "Carte des incohérences locales"
     if "revision" in path.name:
         return "Différences entre les versions"
     if "repeated-visual-region" in path.name:
         return "Comparaison des éléments visuels répétés"
     return "Visualisation complémentaire"
-
-
-def _is_secondary_localization_artifact(path: Path) -> bool:
-    return any(marker in path.name for marker in ("trufor-reliable", "trufor-confidence"))
 
 
 def _business_finding_copy(finding: Finding) -> tuple[str, str]:
@@ -1415,16 +1998,11 @@ def _format_identifier_value(code: str, value: str) -> str:
 
 
 def _business_observation_title(observation: Any) -> str:
-    if str(observation.code).startswith("TRUFOR_"):
-        if observation.code == "TRUFOR_UNAVAILABLE":
-            return "Analyse des retouches locales indisponible"
-        return _sentence_case(observation.title)
     return _sentence_case(observation.title)
 
 
 def _business_check_title(code: str, title: str) -> str:
     labels = {
-        "trufor": "Recherche de retouches locales",
         "pades": "Signature électronique du PDF",
         "facturx": "Facture électronique embarquée",
         "two_d_doc": "Code de vérification 2D-Doc",
@@ -1448,9 +2026,6 @@ def _sentence_case(value: object) -> str:
 def _business_text(value: object) -> str:
     text = str(value)
     replacements = (
-        ("Indice TruFor", "Indice de retouche locale"),
-        ("Analyse TruFor", "Analyse des retouches locales"),
-        ("TruFor", "le détecteur de retouches locales"),
         ("GAPL", "le détecteur d'images générées par IA"),
         ("score Frod", "score global"),
         ("Score Frod", "Score global"),
@@ -1664,6 +2239,51 @@ def _inject_styles() -> None:
           border-radius: inherit;
           transition: width .18s ease;
         }
+        .content-progress {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+          gap: .5rem;
+          margin-top: .65rem;
+        }
+        .content-progress-stage {
+          display: grid;
+          gap: .28rem;
+          min-width: 0;
+          color: #77747d;
+          font-size: .63rem;
+          font-weight: 750;
+        }
+        .content-progress-stage b {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .content-progress-stage i {
+          position: relative;
+          display: block;
+          height: 3px;
+          overflow: hidden;
+          border-radius: 999px;
+          background: #323137;
+        }
+        .content-progress-stage.completed {
+          color: #b8b5af;
+        }
+        .content-progress-stage.completed i {
+          background: #4d8fa0;
+        }
+        .content-progress-stage.active {
+          color: var(--ink);
+        }
+        .content-progress-stage.active i::after {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: 42%;
+          border-radius: inherit;
+          background: var(--cyan);
+          animation: content-progress-active 1.25s ease-in-out infinite alternate;
+        }
         .pdf-loading-stage {
           display: flex;
           align-items: center;
@@ -1709,6 +2329,25 @@ def _inject_styles() -> None:
         .empty-state p {
           margin: 0;
           font-size: .86rem;
+        }
+        .ai-pending-state {
+          min-height: 140px;
+          display: grid;
+          place-content: center;
+          gap: .35rem;
+          text-align: center;
+          border: 1px solid #31566a;
+          border-radius: 6px;
+          background: #151d22;
+          color: #d9e9f0;
+        }
+        .ai-pending-state strong {
+          color: var(--cyan);
+          font-size: 1rem;
+        }
+        .ai-pending-state span {
+          color: #aebbc1;
+          font-size: .82rem;
         }
         .fraud-score {
           display: flex;
@@ -2029,6 +2668,10 @@ def _inject_styles() -> None:
         @keyframes indicator-score-reveal {
           to { opacity: 1; }
         }
+        @keyframes content-progress-active {
+          from { transform: translateX(0); opacity: .55; }
+          to { transform: translateX(138%); opacity: 1; }
+        }
         @keyframes pdf-loading-spin {
           to { transform: rotate(360deg); }
         }
@@ -2287,6 +2930,297 @@ def _inject_styles() -> None:
           margin: 1rem 0 .45rem;
           padding: 0;
         }
+        .extraction-empty,
+        .extraction-coverage-warning {
+          display: flex;
+          flex-direction: column;
+          gap: .25rem;
+          padding: .8rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--muted);
+          border-radius: 6px;
+          background: #19191d;
+        }
+        .extraction-empty span,
+        .extraction-coverage-warning span {
+          color: var(--muted);
+          font-size: .75rem;
+        }
+        .extraction-coverage-warning {
+          margin-top: .8rem;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .verification-summary {
+          display: flex;
+          flex-direction: column;
+          gap: .22rem;
+          margin-top: .85rem;
+          padding: .75rem .8rem;
+          border: 1px solid #28583d;
+          border-left: 5px solid var(--green);
+          border-radius: 6px;
+          background: #142019;
+        }
+        .verification-summary.attention,
+        .verification-summary.incomplete {
+          border-color: #665527;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .verification-summary.unavailable {
+          border-color: var(--line);
+          border-left-color: #77747d;
+          background: #19191d;
+        }
+        .verification-summary span {
+          color: var(--muted);
+          font-size: .7rem;
+        }
+        .laboratory-synthesis {
+          position: relative;
+          overflow: hidden;
+          margin: .35rem 0 1rem;
+          padding: 1rem 1.1rem 1rem 1.2rem;
+          border: 1px solid #31526d;
+          border-left: 6px solid var(--cyan);
+          border-radius: 7px;
+          background: #161d24;
+        }
+        .laboratory-synthesis::after {
+          content: "";
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 5px;
+          height: 100%;
+          background: var(--blue);
+          opacity: .8;
+        }
+        .laboratory-synthesis.unavailable {
+          border-color: var(--line);
+          border-left-color: #77747d;
+          background: #19191d;
+        }
+        .laboratory-synthesis > span,
+        .laboratory-synthesis > strong,
+        .laboratory-synthesis > small {
+          display: block;
+        }
+        .laboratory-synthesis > span {
+          margin-bottom: .35rem;
+          color: var(--cyan);
+          font-size: .67rem;
+          font-weight: 850;
+          text-transform: uppercase;
+        }
+        .laboratory-synthesis > strong {
+          max-width: 1100px;
+          font-size: 1.02rem;
+          line-height: 1.35;
+        }
+        .laboratory-synthesis p {
+          max-width: 1180px;
+          margin: .45rem 0 0;
+          color: #d0ccc5;
+          font-size: .82rem;
+          line-height: 1.5;
+        }
+        .laboratory-synthesis ul {
+          display: flex;
+          flex-wrap: wrap;
+          gap: .35rem;
+          padding: 0;
+          margin: .65rem 0 0;
+          list-style: none;
+        }
+        .laboratory-synthesis li {
+          padding: .32rem .46rem;
+          border: 1px solid #3c5965;
+          border-radius: 4px;
+          background: #17252b;
+          color: #cdeff4;
+          font-size: .68rem;
+        }
+        .laboratory-synthesis > small {
+          margin-top: .65rem;
+          color: var(--muted);
+          font-size: .64rem;
+        }
+        .verification-issues {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: .45rem;
+          margin-top: .45rem;
+        }
+        .verification-issue {
+          display: flex;
+          flex-direction: column;
+          gap: .24rem;
+          min-width: 0;
+          padding: .65rem;
+          border: 1px solid #665527;
+          border-left: 4px solid var(--amber);
+          border-radius: 5px;
+          background: #211d16;
+        }
+        .verification-issue.omission {
+          border-color: #665527;
+          border-left-color: var(--amber);
+          background: #211d16;
+        }
+        .verification-issue span,
+        .verification-issue small {
+          color: var(--muted);
+          font-size: .62rem;
+        }
+        .verification-issue strong {
+          font-size: .75rem;
+          overflow-wrap: anywhere;
+        }
+        .extraction-overview {
+          display: grid;
+          grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(130px, 1fr));
+          gap: .55rem;
+          margin-bottom: .85rem;
+        }
+        .st-key-laboratory_context .extraction-overview {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          margin-top: .75rem;
+        }
+        .st-key-laboratory_context .extraction-overview > article {
+          min-height: 92px;
+        }
+        .st-key-laboratory_context .verification-summary {
+          margin-top: .65rem;
+        }
+        .extraction-overview > article {
+          min-height: 105px;
+          padding: .75rem;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #19191d;
+        }
+        .extraction-overview > article > strong,
+        .extraction-coverage div strong {
+          display: block;
+          color: var(--ink);
+          font-size: 1.45rem;
+          line-height: 1;
+        }
+        .extraction-overview > article > span,
+        .extraction-coverage div span,
+        .extraction-coverage small {
+          display: block;
+          margin-top: .35rem;
+          color: var(--muted);
+          font-size: .68rem;
+        }
+        .extraction-coverage {
+          border-left: 5px solid var(--amber) !important;
+        }
+        .extraction-coverage.clear {
+          border-left-color: var(--green) !important;
+        }
+        .extraction-coverage i {
+          display: block;
+          height: 7px;
+          margin-top: .55rem;
+          overflow: hidden;
+          border-radius: 4px;
+          background: #2c2c32;
+        }
+        .extraction-coverage i b {
+          display: block;
+          height: 100%;
+          background: var(--amber);
+        }
+        .extraction-coverage.clear i b { background: var(--green); }
+        .extraction-table-wrap {
+          width: 100%;
+          max-height: 420px;
+          overflow: auto;
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #17171b;
+        }
+        .extraction-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: .72rem;
+        }
+        .extraction-table th,
+        .extraction-table td {
+          padding: .55rem .6rem;
+          border-bottom: 1px solid var(--line);
+          text-align: left;
+          vertical-align: top;
+        }
+        .extraction-table th {
+          position: sticky;
+          top: 0;
+          z-index: 1;
+          color: var(--muted);
+          background: #202025;
+          font-size: .62rem;
+          text-transform: uppercase;
+        }
+        .extraction-table th span {
+          display: block;
+          margin-top: .16rem;
+          color: var(--cyan);
+          font-size: .56rem;
+          text-transform: none;
+        }
+        .extraction-table td strong,
+        .extraction-table td span {
+          display: block;
+        }
+        .extraction-table td span {
+          margin-top: .15rem;
+          color: var(--muted);
+          font-size: .62rem;
+        }
+        .extraction-table td .extraction-row-role {
+          display: inline-flex;
+          margin: 0;
+          padding: .2rem .36rem;
+          border: 1px solid #3c5965;
+          border-radius: 4px;
+          color: #bdebf3;
+          background: #17252b;
+          font-size: .58rem;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+        .additional-extractions {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: .45rem;
+        }
+        .additional-extraction {
+          min-width: 0;
+          padding: .65rem;
+          border: 1px solid var(--line);
+          border-left: 4px solid var(--blue);
+          border-radius: 5px;
+          background: #181c24;
+        }
+        .additional-extraction span,
+        .additional-extraction strong,
+        .additional-extraction small {
+          display: block;
+        }
+        .additional-extraction span,
+        .additional-extraction small {
+          color: var(--muted);
+          font-size: .64rem;
+        }
+        .additional-extraction strong {
+          margin: .2rem 0;
+          overflow-wrap: anywhere;
+          font-size: .78rem;
+        }
         @media (max-width: 700px) {
           .block-container {
             padding: .8rem .75rem 1.5rem;
@@ -2319,7 +3253,9 @@ def _inject_styles() -> None:
             width: auto;
           }
           .extracted-fields,
-          .control-matrix {
+          .control-matrix,
+          .additional-extractions,
+          .extraction-overview {
             grid-template-columns: 1fr;
           }
           .indicator-sequence {
@@ -2397,6 +3333,58 @@ def _inject_styles() -> None:
             opacity: 1;
             animation: none;
           }
+        }
+        /* Classification card styles - matching finding-card style */
+        .classification-card {
+          padding: 0.85rem 0.9rem;
+          margin-bottom: 0.5rem;
+          border: 1px solid var(--line);
+          border-left: 5px solid var(--blue);
+          border-radius: 6px;
+          background: #181e28;
+        }
+        .classification-card.reliable { border-left-color: var(--blue); background: #181e28; }
+        .classification-card.attention { border-left-color: var(--amber); background: #1d1a17; }
+        .classification-card.uncertain,
+        .classification-card.undetermined { border-left-color: var(--muted); background: #1b1a1e; }
+        .classification-content {
+          display: flex;
+          flex-direction: column;
+          gap: 0.45rem;
+        }
+        .classification-category {
+          color: var(--ink);
+          font-size: 1rem;
+          font-weight: 800;
+        }
+        .classification-metadata {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 0.45rem 1rem;
+          color: var(--muted);
+          font-size: 0.72rem;
+        }
+        .classification-metadata strong {
+          color: var(--ink);
+          margin-left: 0.2rem;
+        }
+        .classification-evidence-title {
+          color: var(--muted);
+          font-size: 0.68rem;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          margin: 0.5rem 0 0.3rem;
+        }
+        .classification-evidence {
+          color: #d8d5cf;
+          font-size: 0.78rem;
+          line-height: 1.4;
+          margin: 0.25rem 0;
+          padding: 0.35rem 0.55rem;
+          border-left: 2px solid var(--blue);
+          background: #17171b;
         }
         </style>
         """,

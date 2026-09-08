@@ -16,6 +16,10 @@ def test_load_run_config_resolves_input_relative_to_yaml(tmp_path: Path) -> None
     assert config.input_path == (tmp_path / "documents/test.png").resolve()
     assert config.application.work_dir == (tmp_path / ".frod").resolve()
     assert config.analysis.render_dpi == 144
+    assert config.analysis.classification_model == "minimax_m2_1"
+    assert config.analysis.extraction_model == "minimax_m2_1"
+    assert config.analysis.verification_model == "minimax_m2_1"
+    assert config.analysis.synthesis_model == "minimax_m2_1"
 
 
 def test_load_run_config_accepts_legacy_pdf_path(tmp_path: Path) -> None:
@@ -54,6 +58,18 @@ analysis:
     robust_z_threshold: 4.0
     max_image_dimension: 1800
     max_region_area_fraction: 0.20
+  pdf_metadata:
+    online_service_points: 2
+    pdf_editor_points: 3
+    design_tool_points: 4
+    visual_editor_points: 6
+    generative_tool_points: 7
+  document_authenticity:
+    invalid_signature_points: 19
+    post_signature_change_points: 18
+    structured_content_mismatch_points: 17
+    malformed_structured_content_points: 3
+    minimum_visible_matches: 3
   ai_images:
     max_images: 10
     max_inventory_images: 50
@@ -69,19 +85,46 @@ ocr:
   enabled: true
   url: "http://ocr.internal:9000"
   timeout_seconds: 420
+classification:
+  enabled: true
+  url: "http://llm.internal:8030"
+  model: "minimax-local"
+  timeout_seconds: 90
+  max_input_chars: 16000
+  max_tokens: 500
+  temperature: 0.1
+extraction:
+  enabled: true
+  url: "http://extract.internal:8030"
+  model: "minimax-extract"
+  timeout_seconds: 240
+  max_input_chars: 18000
+  max_tokens: 7000
+  temperature: 0.05
+  coverage_retry: false
+verification:
+  enabled: true
+  url: "http://verify.internal:8030"
+  model: "minimax-verify"
+  timeout_seconds: 210
+  max_input_chars: 70000
+  max_tokens: 5500
+  temperature: 0.02
+synthesis:
+  enabled: true
+  url: "http://summary.internal:8030"
+  model: "minimax-summary"
+  timeout_seconds: 80
+  max_input_chars: 22000
+  max_tokens: 350
+  temperature: 0.01
 models:
   gapl:
     enabled: false
     weights_path: "weights/gapl.pt"
     device: "cpu"
-  trufor:
-    enabled: true
-    weights_path: "weights/trufor.pth.tar"
-    max_pixels: 500000
-    timeout_seconds: 600
 laboratory:
   pdf_enabled: false
-  image_enabled: true
   visual_repetition_enabled: true
   visual_repetition_min_pages: 4
   visual_repetition_similarity: 0.93
@@ -97,16 +140,53 @@ laboratory:
     assert config.analysis.render_dpi == 180
     assert config.analysis.max_pages == 12
     assert config.analysis.ela_jpeg_quality == 88
+    assert config.analysis.pdf_metadata_online_service_points == 2
+    assert config.analysis.pdf_metadata_pdf_editor_points == 3
+    assert config.analysis.pdf_metadata_design_tool_points == 4
+    assert config.analysis.pdf_metadata_visual_editor_points == 6
+    assert config.analysis.pdf_metadata_generative_tool_points == 7
+    assert config.analysis.invalid_signature_points == 19
+    assert config.analysis.post_signature_change_points == 18
+    assert config.analysis.structured_content_mismatch_points == 17
+    assert config.analysis.malformed_structured_content_points == 3
+    assert config.analysis.structured_content_minimum_matches == 3
     assert config.analysis.ai_max_images == 10
     assert config.analysis.ai_analyze_pdf_images is True
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://ocr.internal:9000"
     assert config.analysis.ocr_timeout_seconds == 420
+    assert config.analysis.classification_enabled is True
+    assert config.analysis.classification_url == "http://llm.internal:8030"
+    assert config.analysis.classification_model == "minimax-local"
+    assert config.analysis.classification_timeout_seconds == 90
+    assert config.analysis.classification_max_input_chars == 16000
+    assert config.analysis.classification_max_tokens == 500
+    assert config.analysis.classification_temperature == 0.1
+    assert config.analysis.extraction_enabled is True
+    assert config.analysis.extraction_url == "http://extract.internal:8030"
+    assert config.analysis.extraction_model == "minimax-extract"
+    assert config.analysis.extraction_timeout_seconds == 240
+    assert config.analysis.extraction_max_input_chars == 18000
+    assert config.analysis.extraction_max_tokens == 7000
+    assert config.analysis.extraction_temperature == 0.05
+    assert config.analysis.extraction_coverage_retry is False
+    assert config.analysis.verification_enabled is True
+    assert config.analysis.verification_url == "http://verify.internal:8030"
+    assert config.analysis.verification_model == "minimax-verify"
+    assert config.analysis.verification_timeout_seconds == 210
+    assert config.analysis.verification_max_input_chars == 70000
+    assert config.analysis.verification_max_tokens == 5500
+    assert config.analysis.verification_temperature == 0.02
+    assert config.analysis.synthesis_enabled is True
+    assert config.analysis.synthesis_url == "http://summary.internal:8030"
+    assert config.analysis.synthesis_model == "minimax-summary"
+    assert config.analysis.synthesis_timeout_seconds == 80
+    assert config.analysis.synthesis_max_input_chars == 22000
+    assert config.analysis.synthesis_max_tokens == 350
+    assert config.analysis.synthesis_temperature == 0.01
     assert config.gapl.enabled is False
     assert config.gapl.device == "cpu"
     assert config.gapl.weights_path == (tmp_path / "weights/gapl.pt").resolve()
-    assert config.trufor.max_pixels == 500000
-    assert config.trufor.timeout_seconds == 600
     assert config.laboratory.pdf_enabled is False
     assert config.laboratory.visual_repetition_enabled is True
     assert config.laboratory.visual_repetition_min_pages == 4
@@ -132,18 +212,38 @@ models:
         environ={
             "FROD_PORT": "8700",
             "FROD_OCR_URL": "http://environment:8100",
+            "FROD_CLASSIFICATION_URL": "http://llm:8030",
+            "FROD_CLASSIFICATION_MODEL": "minimax-test",
+            "FROD_EXTRACTION_URL": "http://extract:8030",
+            "FROD_EXTRACTION_MODEL": "minimax-extract-test",
+            "FROD_EXTRACTION_COVERAGE_RETRY": "false",
+            "FROD_VERIFICATION_URL": "http://verify:8030",
+            "FROD_VERIFICATION_MODEL": "minimax-verify-test",
+            "FROD_SYNTHESIS_URL": "http://summary:8030",
+            "FROD_SYNTHESIS_MODEL": "minimax-summary-test",
             "FROD_GAPL_ENABLED": "false",
             "FROD_AI_ANALYZE_PDF_IMAGES": "true",
-            "FROD_TRUFOR_MAX_PIXELS": "600000",
         },
     )
 
     assert config.application.port == 8700
     assert config.analysis.ocr_enabled is True
     assert config.analysis.ocr_url == "http://environment:8100"
+    assert config.analysis.classification_enabled is True
+    assert config.analysis.classification_url == "http://llm:8030"
+    assert config.analysis.classification_model == "minimax-test"
+    assert config.analysis.extraction_enabled is True
+    assert config.analysis.extraction_url == "http://extract:8030"
+    assert config.analysis.extraction_model == "minimax-extract-test"
+    assert config.analysis.extraction_coverage_retry is False
+    assert config.analysis.verification_enabled is True
+    assert config.analysis.verification_url == "http://verify:8030"
+    assert config.analysis.verification_model == "minimax-verify-test"
+    assert config.analysis.synthesis_enabled is True
+    assert config.analysis.synthesis_url == "http://summary:8030"
+    assert config.analysis.synthesis_model == "minimax-summary-test"
     assert config.gapl.enabled is False
     assert config.analysis.ai_analyze_pdf_images is True
-    assert config.trufor.max_pixels == 600000
 
 
 @pytest.mark.parametrize(
@@ -159,6 +259,10 @@ models:
             "application:\n  max_upload_size_mb: 50\n"
             "analysis:\n  limits:\n    max_file_size_mb: 100\n",
             "superieur ou egal",
+        ),
+        (
+            "analysis:\n  pdf_metadata:\n    online_service_points: 16\n",
+            "between 0 and 15",
         ),
     ],
 )

@@ -7,20 +7,11 @@ from datetime import datetime
 
 from fraude_detector.detectors.base import AnalysisContext
 from fraude_detector.models import DetectorResult, Finding
+from fraude_detector.pdf_software import PdfSoftwareClassification, classify_pdf_software
 
 
 class PdfStructureDetector:
     name = "pdf_structure"
-
-    _editing_tools = {
-        "adobe photoshop",
-        "affinity photo",
-        "canva",
-        "gimp",
-        "inkscape",
-        "photopea",
-        "pixelmator",
-    }
 
     def analyze(self, context: AnalysisContext) -> DetectorResult:
         metadata = context.pdfium_document.get_metadata_dict(skip_empty=True)
@@ -61,26 +52,11 @@ class PdfStructureDetector:
                 "peut toutefois avoir efface un historique anterieur."
             )
 
-        declared_tools = " ".join(
-            str(metadata.get(key, "")) for key in ("Creator", "Producer")
-        ).casefold()
-        matched_tools = sorted(tool for tool in self._editing_tools if tool in declared_tools)
-        if matched_tools:
-            findings.append(
-                Finding(
-                    detector=self.name,
-                    code="PDF_IMAGE_EDITOR_METADATA",
-                    category="metadata",
-                    title="Logiciel de retouche declare dans les metadonnees",
-                    description=(
-                        "Les metadonnees citent un logiciel de creation ou de retouche "
-                        "d'image. Ce signal doit etre confirme par le contexte du document."
-                    ),
-                    risk_points=12.0,
-                    confidence=0.8,
-                    evidence={"matched_tools": matched_tools},
-                )
-            )
+        software_finding = _software_provenance_finding(metadata, context)
+        if software_finding is not None:
+            findings.append(software_finding)
+        else:
+            notes.append("Aucun champ Creator ou Producer renseigné dans le PDF.")
 
         creation_date = _parse_pdf_date(metadata.get("CreationDate", ""))
         modification_date = _parse_pdf_date(metadata.get("ModDate", ""))
@@ -132,6 +108,92 @@ class PdfStructureDetector:
             findings=tuple(findings),
             notes=tuple(notes),
         )
+
+
+def _software_provenance_finding(
+    metadata: dict[str, object],
+    context: AnalysisContext,
+) -> Finding | None:
+    metadata_by_name = {str(key).casefold(): str(value).strip() for key, value in metadata.items()}
+    entries: list[tuple[str, str, PdfSoftwareClassification]] = []
+    for field in ("Creator", "Producer"):
+        value = metadata_by_name.get(field.casefold(), "")
+        if value:
+            entries.append((field, value, classify_pdf_software(value, context.config)))
+    if not entries:
+        return None
+
+    strongest = max(entries, key=lambda entry: entry[2].points)[2]
+    declared = "; ".join(f"{field} : « {value} »" for field, value, _profile in entries)
+    if strongest.points > 0:
+        title, interpretation = _risk_copy(strongest.category)
+        description = (
+            f"{declared}. {interpretation} Ce passage peut être légitime, par exemple pour "
+            "convertir ou compresser le fichier. La métadonnée est déclarative et doit être "
+            "rapprochée des autres indices."
+        )
+    else:
+        title = "Provenance logicielle déclarée"
+        if all(profile.recognized for _field, _value, profile in entries):
+            interpretation = (
+                "Les logiciels mentionnés correspondent à des usages documentaires courants."
+            )
+        else:
+            interpretation = (
+                "Au moins un logiciel n'est pas encore répertorié; cela ne constitue pas un signal."
+            )
+        description = f"{declared}. {interpretation} Ces champs peuvent être modifiés ou supprimés."
+
+    return Finding(
+        detector=PdfStructureDetector.name,
+        code=f"PDF_SOFTWARE_{strongest.category.upper()}",
+        category="metadata",
+        title=title,
+        description=description,
+        risk_points=strongest.points,
+        confidence=0.95,
+        evidence={
+            "creator": metadata_by_name.get("creator"),
+            "producer": metadata_by_name.get("producer"),
+            "software": [
+                {
+                    "field": field,
+                    "value": value,
+                    "category": profile.category,
+                    "category_label": profile.label,
+                    "risk_points": profile.points,
+                    "recognized": profile.recognized,
+                }
+                for field, value, profile in entries
+            ],
+            "scoring_policy": "highest_declared_software_category_only",
+        },
+    )
+
+
+def _risk_copy(category: str) -> tuple[str, str]:
+    return {
+        "online_pdf_service": (
+            "Transformation par un service PDF en ligne",
+            "Le fichier déclare un service capable de transformer son contenu ou sa structure.",
+        ),
+        "pdf_editor": (
+            "Éditeur de PDF déclaré",
+            "Le fichier déclare un logiciel permettant de modifier directement un PDF.",
+        ),
+        "design_tool": (
+            "Outil de création graphique déclaré",
+            "Le fichier déclare un outil permettant de recomposer visuellement un document.",
+        ),
+        "visual_editor": (
+            "Éditeur d'images déclaré",
+            "Le fichier déclare un logiciel permettant de retoucher des éléments visuels.",
+        ),
+        "generative_tool": (
+            "Outil de génération par IA déclaré",
+            "Le fichier déclare un outil pouvant produire ou modifier du contenu par IA.",
+        ),
+    }[category]
 
 
 def _count_signature_fields(raw_pdf: bytes) -> int:

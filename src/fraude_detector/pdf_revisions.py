@@ -7,12 +7,13 @@ old history. We expose only incremental updates that still exist in the file.
 from __future__ import annotations
 
 import io
-import logging
 import re
 from contextlib import suppress
 
 import pypdfium2
 from pypdf import PdfReader
+
+from fraude_detector.pdf_logging import suppress_pypdf_recovery_messages
 
 _EOF_PATTERN = re.compile(rb"%%EOF(?=[\x00\x09\x0a\x0c\x0d\x20]|$)")
 _STARTXREF_AT_END = re.compile(rb"startxref\s+(\d+)\s+%%EOF\s*$", re.DOTALL)
@@ -60,19 +61,15 @@ def _has_valid_startxref(candidate: bytes) -> bool:
 
 
 def _is_readable_pdf(candidate: bytes, password: str | None) -> bool:
-    pypdf_logger = logging.getLogger("pypdf")
-    previous_level = pypdf_logger.level
-    pypdf_logger.setLevel(logging.ERROR)
     try:
-        reader = PdfReader(io.BytesIO(candidate), strict=True)
-        if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
-            return False
-        if len(reader.pages) < 1:
-            return False
+        with suppress_pypdf_recovery_messages():
+            reader = PdfReader(io.BytesIO(candidate), strict=True)
+            if reader.is_encrypted and (not password or reader.decrypt(password) == 0):
+                return False
+            if len(reader.pages) < 1:
+                return False
     except Exception:
         return False
-    finally:
-        pypdf_logger.setLevel(previous_level)
 
     pdfium_document: pypdfium2.PdfDocument | None = None
     try:
