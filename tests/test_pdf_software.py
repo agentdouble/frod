@@ -16,6 +16,7 @@ from fraude_detector.scoring import assess_risk
     [
         ("ILovePDF", "online_pdf_service", 5.0),
         ("PDF24 Creator 11.19", "online_pdf_service", 5.0),
+        ("Neevia PDFMerge v3.0", "online_pdf_service", 5.0),
         ("Adobe Photoshop 25.0", "visual_editor", 8.0),
         ("Canva", "design_tool", 5.0),
         ("Foxit PDF Editor", "pdf_editor", 3.0),
@@ -24,6 +25,7 @@ from fraude_detector.scoring import assess_risk
         ("GPL Ghostscript 10.04", "document_generator", 0.0),
         ("Canon iR-ADV Scan", "scanner", 0.0),
         ("DocuSign", "signature_service", 0.0),
+        ("Aspose.PDF 24.1", "document_generator", 0.0),
         ("Belgian Government Document Engine", "unknown", 0.0),
     ],
 )

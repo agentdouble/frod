@@ -2,8 +2,24 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
+
+_OCR_NOISE_PATTERN = re.compile(
+    "["
+    "\\u3040-\\u30ff"  # Hiragana and Katakana.
+    "\\u3100-\\u312f"  # Bopomofo.
+    "\\u31a0-\\u31bf"  # Bopomofo Extended.
+    "\\u31f0-\\u31ff"  # Katakana Phonetic Extensions.
+    "\\u3400-\\u4dbf"  # CJK Unified Ideographs Extension A.
+    "\\u4e00-\\u9fff"  # CJK Unified Ideographs.
+    "\\uf900-\\ufaff"  # CJK Compatibility Ideographs.
+    "\\uff65-\\uff9f"  # Halfwidth Katakana.
+    "\\U00020000-\\U0002fa1f"  # CJK extensions and compatibility supplement.
+    "\\ufffd"  # Unicode replacement character.
+    "]+"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +58,7 @@ def extract_structured_ocr_regions(payload: Any) -> tuple[StructuredOcrRegion, .
         for region_index, region in enumerate(page_regions):
             if not isinstance(region, dict):
                 continue
-            content = str(region.get("content", "")).strip()
+            content = sanitize_ocr_text(str(region.get("content", ""))).strip()
             label = str(region.get("label", "unknown")).strip() or "unknown"
             native_label = str(region.get("native_label", label)).strip() or label
             reading_order = _reading_order(region.get("index"), region_index)
@@ -58,6 +74,32 @@ def extract_structured_ocr_regions(payload: Any) -> tuple[StructuredOcrRegion, .
                 )
             )
     return tuple(regions)
+
+
+def sanitize_ocr_text(value: str) -> str:
+    """Remove scripts and replacement glyphs produced as OCR noise in this pipeline."""
+
+    cleaned = _OCR_NOISE_PATTERN.sub("", value)
+    cleaned = "\n".join(line.rstrip() for line in cleaned.splitlines())
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def sanitize_ocr_payload(value: Any) -> Any:
+    """Sanitize textual OCR content while preserving the response structure."""
+
+    if isinstance(value, list):
+        return [sanitize_ocr_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: (
+                sanitize_ocr_text(item)
+                if key == "content" and isinstance(item, str)
+                else sanitize_ocr_payload(item)
+            )
+            for key, item in value.items()
+        }
+    return value
 
 
 def format_structured_ocr_region(region: StructuredOcrRegion) -> str:

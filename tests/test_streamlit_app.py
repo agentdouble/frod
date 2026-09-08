@@ -309,7 +309,7 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
         "Texte reconnu par OCR",
         "JSON final de l'extraction",
     ]
-    assert "Aucune contradiction concrète relevée" in markdown
+    assert "Extraction cohérente avec l'OCR" in markdown
     assert "Déclaration de sinistre : aucun indice prioritaire" in markdown
     assert "Cette absence ne valide pas le document" in markdown
     classification_index = next(

@@ -478,6 +478,21 @@ def test_international_amount_and_date_formats_are_normalized_deterministically(
     )
 
 
+def test_approximate_amount_ocr_noise_does_not_select_the_first_digit() -> None:
+    assert normalize_extracted_value("monetary_amount", "+/-500", None, None) == (
+        500,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "+1-500", None, None) == (
+        500,
+        "normalized",
+    )
+    assert normalize_extracted_value("monetary_amount", "400-500", None, None) == (
+        None,
+        "ambiguous",
+    )
+
+
 def test_short_year_dates_use_locale_only_when_it_resolves_the_order() -> None:
     assert normalize_extracted_value("date", "21/01/25", "fr", "LU") == (
         "2025-01-21",
@@ -586,4 +601,62 @@ def test_obvious_ocr_replacement_garbage_is_not_extracted(monkeypatch: Any) -> N
     )
 
     assert extraction.additional_fields == ()
-    assert extraction.coverage.unreadable_regions == 1
+    assert extraction.coverage.uncovered_region_ids == ("p001-r000",)
+
+
+def test_repeated_person_name_uses_the_clearer_near_identical_spelling(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["facts"] = [
+        {
+            "field_code": "person_name",
+            "role": "patient",
+            "raw_label": "Patient",
+            "raw_value": "Vonne Muller",
+            "region_ids": ["p001-r000"],
+        },
+        {
+            "field_code": "person_name",
+            "role": "patient",
+            "raw_label": "Patient",
+            "raw_value": "Yvonne Muller",
+            "region_ids": ["p001-r001"],
+        },
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Patient : Vonne Muller"), _region("Patient : Yvonne Muller")]],
+        None,
+    )
+
+    assert [fact.raw_value for fact in extraction.facts] == ["Vonne Muller", "Yvonne Muller"]
+    assert [fact.corrected_value for fact in extraction.facts] == ["Yvonne Muller", None]
+    assert len({fact.normalized_value for fact in extraction.facts}) == 1
+
+
+def test_repeated_person_name_does_not_cross_roles_or_labels(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["facts"] = [
+        {
+            "field_code": "person_name",
+            "role": "patient",
+            "raw_label": "Patient",
+            "raw_value": "Vonne Muller",
+            "region_ids": ["p001-r000"],
+        },
+        {
+            "field_code": "person_name",
+            "role": "practitioner",
+            "raw_label": "Médecin",
+            "raw_value": "Yvonne Muller",
+            "region_ids": ["p001-r001"],
+        },
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Patient : Vonne Muller"), _region("Médecin : Yvonne Muller")]],
+        None,
+    )
+
+    assert all(fact.corrected_value is None for fact in extraction.facts)

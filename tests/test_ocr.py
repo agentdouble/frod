@@ -78,6 +78,45 @@ def test_ocr_detector_persists_scoped_structured_artifacts(
     assert detector.result(report).status == "completed"
 
 
+def test_ocr_detector_removes_cjk_noise_from_all_text_outputs(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "document.png"
+    Image.new("RGB", (100, 50), "white").save(source)
+
+    monkeypatch.setattr(
+        requests.Session,
+        "post",
+        lambda *args, **kwargs: _Response(
+            {
+                "json_result": [
+                    [
+                        {
+                            "index": 0,
+                            "label": "text",
+                            "content": "Total 锟斤拷 500 EUR テスト",
+                            "bbox_2d": [10, 10, 900, 900],
+                        }
+                    ]
+                ],
+                "markdown_result": "Total 锟斤拷 500 EUR テスト",
+            }
+        ),
+    )
+
+    report = OcrDetector(AnalysisConfig(ocr_enabled=True)).detect(
+        source,
+        tmp_path / "analysis",
+        save_layout=False,
+    )
+
+    assert report.success
+    assert report.markdown == "Total  500 EUR"
+    assert report.json_result[0][0]["content"] == "Total  500 EUR"
+    assert "锟" not in (tmp_path / "analysis/ocr/document.json").read_text(encoding="utf-8")
+
+
 def test_ocr_unavailability_is_non_fatal(monkeypatch: Any, tmp_path: Path) -> None:
     source = tmp_path / "document.png"
     Image.new("RGB", (32, 24), "white").save(source)

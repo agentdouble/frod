@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 from typing import Any
 
 from fraude_detector.config import AnalysisConfig
@@ -30,8 +31,8 @@ from fraude_detector.structured_ocr import (
 )
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-07-v4"
-EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-08-25-v2"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-08-v5"
+EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-09-08-v3"
 
 FIELD_CODES = (
     "person_name",
@@ -94,6 +95,10 @@ FACT_ROLES = (
     "issue",
     "due",
     "payment",
+    "declaration",
+    "event",
+    "signature",
+    "purchase",
     "service",
     "start",
     "end",
@@ -205,6 +210,10 @@ ROLE_GUIDANCE = {
     "issue": "date d'émission",
     "due": "date d'échéance",
     "payment": "date de paiement effectué",
+    "declaration": "date de déclaration ou de dépôt d'un sinistre ou d'une demande",
+    "event": "date de l'événement, du sinistre, de l'accident ou du dommage",
+    "signature": "date de signature du document",
+    "purchase": "date d'achat du produit ou du bien",
     "service": "date ou information liée à la prestation",
     "start": "début d'une période",
     "end": "fin d'une période",
@@ -570,8 +579,11 @@ Règles:
    dans les titres, libellés et en-têtes de tableau.
 10. Ne produis aucun score de confiance. Une valeur incertaine doit rester liée à sa région et être
     classée unstructured ou unreadable si son association ne peut pas être soutenue.
-11. Pour field_code=date, distingue précisément issue (date d'émission), due (date d'échéance),
-    payment (date à laquelle le paiement a été effectué) et expiry (date d'expiration).
+11. Pour field_code=date, choisis le rôle sémantique exact: issue (émission), due (échéance),
+    payment (paiement effectué), declaration (déclaration ou dépôt d'un sinistre/d'une demande),
+    event (événement, accident, sinistre ou dommage), signature (signature), purchase (achat),
+    service (prestation), birth (naissance), expiry (expiration), start/end (bornes de période).
+    N'utilise document ou other que si la fonction de la date n'est réellement pas identifiable.
 12. Utilise bbox_2d, order, label et native_label pour restituer l'ordre de lecture, rapprocher
     un libellé de sa valeur et comprendre les colonnes. bbox_2d est normalisée de 0 à 1000.
 13. Une région table contient son tableau local en HTML ou Markdown. Utilise les régions voisines
@@ -816,6 +828,7 @@ def _validated_extraction(
 ) -> DocumentExtraction:
     region_by_id = {region.region_id: region for region in regions}
     facts = _validated_facts(raw.facts, region_by_id, language, country)
+    facts = _reconcile_repeated_person_names(facts)
     additional = _validated_additional(raw.additional_fields, region_by_id)
     tables = _validated_tables(raw.tables, region_by_id)
     coverage = _coverage(raw, regions, facts, additional, tables)
@@ -1168,11 +1181,16 @@ def _normalize_amount(
 ) -> tuple[int | float | None, NormalizationStatus]:
     value = unicodedata.normalize("NFKC", raw_value)
     value = value.translate(str.maketrans({"−": "-", "–": "-", "—": "-", "’": "'"}))
+    # Approximate amounts are compared by magnitude. This also tolerates a single OCR glyph
+    # inserted where a slash or vertical stroke was expected (for example '+1-500').
+    value = re.sub(r"^\s*(?:±|\+\s*(?:[/\\|Il1]\s*)?-\s*)", "", value)
     value = re.sub(r"(?<=\d)([,.])\s*-(?!\d)", r"\g<1>00", value)
     negative_parentheses = bool(re.search(r"\(\s*\d", value))
     match = re.search(r"[-+]?\d[\d\s.,']*", value)
     if not match:
         return None, "raw_only"
+    if re.search(r"\d", value[: match.start()]) or re.search(r"\d", value[match.end() :]):
+        return None, "ambiguous"
     number = re.sub(r"[\s']", "", match.group()).rstrip(".,")
     if "," in number and "." in number:
         decimal_separator = "," if number.rfind(",") > number.rfind(".") else "."
@@ -1314,6 +1332,69 @@ def _comparison_text(value: str) -> str:
         character for character in normalized if not unicodedata.combining(character)
     )
     return " ".join(re.findall(r"\w+", ascii_text))
+
+
+def _reconcile_repeated_person_names(
+    facts: tuple[ExtractedFact, ...],
+) -> tuple[ExtractedFact, ...]:
+    """Use a clearer repeated spelling only for tightly matched instances of the same field."""
+
+    resolved = list(facts)
+    groups: dict[tuple[str, str], list[int]] = {}
+    for index, fact in enumerate(facts):
+        if fact.field_code != "person_name" or not fact.raw_label:
+            continue
+        label = _comparison_text(fact.raw_label)
+        if label:
+            groups.setdefault((fact.role, label), []).append(index)
+
+    for indexes in groups.values():
+        for left_offset, left_index in enumerate(indexes):
+            for right_index in indexes[left_offset + 1 :]:
+                left = resolved[left_index]
+                right = resolved[right_index]
+                left_value = left.corrected_value or left.raw_value
+                right_value = right.corrected_value or right.raw_value
+                if not _probable_ocr_name_variant(left_value, right_value):
+                    continue
+                preferred = max(
+                    (left_value, right_value),
+                    key=lambda item: len(_comparison_text(item)),
+                )
+                for index in (left_index, right_index):
+                    current = resolved[index]
+                    current_value = current.corrected_value or current.raw_value
+                    if current_value == preferred:
+                        continue
+                    normalized, status = _normalize_value(
+                        current.field_code,
+                        preferred,
+                        None,
+                        None,
+                    )
+                    resolved[index] = replace(
+                        current,
+                        corrected_value=preferred,
+                        normalized_value=normalized,
+                        normalization_status=status,
+                    )
+    return tuple(resolved)
+
+
+def _probable_ocr_name_variant(left: str, right: str) -> bool:
+    left_key = _comparison_text(left)
+    right_key = _comparison_text(right)
+    if left_key == right_key or not left_key or not right_key:
+        return False
+    left_compact = left_key.replace(" ", "")
+    right_compact = right_key.replace(" ", "")
+    shorter, longer = sorted((left_compact, right_compact), key=len)
+    return (
+        len(shorter) >= 5
+        and len(longer) - len(shorter) == 1
+        and shorter in longer
+        and SequenceMatcher(None, shorter, longer).ratio() >= 0.9
+    )
 
 
 def _valid_region_ids(

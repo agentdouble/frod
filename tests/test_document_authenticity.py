@@ -9,6 +9,7 @@ from fraude_detector.laboratory.structured_consistency import (
     add_extraction_consistency_checks,
     compare_visible_fields,
 )
+from fraude_detector.llm_extractor import normalize_extracted_value
 from fraude_detector.models import (
     DocumentExtraction,
     ExtractedFact,
@@ -188,13 +189,83 @@ def test_structured_mismatch_requires_matching_anchors_and_a_conflicting_fact() 
     assert "structured_fields" not in check.observations[0].evidence
 
 
+def test_ambiguous_normalization_cannot_create_a_structured_mismatch() -> None:
+    report = LaboratoryReport(
+        schema_version="1.0",
+        checks=(
+            LaboratoryCheck(
+                code="facturx",
+                title="Factur-X",
+                purpose="test",
+                state="clear",
+                summary="XML valide",
+                observations=(
+                    LaboratoryObservation(
+                        code="FACTURX_XSD_VALID",
+                        title="XML valide",
+                        summary="test",
+                        state="clear",
+                        strength="moderate",
+                        explanation="test",
+                        evidence={
+                            "structured_fields": {
+                                "invoice_number": "FAC-42",
+                                "seller_name": "Cabinet Exemple",
+                                "grand_total": "125.00",
+                            }
+                        },
+                    ),
+                ),
+            ),
+        ),
+    )
+    unreliable_amount = ExtractedFact(
+        field_code="monetary_amount",
+        role="total",
+        raw_label="Total",
+        raw_value="125-130",
+        normalized_value=None,
+        normalization_status="ambiguous",
+        page=1,
+    )
+    extraction = DocumentExtraction(
+        schema_version="test",
+        family="facture_recu",
+        language="fr",
+        country="LU",
+        facts=(
+            _fact("invoice_number", "invoice", "FAC 42"),
+            _fact("organization_name", "issuer", "Cabinet Exemple"),
+            unreliable_amount,
+        ),
+        additional_fields=(),
+        tables=(),
+        coverage=ExtractionCoverage(3, 3, 3, 0, 0, 0, 0),
+        passes=1,
+    )
+
+    compared = add_extraction_consistency_checks(report, extraction, minimum_matches=2)
+
+    assert compared.checks[0].state == "clear"
+    assert not any(
+        observation.code == "FACTURX_VISIBLE_MISMATCH"
+        for observation in compared.checks[0].observations
+    )
+
+
 def _fact(field_code: str, role: str, value: str) -> ExtractedFact:
+    normalized_value, normalization_status = normalize_extracted_value(
+        field_code,
+        value,
+        "fr",
+        "LU",
+    )
     return ExtractedFact(
         field_code=field_code,
         role=role,
         raw_label=None,
         raw_value=value,
-        normalized_value=None,
-        normalization_status="raw_only",
+        normalized_value=normalized_value,
+        normalization_status=normalization_status,
         page=1,
     )

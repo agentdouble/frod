@@ -829,6 +829,10 @@ EXTRACTION_ROLE_LABELS = {
     "issue": "Émission",
     "due": "Échéance",
     "payment": "Paiement",
+    "declaration": "Déclaration",
+    "event": "Événement",
+    "signature": "Signature",
+    "purchase": "Achat",
     "service": "Prestation",
     "start": "Début",
     "end": "Fin",
@@ -1137,14 +1141,17 @@ def _render_extraction_verification(
     corrected_count = sum(review.correction_applied for review in verification.reviews)
     if verification.status == "clean":
         if corrected_count:
-            title = "Extraction corrigée après vérification"
+            title = "Extraction corrigée et cohérente avec l'OCR"
             detail = (
                 f"{corrected_count} correction(s) structurée(s) appliquée(s), "
-                f"sans point restant à contrôler."
+                "sans contradiction restante avec le texte reconnu."
             )
         else:
-            title = "Aucune contradiction concrète relevée"
-            detail = f"{verification.expected_targets} élément(s) contrôlé(s)."
+            title = "Extraction cohérente avec l'OCR"
+            detail = (
+                f"{verification.expected_targets} élément(s) comparé(s) au texte reconnu, "
+                "sans contradiction concrète relevée."
+            )
     elif verification.status == "incomplete":
         title = "Vérification partielle"
         detail = (

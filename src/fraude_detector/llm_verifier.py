@@ -132,7 +132,9 @@ def _verification_prompt(
 - field_code autorisés: {", ".join(FIELD_CODES)}
 - role autorisés: {", ".join(FACT_ROLES)}
 - rôles de date: issue = émission, due = échéance, payment = paiement effectué,
-  expiry = expiration
+  declaration = déclaration ou dépôt, event = événement/sinistre, signature = signature,
+  purchase = achat, service = prestation, birth = naissance, expiry = expiration,
+  start/end = bornes de période
 
 Objectif:
 Évalue la fidélité de tous les objets extraits par rapport aux régions OCR. Ce contrôle ne

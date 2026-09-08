@@ -13,6 +13,7 @@ from fraude_detector.config import AnalysisConfig
 from fraude_detector.models import DetectorResult, OcrReport
 from fraude_detector.ocr_consistency import build_ocr_content_result
 from fraude_detector.ocr_rendering import save_layout_visualizations
+from fraude_detector.structured_ocr import sanitize_ocr_payload, sanitize_ocr_text
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def _validated_response(payload: Any) -> tuple[list[Any] | dict[str, Any], str]:
     markdown = payload.get("markdown_result", "")
     if not isinstance(markdown, str):
         raise ValueError("Le resultat Markdown GLM-OCR a un type inattendu.")
-    return json_result, markdown
+    return sanitize_ocr_payload(json_result), sanitize_ocr_text(markdown)
 
 
 def _source_images(

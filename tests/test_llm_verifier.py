@@ -163,6 +163,8 @@ def test_fresh_conservative_verification_accepts_a_clean_extraction(monkeypatch:
     assert 'native_label="paragraph"' in messages[1]["content"]
     assert 'bbox_2d="10,20,400,90"' in messages[1]["content"]
     assert "payment = paiement effectué" in messages[1]["content"]
+    assert "declaration = déclaration ou dépôt" in messages[1]["content"]
+    assert "event = événement/sinistre" in messages[1]["content"]
     assert verification.schema_version == "0.4-experimental"
     assert verification.prompt_version.startswith("verification-")
     suggested_role_schema = calls[0]["json"]["response_format"]["json_schema"]["schema"][

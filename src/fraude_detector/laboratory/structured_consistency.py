@@ -155,11 +155,13 @@ def _compare_with_extraction(
             fact
             for fact in extraction.facts
             if any(_matches_selector(fact, selector) for selector in selectors)
+            and fact.normalization_status == "normalized"
+            and fact.normalized_value is not None
         )
         if not candidates:
             continue
         eligible.append(name)
-        if any(_values_match(value, fact.corrected_value or fact.raw_value) for fact in candidates):
+        if any(_values_match(value, str(fact.normalized_value)) for fact in candidates):
             matched.append(name)
         elif len(candidates) == 1:
             unmatched.append(name)
