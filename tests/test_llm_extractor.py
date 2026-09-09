@@ -601,6 +601,79 @@ def test_identical_additional_label_and_value_are_discarded(monkeypatch: Any) ->
     assert extraction.additional_fields == ()
 
 
+def test_transient_activation_code_is_not_kept_as_additional_information(
+    monkeypatch: Any,
+) -> None:
+    result = _empty_result()
+    result["additional_fields"] = [
+        {
+            "raw_label": "Activatiecode",
+            "raw_value": "sFK=f9U",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Activatiecode: sFK=f9U")]],
+        None,
+    )
+
+    assert extraction.additional_fields == ()
+
+
+def test_additional_information_does_not_duplicate_a_canonical_fact(monkeypatch: Any) -> None:
+    result = _empty_result()
+    result["facts"] = [
+        {
+            "field_code": "contract_number",
+            "role": "contract",
+            "raw_label": "Contrat",
+            "raw_value": "CTR-2026-42",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    result["additional_fields"] = [
+        {
+            "raw_label": "Référence du contrat",
+            "raw_value": "CTR-2026-42",
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region("Contrat : CTR-2026-42")]],
+        None,
+    )
+
+    assert len(extraction.facts) == 1
+    assert extraction.additional_fields == ()
+
+
+def test_header_only_table_is_not_preserved(monkeypatch: Any) -> None:
+    table = "<table><thead><tr><th>Date</th><th>Montant</th></tr></thead></table>"
+    result = _empty_result()
+    result["tables"] = [
+        {
+            "title": "Opérations",
+            "semantic_type": "transactions",
+            "column_roles": ["transaction_date", "amount"],
+            "default_row_role": "transaction",
+            "row_role_overrides": [],
+            "region_ids": ["p001-r000"],
+        }
+    ]
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: _chat_response(result))
+
+    extraction = LLMDocumentExtractor(AnalysisConfig(extraction_enabled=True)).extract(
+        [[_region(table, "table")]],
+        None,
+    )
+
+    assert extraction.tables == ()
+
+
 def test_obvious_ocr_replacement_garbage_is_not_extracted(monkeypatch: Any) -> None:
     result = _empty_result()
     result["additional_fields"] = [

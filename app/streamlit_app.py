@@ -913,36 +913,64 @@ def _render_extraction_laboratory(
     layout_images: list[Path] | None = None,
     document_name: str = "Document analysé",
 ) -> None:
-    _render_laboratory_synthesis(synthesis, synthesis_error=synthesis_error)
-
     has_visual_workspace = (
         report is not None and output_dir is not None and source_path is not None
     )
-    if has_visual_workspace:
-        document_column, context_column = st.columns([0.56, 0.44], gap="large")
-        with document_column:
-            _render_document_view(
-                report=report,
-                laboratory=laboratory,
-                output_dir=output_dir,
-                source_path=source_path,
-                layout_images=layout_images or [],
-                document_name=document_name,
-            )
-        with context_column, st.container(key="laboratory_context"):
-            _render_classification(classification)
-            if extraction is not None:
-                _render_extraction_overview(extraction)
-            _render_extraction_verification(verification)
-    else:
+    document_column, markdown_column = st.columns([1, 1], gap="large")
+    with document_column:
         st.markdown(
             f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
             unsafe_allow_html=True,
         )
-        _render_classification(classification)
-        if extraction is not None:
-            _render_extraction_overview(extraction)
-        _render_extraction_verification(verification)
+        with st.container(height=620, border=False, key="ai_document_preview"):
+            if has_visual_workspace:
+                _render_document_view(
+                    report=report,
+                    laboratory=laboratory,
+                    output_dir=output_dir,
+                    source_path=source_path,
+                    layout_images=layout_images or [],
+                    document_name=document_name,
+                    show_title=False,
+                )
+            else:
+                st.markdown(
+                    """
+                    <div class="ai-preview-empty">
+                      <strong>Aperçu du document indisponible</strong>
+                      <span>Cette donnée de démonstration contient uniquement
+                        le résultat OCR.</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+    with markdown_column:
+        st.markdown(
+            '<h2 class="workspace-title">Texte reconnu</h2>',
+            unsafe_allow_html=True,
+        )
+        with st.container(height=620, border=False, key="ai_markdown_preview"):
+            if recognized_text.strip():
+                st.markdown(recognized_text)
+            else:
+                st.markdown(
+                    '<div class="ai-preview-empty"><strong>Aucun texte reconnu</strong></div>',
+                    unsafe_allow_html=True,
+                )
+
+    _render_ai_stage_header("01", "Synthèse", "Les informations utiles et les points relevés")
+    _render_laboratory_synthesis(synthesis, synthesis_error=synthesis_error)
+
+    _render_ai_stage_header("02", "Classification", "La nature du document reconnue")
+    if classification is None:
+        st.markdown(
+            '<div class="ai-stage-empty">Aucune classification disponible.</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        _render_classification(classification, show_heading=False)
+
+    _render_ai_stage_header("03", "Extraction", "Les données structurées et comparables")
 
     if extraction is None:
         st.markdown(
@@ -954,11 +982,42 @@ def _render_extraction_laboratory(
             """,
             unsafe_allow_html=True,
         )
-        if recognized_text:
-            with st.expander("Texte reconnu par OCR", expanded=False):
-                _render_recognized_text(recognized_text)
+        _render_ai_stage_header(
+            "04",
+            "Vérification",
+            "Le contrôle de la lecture et de la structure",
+        )
+        _render_extraction_verification(verification)
         return
 
+    _render_extraction_overview(extraction)
+    _render_extracted_data(extraction)
+
+    _render_ai_stage_header("04", "Vérification", "Le contrôle de la lecture et de la structure")
+    _render_extraction_verification(verification)
+
+    with st.expander("Données techniques de l'extraction", expanded=False):
+        st.json(
+            {
+                "extraction": extraction.to_dict(),
+                "verification": verification.to_dict() if verification is not None else None,
+            }
+        )
+
+
+def _render_ai_stage_header(number: str, title: str, description: str) -> None:
+    st.markdown(
+        f"""
+        <header class="ai-stage-heading">
+          <span>{_html(number)}</span>
+          <div><h2>{_html(title)}</h2><p>{_html(description)}</p></div>
+        </header>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_extracted_data(extraction: DocumentExtraction) -> None:
     coverage = extraction.coverage
 
     if extraction.facts:
@@ -1076,18 +1135,6 @@ def _render_extraction_laboratory(
             unsafe_allow_html=True,
         )
 
-    if recognized_text:
-        with st.expander("Texte reconnu par OCR", expanded=False):
-            _render_recognized_text(recognized_text, compact=True)
-
-    with st.expander("JSON final de l'extraction", expanded=False):
-        st.json(
-            {
-                "extraction": extraction.to_dict(),
-                "verification": verification.to_dict() if verification is not None else None,
-            }
-        )
-
 
 def _render_laboratory_synthesis(
     synthesis: AnalysisSynthesis | None,
@@ -1127,16 +1174,17 @@ def _render_extraction_overview(extraction: DocumentExtraction) -> None:
         f"""
         <section class="extraction-overview">
           <article class="extraction-coverage {coverage_tone}">
-            <div><strong>{coverage.ratio:.0%}</strong><span>Couverture des zones OCR</span></div>
+            <div><strong>{coverage.ratio:.0%}</strong><span>Texte pris en compte</span></div>
             <i><b style="width:{coverage.ratio:.1%}"></b></i>
-            <small>{coverage.accounted_regions} zone(s) comptabilisée(s)
+            <small>{coverage.accounted_regions} zone(s) classée(s) ou structurée(s)
               sur {coverage.total_regions}</small>
           </article>
-          <article><strong>{len(extraction.facts)}</strong><span>Faits comparables</span></article>
+          <article><strong>{len(extraction.facts)}</strong><span>Informations comparables</span>
+          </article>
           <article><strong>{len(extraction.additional_fields)}</strong>
-            <span>Informations additionnelles</span></article>
+            <span>Informations spécifiques utiles</span></article>
           <article><strong>{len(extraction.tables)}</strong>
-            <span>Tableaux conservés</span></article>
+            <span>Tableaux avec données</span></article>
         </section>
         """,
         unsafe_allow_html=True,
@@ -1449,11 +1497,13 @@ def _render_document_view(
     source_path: Path,
     layout_images: list[Path],
     document_name: str,
+    show_title: bool = True,
 ) -> None:
-    st.markdown(
-        f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
-        unsafe_allow_html=True,
-    )
+    if show_title:
+        st.markdown(
+            f'<h2 class="workspace-title document-name">{_html(document_name)}</h2>',
+            unsafe_allow_html=True,
+        )
     choices: dict[str, Path] = {}
     if isinstance(report, ImageAnalysisReport) and source_path.is_file():
         choices["Document original"] = source_path
@@ -1579,15 +1629,20 @@ def _render_review_summary(
     )
 
 
-def _render_classification(classification: DocumentClassification | None) -> None:
+def _render_classification(
+    classification: DocumentClassification | None,
+    *,
+    show_heading: bool = True,
+) -> None:
     """Render the semantic family without exposing model internals."""
     if not classification:
         return
 
-    st.markdown(
-        '<h2 class="workspace-title">Type de document reconnu</h2>',
-        unsafe_allow_html=True,
-    )
+    if show_heading:
+        st.markdown(
+            '<h2 class="workspace-title">Type de document reconnu</h2>',
+            unsafe_allow_html=True,
+        )
 
     family_label = DOCUMENT_FAMILY_LABELS.get(
         classification.family,
@@ -1717,8 +1772,9 @@ def _recognized_element_cards(
 ) -> list[str]:
     cards: list[str] = []
     seen: set[tuple[str, str]] = set()
-    covered_field_codes: set[str] = set()
+    field_counts: dict[str, int] = {}
 
+    software_by_value: dict[str, dict[str, Any]] = {}
     for finding in findings:
         if not finding.code.startswith("PDF_SOFTWARE_"):
             continue
@@ -1729,19 +1785,34 @@ def _recognized_element_cards(
             if not isinstance(entry, dict) or not entry.get("value"):
                 continue
             field = str(entry.get("field", "")).casefold()
-            label = {
-                "creator": "Logiciel créateur",
-                "producer": "Logiciel de production PDF",
-            }.get(field, "Logiciel déclaré")
+            value = str(entry["value"])
+            value_key = _recognized_value_key(value)
             points = float(entry.get("risk_points", 0) or 0)
-            cards.append(
-                _recognized_element_card(
-                    label=label,
-                    value=str(entry["value"]),
-                    status="À vérifier" if points > 0 else "Reconnu",
-                    state="attention" if points > 0 else "clear",
-                )
+            aggregate = software_by_value.setdefault(
+                value_key,
+                {"value": value, "fields": set(), "points": 0.0},
             )
+            aggregate["fields"].add(field)
+            aggregate["points"] = max(aggregate["points"], points)
+    for aggregate in software_by_value.values():
+        fields = aggregate["fields"]
+        label = (
+            "Logiciel PDF"
+            if {"creator", "producer"}.issubset(fields)
+            else "Logiciel créateur"
+            if "creator" in fields
+            else "Logiciel de production PDF"
+        )
+        points = float(aggregate["points"])
+        cards.append(
+            _recognized_element_card(
+                label=label,
+                value=str(aggregate["value"]),
+                status="À vérifier" if points > 0 else "Reconnu",
+                state="attention" if points > 0 else "clear",
+            )
+        )
+        seen.add(("pdf_software", _recognized_value_key(str(aggregate["value"]))))
 
     if laboratory is not None:
         observations = (
@@ -1758,12 +1829,10 @@ def _recognized_element_cards(
                 continue
             label, field_code = _identifier_label_and_field(observation.code)
             formatted = _format_identifier_value(observation.code, str(value))
-            key = (label, re.sub(r"\W", "", formatted).casefold())
+            key = (field_code or label, _recognized_value_key(formatted))
             if key in seen:
                 continue
             seen.add(key)
-            if field_code:
-                covered_field_codes.add(field_code)
             status = {
                 "clear": "Format valide",
                 "attention": "Format à vérifier",
@@ -1789,8 +1858,8 @@ def _recognized_element_cards(
             fact
             for fact in extraction.facts
             if fact.field_code in _RECOGNIZED_FIELD_PRIORITY
-            and fact.field_code not in covered_field_codes
             and fact.role not in ignored_roles
+            and _is_useful_recognized_fact(fact.field_code, fact.role)
         ),
         key=lambda fact: (_RECOGNIZED_FIELD_PRIORITY[fact.field_code], fact.page or 0),
     )
@@ -1798,10 +1867,21 @@ def _recognized_element_cards(
         value = fact.corrected_value or fact.raw_value
         if not value:
             continue
-        key = (fact.field_code, re.sub(r"\W", "", str(value)).casefold())
+        key = (fact.field_code, _recognized_value_key(str(value)))
         if key in seen:
             continue
+        per_field_limit = 2 if fact.field_code in {
+            "address",
+            "date",
+            "date_period",
+            "monetary_amount",
+            "service_description",
+            "product_description",
+        } else 4
+        if field_counts.get(fact.field_code, 0) >= per_field_limit:
+            continue
         seen.add(key)
+        field_counts[fact.field_code] = field_counts.get(fact.field_code, 0) + 1
         label = EXTRACTION_FIELD_LABELS.get(fact.field_code, fact.field_code)
         role = EXTRACTION_ROLE_LABELS.get(fact.role)
         if role and fact.role not in {"document", "other"}:
@@ -1815,9 +1895,29 @@ def _recognized_element_cards(
                 state="clear" if normalized else "attention",
             )
         )
-        if len(cards) >= 12:
+        if len(cards) >= 18:
             break
     return cards
+
+
+def _recognized_value_key(value: str) -> str:
+    return re.sub(r"\W", "", value, flags=re.UNICODE).casefold()
+
+
+def _is_useful_recognized_fact(field_code: str, role: str) -> bool:
+    if field_code == "date":
+        return role not in {"document", "other"}
+    if field_code == "monetary_amount":
+        return role in {
+            "claim",
+            "invoice",
+            "subtotal",
+            "tax",
+            "total",
+            "opening_balance",
+            "closing_balance",
+        }
+    return True
 
 
 def _identifier_label_and_field(code: str) -> tuple[str, str | None]:
@@ -2417,6 +2517,7 @@ def _inject_styles() -> None:
           --cyan: #45d6e6;
           --blue: #6fa8ff;
           --violet: #a78bfa;
+          --font-ui: "Inter", "Source Sans 3", "Source Sans Pro", "Segoe UI", sans-serif;
           --accent-gradient: linear-gradient(90deg, var(--cyan), var(--blue));
           --surface-gradient: linear-gradient(145deg, #1c2026 0%, #171a1f 100%);
         }
@@ -2433,6 +2534,16 @@ def _inject_styles() -> None:
         .stApp {
           background: linear-gradient(180deg, #12151a 0, var(--bg) 420px);
           color: var(--ink);
+          font-family: var(--font-ui);
+          font-feature-settings: "tnum" 1;
+          -webkit-font-smoothing: antialiased;
+          text-rendering: optimizeLegibility;
+        }
+        .stApp button,
+        .stApp input,
+        .stApp textarea,
+        .stApp select {
+          font-family: var(--font-ui);
         }
         .block-container {
           max-width: 1520px;
@@ -2508,6 +2619,30 @@ def _inject_styles() -> None:
           background: var(--cyan);
           color: #101316;
         }
+        [data-baseweb="select"] > div {
+          border-color: var(--line-strong);
+          border-radius: 6px;
+          background: #1a1d22;
+          transition: border-color .16s ease, box-shadow .16s ease;
+        }
+        [data-baseweb="select"] > div:hover {
+          border-color: #5c7e8a;
+        }
+        [data-baseweb="select"]:focus-within > div {
+          border-color: var(--cyan);
+          box-shadow: 0 0 0 2px rgba(69, 214, 230, .13);
+        }
+        [data-testid="stExpander"] {
+          overflow: hidden;
+          border-color: var(--line) !important;
+          border-radius: 6px !important;
+          background: #181a1f;
+          transition: border-color .16s ease, background .16s ease;
+        }
+        [data-testid="stExpander"]:hover {
+          border-color: #4b5663 !important;
+          background: #1a1d22;
+        }
         [class*="st-key-header_reset_document_"] {
           flex: 0 0 auto;
           margin-left: 0;
@@ -2535,6 +2670,7 @@ def _inject_styles() -> None:
           border-radius: 6px;
           background: var(--surface-gradient);
           padding: .7rem .9rem;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
         }
         .analysis-progress-head {
           display: flex;
@@ -2547,31 +2683,35 @@ def _inject_styles() -> None:
         }
         .analysis-progress-head strong {
           color: var(--ink);
+          font-variant-numeric: tabular-nums;
         }
         .analysis-progress-track {
-          height: 7px;
+          height: 8px;
           background: #323137;
           border-radius: 999px;
           overflow: hidden;
+          box-shadow: inset 0 1px 2px rgba(0, 0, 0, .5);
         }
         .analysis-progress-track i {
           position: relative;
           display: block;
           height: 100%;
           overflow: hidden;
-          background: var(--accent-gradient);
+          background: linear-gradient(90deg, #35cfe3 0%, #6fa8ff 50%, #56e2ee 100%);
+          background-size: 180% 100%;
           border-radius: inherit;
           transition: width .18s ease;
-          box-shadow: 0 0 20px rgba(69, 214, 230, .42);
-          filter: saturate(1.15) brightness(1.05);
+          filter: saturate(1.18) brightness(1.08);
+          animation: progress-gradient 2.8s linear infinite;
         }
         .analysis-progress-track i::after {
           content: "";
           position: absolute;
           inset: 0;
-          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .68), transparent);
+          width: 34%;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .74), transparent);
           transform: translateX(-100%);
-          animation: progress-sheen 1.4s ease-in-out infinite;
+          animation: progress-sheen 1.65s ease-in-out infinite;
         }
         .content-progress {
           display: grid;
@@ -2601,10 +2741,23 @@ def _inject_styles() -> None:
           background: #323137;
         }
         .content-progress-stage.completed {
-          color: #b8b5af;
+          color: #c8d7d7;
+        }
+        .content-progress-stage.completed b::before {
+          content: "✓";
+          margin-right: .3rem;
+          color: var(--green);
         }
         .content-progress-stage.completed i {
-          background: #4d8fa0;
+          background: linear-gradient(90deg, #398d82, var(--cyan));
+          box-shadow: 0 0 8px rgba(69, 214, 230, .2);
+        }
+        .content-progress-stage.completed i::after {
+          content: "";
+          position: absolute;
+          inset: 0 0 0 auto;
+          width: 28%;
+          background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .34));
         }
         .content-progress-stage.active {
           color: var(--ink);
@@ -2781,8 +2934,8 @@ def _inject_styles() -> None:
         }
         .st-key-app_header [data-testid="stButtonGroup"] button[aria-checked="true"] {
           color: var(--ink);
-          background: #27272d;
-          box-shadow: inset 0 -2px 0 var(--cyan);
+          background: linear-gradient(180deg, #2a2d33, #25272d);
+          box-shadow: inset 0 -2px 0 var(--cyan), 0 5px 14px rgba(0, 0, 0, .14);
         }
         .st-key-app_header [data-testid="stButtonGroup"] button:focus-visible {
           outline: 2px solid var(--cyan);
@@ -2822,8 +2975,8 @@ def _inject_styles() -> None:
           gap: .6rem;
           align-items: center;
           min-width: 0;
-          min-height: 52px;
-          padding: .42rem .72rem;
+          min-height: 46px;
+          padding: .32rem .72rem;
           border: 1px solid #3b3942;
           border-radius: 6px;
           background: linear-gradient(135deg, #1d2127, #1a1d22);
@@ -2838,7 +2991,7 @@ def _inject_styles() -> None:
         }
         .indicator-queue > .indicator-step {
           margin: 0;
-          padding: .42rem .85rem;
+          padding: .32rem .85rem;
         }
         .indicator-step.notice-tone {
           --risk-color: var(--blue);
@@ -2883,7 +3036,7 @@ def _inject_styles() -> None:
         }
         .indicator-core {
           display: grid;
-          gap: .3rem;
+          gap: .24rem;
           min-width: 0;
         }
         .indicator-main {
@@ -2946,6 +3099,7 @@ def _inject_styles() -> None:
           background: #333238;
         }
         .indicator-meter i {
+          position: relative;
           display: block;
           width: var(--risk-value);
           height: 100%;
@@ -2960,6 +3114,21 @@ def _inject_styles() -> None:
           transform: scaleX(0);
           transform-origin: left center;
           animation: indicator-meter-fill .34s ease-out var(--step-delay) forwards;
+        }
+        .indicator-meter i::after {
+          content: "";
+          position: absolute;
+          inset: 0 auto 0 0;
+          width: min(34px, 28%);
+          background: linear-gradient(
+            90deg,
+            transparent,
+            rgba(255, 255, 255, .38),
+            transparent
+          );
+          transform: translateX(-105%);
+          animation: indicator-meter-sheen 2.8s ease-in-out
+            calc(var(--step-delay) + .34s) infinite;
         }
         .indicator-step.partial .indicator-meter i {
           background: repeating-linear-gradient(
@@ -3046,6 +3215,11 @@ def _inject_styles() -> None:
           from { transform: scaleX(0); }
           to { transform: scaleX(1); }
         }
+        @keyframes indicator-meter-sheen {
+          0%, 44% { transform: translateX(-105%); opacity: 0; }
+          52% { opacity: .9; }
+          72%, 100% { transform: translateX(370%); opacity: 0; }
+        }
         @keyframes indicator-accent-reveal {
           to { color: var(--risk-color); border-color: var(--risk-color); }
         }
@@ -3057,8 +3231,12 @@ def _inject_styles() -> None:
           to { transform: translateX(138%); opacity: 1; }
         }
         @keyframes progress-sheen {
-          0%, 35% { transform: translateX(-100%); }
-          75%, 100% { transform: translateX(100%); }
+          0%, 30% { transform: translateX(-110%); }
+          72%, 100% { transform: translateX(300%); }
+        }
+        @keyframes progress-gradient {
+          from { background-position: 100% 50%; }
+          to { background-position: -80% 50%; }
         }
         @keyframes pdf-loading-spin {
           to { transform: rotate(360deg); }
@@ -3279,9 +3457,113 @@ def _inject_styles() -> None:
           color: var(--muted);
           font-size: .8rem;
         }
+        [class*="st-key-ai_document_preview"],
+        [class*="st-key-ai_markdown_preview"] {
+          padding: .65rem .75rem;
+          border: 1px solid var(--line);
+          border-radius: 7px;
+          background: linear-gradient(145deg, #191a1f, #15161a 72%);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+          scrollbar-color: #4e5965 #1a1c21;
+          scrollbar-width: thin;
+        }
+        [class*="st-key-ai_document_preview"] [data-testid="stImage"] img {
+          max-height: 535px;
+          object-fit: contain;
+          background: #101115;
+        }
+        [class*="st-key-ai_markdown_preview"] [data-testid="stMarkdownContainer"] {
+          color: #d8d5cf;
+          font-size: .8rem;
+          line-height: 1.5;
+        }
+        [class*="st-key-ai_markdown_preview"] table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: .74rem;
+        }
+        [class*="st-key-ai_markdown_preview"] th,
+        [class*="st-key-ai_markdown_preview"] td {
+          padding: .4rem .45rem;
+          border: 1px solid var(--line);
+          text-align: left;
+          vertical-align: top;
+        }
+        [class*="st-key-ai_markdown_preview"] th {
+          position: sticky;
+          top: 0;
+          z-index: 1;
+          background: #22242a;
+        }
+        .ai-preview-empty {
+          display: grid;
+          place-content: center;
+          min-height: 540px;
+          color: var(--muted);
+          text-align: center;
+        }
+        .ai-preview-empty strong,
+        .ai-preview-empty span {
+          display: block;
+        }
+        .ai-preview-empty span {
+          margin-top: .3rem;
+          font-size: .75rem;
+        }
+        .ai-stage-heading {
+          display: flex;
+          align-items: center;
+          gap: .7rem;
+          margin: 1.15rem 0 .55rem;
+          padding-top: .9rem;
+          border-top: 1px solid var(--line);
+        }
+        .ai-stage-heading > div {
+          display: grid;
+          align-content: center;
+          gap: .08rem;
+          min-width: 0;
+        }
+        .ai-stage-heading > span {
+          display: grid;
+          width: 30px;
+          height: 30px;
+          flex: 0 0 30px;
+          place-items: center;
+          border: 1px solid #3d6c78;
+          border-radius: 50%;
+          color: var(--cyan);
+          background: linear-gradient(145deg, #183039, #142126);
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06),
+            0 0 14px rgba(69, 214, 230, .08);
+          font: 850 .68rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+        }
+        div[data-testid="stMarkdownContainer"] .ai-stage-heading h2 {
+          margin: 0;
+          padding: 0;
+          color: var(--ink);
+          font-size: 1.02rem;
+          line-height: 1.15;
+        }
+        div[data-testid="stMarkdownContainer"] .ai-stage-heading p {
+          margin: 0;
+          padding: 0;
+          color: var(--muted);
+          font-size: .76rem;
+          line-height: 1.25;
+        }
+        .ai-stage-empty {
+          padding: .8rem;
+          border: 1px solid var(--line);
+          border-left: 4px solid var(--muted);
+          border-radius: 6px;
+          color: var(--muted);
+          background: #19191d;
+          font-size: .78rem;
+        }
         .recognized-elements {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
           gap: .45rem;
         }
         .recognized-element {
@@ -3294,6 +3576,9 @@ def _inject_styles() -> None:
           border-left: 4px solid var(--blue);
           border-radius: 6px;
           background: var(--surface-gradient);
+        }
+        .recognized-element:hover {
+          border-color: #4d5865;
         }
         .recognized-element.clear { border-left-color: var(--green); }
         .recognized-element.attention {
@@ -3376,6 +3661,7 @@ def _inject_styles() -> None:
           border-left: 5px solid var(--green);
           border-radius: 6px;
           background: #142019;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
         }
         .verification-summary.attention,
         .verification-summary.incomplete {
@@ -3507,22 +3793,18 @@ def _inject_styles() -> None:
           gap: .55rem;
           margin-bottom: .85rem;
         }
-        .st-key-laboratory_context .extraction-overview {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          margin-top: .75rem;
-        }
-        .st-key-laboratory_context .extraction-overview > article {
-          min-height: 92px;
-        }
-        .st-key-laboratory_context .verification-summary {
-          margin-top: .65rem;
-        }
         .extraction-overview > article {
           min-height: 105px;
           padding: .75rem;
           border: 1px solid var(--line);
           border-radius: 6px;
           background: #19191d;
+          transition: transform .16s ease, border-color .16s ease, background .16s ease;
+        }
+        .extraction-overview > article:hover {
+          transform: translateY(-1px);
+          border-color: #4b5663;
+          background: #1d2025;
         }
         .extraction-overview > article > strong,
         .extraction-coverage div strong {
@@ -3537,7 +3819,7 @@ def _inject_styles() -> None:
           display: block;
           margin-top: .35rem;
           color: var(--muted);
-          font-size: .74rem;
+          font-size: .77rem;
         }
         .extraction-coverage {
           border-left: 5px solid var(--amber) !important;
@@ -3618,7 +3900,7 @@ def _inject_styles() -> None:
         }
         .additional-extractions {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
           gap: .45rem;
         }
         .additional-extraction {
@@ -3628,6 +3910,12 @@ def _inject_styles() -> None:
           border-left: 4px solid var(--blue);
           border-radius: 5px;
           background: #181c24;
+          transition: transform .16s ease, border-color .16s ease, filter .16s ease;
+        }
+        .additional-extraction:hover {
+          transform: translateY(-1px);
+          border-color: #4b6685;
+          filter: brightness(1.04);
         }
         .additional-extraction span,
         .additional-extraction strong,
@@ -3681,6 +3969,10 @@ def _inject_styles() -> None:
           .indicator-queue {
             grid-template-columns: 1fr;
           }
+          [class*="st-key-ai_document_preview"],
+          [class*="st-key-ai_markdown_preview"] {
+            max-height: 480px;
+          }
           .indicator-sequence {
             padding: .75rem;
           }
@@ -3721,6 +4013,7 @@ def _inject_styles() -> None:
             display: none;
             animation: none;
           }
+          .analysis-progress-track i,
           .analysis-progress-track i::after {
             animation: none;
           }
@@ -3734,7 +4027,10 @@ def _inject_styles() -> None:
           }
           .fraud-score,
           .evidence-card,
-          .indicator-step {
+          .indicator-step,
+          .extraction-overview > article,
+          .additional-extraction,
+          .classification-card {
             transition: none;
           }
           .fraud-score {
@@ -3763,6 +4059,12 @@ def _inject_styles() -> None:
             transform: scaleX(1);
             animation: none;
           }
+          .indicator-meter i::after {
+            animation: none;
+            inset: 0 0 0 auto;
+            transform: none;
+            opacity: .35;
+          }
           .indicator-score {
             opacity: 1;
             animation: none;
@@ -3776,6 +4078,11 @@ def _inject_styles() -> None:
           border-left: 5px solid var(--blue);
           border-radius: 6px;
           background: #181e28;
+          transition: transform .16s ease, border-color .16s ease, filter .16s ease;
+        }
+        .classification-card:hover {
+          transform: translateY(-1px);
+          filter: brightness(1.04);
         }
         .classification-card.reliable { border-left-color: var(--blue); background: #181e28; }
         .classification-card.attention { border-left-color: var(--amber); background: #1d1a17; }

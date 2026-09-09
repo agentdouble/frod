@@ -31,7 +31,7 @@ from fraude_detector.structured_ocr import (
 )
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-08-v5"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-09-v6"
 EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-09-08-v3"
 
 FIELD_CODES = (
@@ -232,6 +232,16 @@ _OBVIOUS_BOILERPLATE_PATTERNS = tuple(
         r"\bpiens[ae]\b.{0,40}\bmedio ambiente\b.{0,40}\bimprim",
         r"\b(?:follow us|suivez-nous)\b",
         r"\b(?:facebook|instagram|linkedin|x\.com)\.com/",
+    )
+)
+
+_EPHEMERAL_ADDITIONAL_LABEL_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:activation|activatie|aktivierungs?|verification|verificatie)\s*code\b",
+        r"\bcode\s+(?:d['’]activation|de verification|de vérification|d['’]acces|d['’]accès)\b",
+        r"\b(?:access|toegang|security|securite|sécurité|login|connexion)\s*code\b",
+        r"\b(?:one[ -]?time password|mot de passe|password|wachtwoord|otp|code pin)\b",
     )
 )
 
@@ -548,12 +558,14 @@ Règles:
    tableaux avant d'extraire. Retourne chaque information comparable dans facts avec un
    field_code et un role autorisés.
 2. Une valeur importante répétée avec un rôle différent doit produire plusieurs faits.
-3. Utilise additional_fields uniquement pour une information spécifique à ce document,
+3. Utilise additional_fields uniquement pour une information stable et spécifique à ce document,
    matériellement utile à une revue, une comparaison future ou une règle métier, mais sans code
-   canonique adapté. Un message environnemental, une publicité, un slogan, une invitation à
-   suivre un réseau social, une formule de politesse, une navigation, un pied de page générique
+   canonique adapté. Un code d'activation, d'accès, de connexion, de vérification ou de sécurité,
+   un identifiant de session, un message environnemental, une publicité, un slogan, une invitation
+   à suivre un réseau social, une formule de politesse, une navigation, un pied de page générique
    ou une mention légale générique n'est jamais une information additionnelle: classe sa région
-   en boilerplate. Le texte OCR reste conservé séparément, il n'est donc pas perdu.
+   en boilerplate. Ne duplique jamais dans additional_fields une valeur déjà présente dans facts.
+   Le texte OCR reste conservé séparément, il n'est donc pas perdu.
 4. Pour chaque tableau, référence sa région OCR mais ne recopie jamais ses en-têtes ni ses
    cellules: Frod les reconstruit directement depuis le HTML ou Markdown source. Retourne seulement
    column_roles dans l'ordre des colonnes, un default_row_role applicable à la majorité des lignes,
@@ -829,7 +841,7 @@ def _validated_extraction(
     region_by_id = {region.region_id: region for region in regions}
     facts = _validated_facts(raw.facts, region_by_id, language, country)
     facts = _reconcile_repeated_person_names(facts)
-    additional = _validated_additional(raw.additional_fields, region_by_id)
+    additional = _validated_additional(raw.additional_fields, region_by_id, facts)
     tables = _validated_tables(raw.tables, region_by_id)
     coverage = _coverage(raw, regions, facts, additional, tables)
     return DocumentExtraction(
@@ -908,15 +920,26 @@ def _validated_facts(
 def _validated_additional(
     candidates: tuple[Mapping[str, Any], ...],
     region_by_id: Mapping[str, StructuredOcrRegion],
+    facts: tuple[ExtractedFact, ...],
 ) -> tuple[AdditionalExtractionField, ...]:
     fields: list[AdditionalExtractionField] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    canonical_values = {
+        _comparison_text(str(value))
+        for fact in facts
+        for value in (fact.corrected_value, fact.raw_value, fact.normalized_value)
+        if value is not None and _comparison_text(str(value))
+    }
     for candidate in candidates:
         raw_label = _clean_text(candidate.get("raw_label"), maximum=200)
         raw_value = _clean_text(candidate.get("raw_value"), maximum=1000)
         if not raw_label or not raw_value or _is_obvious_ocr_garbage(raw_value):
             continue
         if _comparison_text(raw_label) == _comparison_text(raw_value):
+            continue
+        if _comparison_text(raw_value) in canonical_values:
+            continue
+        if _is_irrelevant_additional_field(raw_label, raw_value):
             continue
         region_ids = _valid_region_ids(candidate.get("region_ids"), region_by_id)
         candidate_text = f"{raw_label} {raw_value}"
@@ -963,6 +986,17 @@ def _validated_tables(
                 candidate.get("headers"), maximum_items=40, maximum_length=200
             )
             rows = _table_rows(candidate.get("rows"), maximum_rows=2000, maximum_columns=40)
+        rows = tuple(row for row in rows if any(cell.strip() for cell in row))
+        if headers:
+            rows = tuple(
+                row
+                for row in rows
+                if tuple(_comparison_text(cell) for cell in row[: len(headers)])
+                != tuple(_comparison_text(header) for header in headers)
+            )
+        # Headers alone do not contain comparable records and should not become a table result.
+        if not rows:
+            continue
         column_count = min(
             40,
             max(
@@ -1015,8 +1049,6 @@ def _validated_tables(
         )
         for index, role in enumerate(legacy_row_roles[: len(row_roles)]):
             row_roles[index] = role if role in TABLE_ROW_ROLES else "other"
-        if not headers and not rows:
-            continue
         key = (semantic_type, headers, region_ids)
         if key in seen:
             continue
@@ -1511,6 +1543,13 @@ def _is_obvious_boilerplate(value: str) -> bool:
     if not text or len(text) > 600:
         return False
     return any(pattern.search(text) for pattern in _OBVIOUS_BOILERPLATE_PATTERNS)
+
+
+def _is_irrelevant_additional_field(label: str, value: str) -> bool:
+    """Reject transient credentials that cannot support future document comparison."""
+
+    combined = f"{label} {value}"
+    return any(pattern.search(combined) for pattern in _EPHEMERAL_ADDITIONAL_LABEL_PATTERNS)
 
 
 def _is_obvious_ocr_garbage(value: str) -> bool:

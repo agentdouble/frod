@@ -233,7 +233,7 @@ def test_extraction_laboratory_has_a_business_readable_empty_state(
     assert "Aucune extraction disponible" in markdown
     assert "Texte reconnu" in markdown
     assert "TRANSACTION SUMMARY" in markdown
-    assert [expander.label for expander in app.expander] == ["Texte reconnu par OCR"]
+    assert not app.expander
 
 
 def test_extraction_laboratory_exposes_final_json_on_demand(
@@ -309,21 +309,26 @@ def test_extraction_laboratory_exposes_final_json_on_demand(
     assert not app.exception
     assert [expander.label for expander in app.expander] == [
         "Pourquoi ce classement ?",
-        "Texte reconnu par OCR",
-        "JSON final de l'extraction",
+        "Données techniques de l'extraction",
     ]
     assert "Extraction cohérente avec l'OCR" in markdown
     assert "Déclaration de sinistre : aucun indice prioritaire" in markdown
     assert "Cette absence ne valide pas le document" in markdown
+    synthesis_index = next(
+        index for index, value in enumerate(markdown_blocks) if ">Synthèse<" in value
+    )
     classification_index = next(
-        index for index, value in enumerate(markdown_blocks) if "Type de document reconnu" in value
+        index for index, value in enumerate(markdown_blocks) if ">Classification<" in value
     )
     extraction_index = next(
         index
         for index, value in enumerate(markdown_blocks)
-        if '<section class="extraction-overview">' in value
+        if ">Extraction<" in value
     )
-    assert classification_index < extraction_index
+    verification_index = next(
+        index for index, value in enumerate(markdown_blocks) if ">Vérification<" in value
+    )
+    assert synthesis_index < classification_index < extraction_index < verification_index
     assert calls == [
         ["system", "user"],
         ["system", "user"],
@@ -366,11 +371,13 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert '"verification": verification.to_dict()' in laboratory_view
     assert "st.tabs" not in source
     assert source.count("st.segmented_control(") == 1
-    assert source.count("st.expander(") == 4
-    assert "JSON final de l'extraction" in laboratory_view
+    assert source.count("st.expander(") == 2
+    assert "Données techniques de l'extraction" in laboratory_view
     assert "Pourquoi ce classement ?" in source
-    assert "Texte reconnu par OCR" in laboratory_view
-    assert "_render_classification(classification)" in laboratory_view
+    assert 'key="ai_document_preview"' in laboratory_view
+    assert 'key="ai_markdown_preview"' in laboratory_view
+    assert "st.markdown(recognized_text)" in laboratory_view
+    assert "_render_classification(classification, show_heading=False)" in laboratory_view
     assert "_render_classification(report.classification)" not in report_view
     assert "raw_response" not in source
     assert 'st.columns([0.54, 0.46], gap="large")' in report_view
@@ -447,7 +454,7 @@ def test_business_ui_keeps_structural_component_styles() -> None:
     assert "grid-template-columns: 32px minmax(0, 1fr) 58px;" in styles
     indicator_card = _css_rule(styles, ".indicator-queue > .indicator-step")
     assert "margin: 0;" in indicator_card
-    assert "padding: .42rem .85rem;" in indicator_card
+    assert "padding: .32rem .85rem;" in indicator_card
     assert "font-variant-numeric: tabular-nums;" in styles
     assert ".view-guidance" not in styles
 
