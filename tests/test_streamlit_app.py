@@ -376,7 +376,7 @@ def test_business_ui_contains_no_json_renderer() -> None:
     assert "Pourquoi ce classement ?" in source
     assert 'key="ai_document_preview"' in laboratory_view
     assert 'key="ai_markdown_preview"' in laboratory_view
-    assert "st.markdown(recognized_text)" in laboratory_view
+    assert "st.markdown(html_tables_to_markdown(recognized_text))" in laboratory_view
     assert "_render_classification(classification, show_heading=False)" in laboratory_view
     assert "_render_classification(report.classification)" not in report_view
     assert "raw_response" not in source

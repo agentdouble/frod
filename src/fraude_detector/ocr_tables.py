@@ -193,6 +193,49 @@ def parse_ocr_table(content: str) -> ParsedOcrTable | None:
     return _parse_markdown_table(content)
 
 
+def html_tables_to_markdown(content: str) -> str:
+    """Convert OCR HTML tables for safe rendering by a Markdown-only viewer."""
+
+    def replace(match: re.Match[str]) -> str:
+        parsed = parse_ocr_table(match.group())
+        if parsed is None:
+            return match.group()
+        width = max(
+            len(parsed.headers),
+            max((len(row) for row in parsed.rows), default=0),
+        )
+        if width == 0:
+            return ""
+        headers = (*parsed.headers, *("" for _ in range(width - len(parsed.headers))))
+        visible_headers = tuple(
+            header or f"Colonne {index + 1}" for index, header in enumerate(headers)
+        )
+        rows = tuple(
+            (*row, *("" for _ in range(width - len(row))))[:width] for row in parsed.rows
+        )
+        lines = [
+            _markdown_row(visible_headers),
+            _markdown_row(tuple("---" for _ in range(width))),
+            *(_markdown_row(row) for row in rows),
+        ]
+        return "\n\n" + "\n".join(lines) + "\n\n"
+
+    return re.sub(
+        r"<table\b[^>]*>.*?</table\s*>",
+        replace,
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def _markdown_row(cells: tuple[str, ...]) -> str:
+    escaped = tuple(
+        cell.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+        for cell in cells
+    )
+    return "| " + " | ".join(escaped) + " |"
+
+
 def table_from_regions(regions: tuple[StructuredOcrRegion, ...]) -> ParsedOcrTable | None:
     """Select the richest table found in the source regions referenced by the model."""
 

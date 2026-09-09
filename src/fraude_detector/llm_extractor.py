@@ -31,7 +31,7 @@ from fraude_detector.structured_ocr import (
 )
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
-EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-09-v6"
+EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-09-v7"
 EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-09-08-v3"
 
 FIELD_CODES = (
@@ -579,7 +579,11 @@ Règles:
    une information clé du document, par exemple un total, un solde, une référence ou une identité.
 6. Associe un libellé et sa valeur même s'ils occupent deux régions OCR voisines. Tu peux
    réorganiser la sortie pour restituer leur relation, mais tu ne peux ni inventer une valeur ni
-   déplacer arbitrairement un montant lorsque la source reste ambiguë.
+   déplacer arbitrairement un montant lorsque la source reste ambiguë. Lorsqu'un même nom ou une
+   même adresse est réparti sans ambiguïté sur plusieurs zones voisines, retourne sa forme complète
+   dans un seul fait et référence toutes les zones concernées. Ne sépare pas un prénom de son nom,
+   ni une rue de son numéro, code postal ou localité, lorsqu'ils forment clairement une seule
+   valeur.
 7. Chaque fait, champ ou tableau doit référencer uniquement les region_ids fournis.
 8. Pour toute région sans extraction, ajoute son identifiant dans le groupe approprié de
    region_dispositions: boilerplate pour le contenu décoratif, promotionnel, répétitif ou générique;

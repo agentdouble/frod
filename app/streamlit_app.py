@@ -7,6 +7,7 @@ import html as html_lib
 import json
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,11 +22,13 @@ from fraude_detector.models import (
     DetectorResult,
     DocumentClassification,
     DocumentExtraction,
+    ExtractedFact,
     ExtractionVerification,
     Finding,
     ImageAnalysisReport,
     LaboratoryReport,
 )
+from fraude_detector.ocr_tables import html_tables_to_markdown
 from fraude_detector.run_config import RunConfig, load_run_config
 from fraude_detector.scoring import FAMILY_CAPS, assess_risk
 
@@ -951,7 +954,7 @@ def _render_extraction_laboratory(
         )
         with st.container(height=620, border=False, key="ai_markdown_preview"):
             if recognized_text.strip():
-                st.markdown(recognized_text)
+                st.markdown(html_tables_to_markdown(recognized_text))
             else:
                 st.markdown(
                     '<div class="ai-preview-empty"><strong>Aucun texte reconnu</strong></div>',
@@ -1863,8 +1866,7 @@ def _recognized_element_cards(
         ),
         key=lambda fact: (_RECOGNIZED_FIELD_PRIORITY[fact.field_code], fact.page or 0),
     )
-    for fact in candidates:
-        value = fact.corrected_value or fact.raw_value
+    for fact, value in _recognized_fact_entries(candidates):
         if not value:
             continue
         key = (fact.field_code, _recognized_value_key(str(value)))
@@ -1893,11 +1895,101 @@ def _recognized_element_cards(
                 value=str(value),
                 status="Reconnu" if normalized else "Lecture à confirmer",
                 state="clear" if normalized else "attention",
+                wide=fact.field_code == "address",
             )
         )
         if len(cards) >= 18:
             break
     return cards
+
+
+def _recognized_fact_entries(
+    facts: list[ExtractedFact],
+) -> list[tuple[ExtractedFact, str]]:
+    grouped: dict[tuple[str, str, int | None], list[tuple[int, ExtractedFact]]] = {}
+    for index, fact in enumerate(facts):
+        grouped.setdefault((fact.field_code, fact.role, fact.page), []).append((index, fact))
+
+    consumed: set[int] = set()
+    entries: list[tuple[ExtractedFact, str]] = []
+    for index, fact in enumerate(facts):
+        if index in consumed:
+            continue
+        group = grouped[(fact.field_code, fact.role, fact.page)]
+        combined = _combined_recognized_value(fact.field_code, tuple(item for _, item in group))
+        if combined is not None:
+            consumed.update(item_index for item_index, _ in group)
+            entries.append((fact, combined))
+            continue
+        consumed.add(index)
+        entries.append((fact, fact.corrected_value or fact.raw_value))
+    return entries
+
+
+def _combined_recognized_value(
+    field_code: str,
+    facts: tuple[ExtractedFact, ...],
+) -> str | None:
+    if field_code not in {"person_name", "address"} or len(facts) < 2:
+        return None
+    values = tuple(dict.fromkeys(fact.corrected_value or fact.raw_value for fact in facts))
+    if len(values) < 2:
+        return values[0] if values else None
+
+    normalized = tuple(_recognized_words(value) for value in values)
+    longest_index = max(range(len(values)), key=lambda item: len(normalized[item]))
+    if all(
+        index == longest_index or words in normalized[longest_index]
+        for index, words in enumerate(normalized)
+    ):
+        return values[longest_index]
+
+    labels = tuple(_recognized_words(fact.raw_label or "") for fact in facts)
+    if field_code == "person_name":
+        given_pattern = r"\b(?:first|given|prenom|voornaam|vorname)\b"
+        family_pattern = r"\b(?:last|family|surname|nom|achternaam|nachname)\b"
+        has_name_components = any(
+            re.search(f"(?:{given_pattern})|(?:{family_pattern})", label)
+            for label in labels
+        )
+        if has_name_components:
+            ordered = sorted(
+                zip(values, labels, strict=True),
+                key=lambda item: (
+                    0
+                    if re.search(given_pattern, item[1])
+                    else 2
+                    if re.search(family_pattern, item[1])
+                    else 1
+                ),
+            )
+            return " ".join(value for value, _ in ordered)
+        if all(len(words.split()) == 1 for words in normalized):
+            return " ".join(values)
+        return None
+
+    address_pattern = (
+        r"\b(?:address|adresse|adres|anschrift|street|rue|straat|strasse|postal|postcode|"
+        r"zip|city|ville|localite|plaats|ort|country|pays|land)\b"
+    )
+    address_labels = all(
+        re.search(address_pattern, label)
+        for label in labels
+    )
+    full_address_labels = sum(
+        bool(re.search(r"\b(?:address|adresse|adres|anschrift)\b", label)) for label in labels
+    )
+    if address_labels and full_address_labels <= 1:
+        return ", ".join(values)
+    return None
+
+
+def _recognized_words(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).casefold()
+    without_accents = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    return " ".join(re.findall(r"\w+", without_accents))
 
 
 def _recognized_value_key(value: str) -> str:
@@ -1939,9 +2031,17 @@ def _identifier_label_and_field(code: str) -> tuple[str, str | None]:
     return "Identifiant", None
 
 
-def _recognized_element_card(*, label: str, value: str, status: str, state: str) -> str:
+def _recognized_element_card(
+    *,
+    label: str,
+    value: str,
+    status: str,
+    state: str,
+    wide: bool = False,
+) -> str:
+    width_class = " wide" if wide else ""
     return (
-        f'<article class="evidence-card recognized-element {state}">'
+        f'<article class="evidence-card recognized-element {state}{width_class}">'
         f'<span>{_html(label)}</span><strong>{_html(value)}</strong>'
         f'<small><i></i>{_html(status)}</small></article>'
     )
@@ -3118,7 +3218,7 @@ def _inject_styles() -> None:
         .indicator-meter i::after {
           content: "";
           position: absolute;
-          inset: 0 auto 0 0;
+          inset: 0 auto 0 -30%;
           width: min(34px, 28%);
           background: linear-gradient(
             90deg,
@@ -3126,7 +3226,6 @@ def _inject_styles() -> None:
             rgba(255, 255, 255, .38),
             transparent
           );
-          transform: translateX(-105%);
           animation: indicator-meter-sheen 2.8s ease-in-out
             calc(var(--step-delay) + .34s) infinite;
         }
@@ -3216,9 +3315,10 @@ def _inject_styles() -> None:
           to { transform: scaleX(1); }
         }
         @keyframes indicator-meter-sheen {
-          0%, 44% { transform: translateX(-105%); opacity: 0; }
-          52% { opacity: .9; }
-          72%, 100% { transform: translateX(370%); opacity: 0; }
+          0%, 38% { left: -30%; opacity: 0; }
+          46% { opacity: .85; }
+          82% { left: 104%; opacity: .7; }
+          90%, 100% { left: 104%; opacity: 0; }
         }
         @keyframes indicator-accent-reveal {
           to { color: var(--risk-color); border-color: var(--risk-color); }
@@ -3570,12 +3670,15 @@ def _inject_styles() -> None:
           display: grid;
           align-content: start;
           min-width: 0;
-          min-height: 92px;
-          padding: .65rem .7rem;
+          min-height: 68px;
+          padding: .48rem .6rem;
           border: 1px solid var(--line);
           border-left: 4px solid var(--blue);
           border-radius: 6px;
           background: var(--surface-gradient);
+        }
+        .recognized-element.wide {
+          grid-column: span 2;
         }
         .recognized-element:hover {
           border-color: #4d5865;
@@ -3590,7 +3693,7 @@ def _inject_styles() -> None:
           font-size: .72rem;
         }
         .recognized-element > strong {
-          margin-top: .25rem;
+          margin-top: .14rem;
           color: var(--ink);
           font-size: .86rem;
           overflow-wrap: anywhere;
@@ -3599,8 +3702,8 @@ def _inject_styles() -> None:
           display: flex;
           align-items: center;
           gap: .3rem;
-          margin-top: auto;
-          padding-top: .45rem;
+          margin-top: .28rem;
+          padding-top: 0;
           color: var(--muted);
           font-size: .7rem;
         }
@@ -3969,6 +4072,9 @@ def _inject_styles() -> None:
           .indicator-queue {
             grid-template-columns: 1fr;
           }
+          .recognized-element.wide {
+            grid-column: auto;
+          }
           [class*="st-key-ai_document_preview"],
           [class*="st-key-ai_markdown_preview"] {
             max-height: 480px;
@@ -4062,7 +4168,6 @@ def _inject_styles() -> None:
           .indicator-meter i::after {
             animation: none;
             inset: 0 0 0 auto;
-            transform: none;
             opacity: .35;
           }
           .indicator-score {

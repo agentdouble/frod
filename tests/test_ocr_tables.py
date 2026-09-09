@@ -1,4 +1,8 @@
-from fraude_detector.ocr_tables import infer_table_column_role, parse_ocr_table
+from fraude_detector.ocr_tables import (
+    html_tables_to_markdown,
+    infer_table_column_role,
+    parse_ocr_table,
+)
 
 
 def test_html_table_is_reconstructed_without_language_model_output() -> None:
@@ -28,6 +32,23 @@ def test_markdown_table_is_reconstructed() -> None:
 
 def test_plain_text_is_not_mistaken_for_a_table() -> None:
     assert parse_ocr_table("Date | Libellé | Montant") is None
+
+
+def test_html_tables_are_rendered_as_markdown_without_altering_surrounding_text() -> None:
+    source = (
+        "## Garanties\n\n"
+        '<table border="1"><tr><td>De genaamde</td><td>Yvonne Muller</td></tr>'
+        "<tr><td>Adres</td><td>Rue du Parc | 12</td></tr></table>\n\nFin"
+    )
+
+    rendered = html_tables_to_markdown(source)
+
+    assert rendered.startswith("## Garanties")
+    assert "<table" not in rendered
+    assert "| Colonne 1 | Colonne 2 |" in rendered
+    assert "| De genaamde | Yvonne Muller |" in rendered
+    assert r"Rue du Parc \| 12" in rendered
+    assert rendered.rstrip().endswith("Fin")
 
 
 def test_html_colspan_keeps_following_cells_in_their_original_columns() -> None:
