@@ -30,6 +30,7 @@ _GROUP_POINTS: dict[str, dict[str, float]] = {
         "OCR_EU_VAT_INVALID": 6.0,
         "OCR_RPPS_INVALID": 6.0,
         "OCR_FINESS_INVALID": 6.0,
+        "OCR_BELGIAN_RRN_INVALID": 6.0,
         "OCR_CKYC_INVALID": 4.0,
         "OCR_MICR_INVALID": 4.0,
     },

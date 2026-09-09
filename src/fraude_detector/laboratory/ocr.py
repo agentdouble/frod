@@ -13,6 +13,7 @@ from typing import Any
 from fraude_detector.financial_identifiers import (
     IdentifierValidation,
     expected_iban_length,
+    validate_belgian_rrn,
     validate_bic,
     validate_card_number,
     validate_eu_vat,
@@ -68,6 +69,17 @@ _VAT_LABEL = re.compile(
 _RPPS_LABEL = re.compile(r"\b(?:N(?:°|O)\s*)?RPPS\b", re.IGNORECASE)
 _FINESS_LABEL = re.compile(
     r"\b(?:N(?:°|O)\s*)?FINESS(?:\s+(?:EJ|ET|JURIDIQUE|G[EÉ]OGRAPHIQUE))?\b",
+    re.IGNORECASE,
+)
+_BELGIAN_RRN_LABEL = re.compile(
+    r"\b(?:"
+    r"RRN"
+    r"|RIJKSREGISTER(?:NUMMER|\s*(?:NR|NUMMER))"
+    r"|NATIONALREGISTER(?:NUMMER)?"
+    r"|NATIONAL\s+REGISTER\s+(?:NO|NUMBER)"
+    r"|NUM[EÉ]RO\s+(?:DE\s+)?REGISTRE\s+NATIONAL"
+    r"|NUM[EÉ]RO\s+NATIONAL"
+    r")\b",
     re.IGNORECASE,
 )
 _EU_VAT_LENGTHS: dict[str, tuple[int, ...]] = {
@@ -467,6 +479,12 @@ def _identifier_check(regions: tuple[_Region, ...]) -> LaboratoryCheck:
             validate_finess,
             "FINESS français de 9 chiffres et clé de Luhn",
         ),
+        (
+            "BELGIAN_RRN",
+            _labeled_digit_occurrences(regions, _BELGIAN_RRN_LABEL, 11),
+            validate_belgian_rrn,
+            "RRN belge de 11 chiffres, date encodée et clé modulo 97",
+        ),
     )
     for identifier_type, occurrences, validator, standard in labeled_identifiers:
         for candidate, pages in occurrences.items():
@@ -738,15 +756,16 @@ def _national_identifier_observation(
     standard: str,
 ) -> LaboratoryObservation:
     reason = _validation_reason(validation.reasons)
+    display_name = "RRN belge" if identifier_type == "BELGIAN_RRN" else identifier_type
     return LaboratoryObservation(
         code=(
             f"OCR_{identifier_type}_VALID" if validation.valid else f"OCR_{identifier_type}_INVALID"
         ),
-        title=identifier_type,
+        title=display_name,
         summary=(
-            f"Le numéro {identifier_type} respecte sa structure et sa clé de contrôle."
+            f"Le numéro {display_name} respecte sa structure et sa clé de contrôle."
             if validation.valid
-            else f"Le numéro {identifier_type} est invalide : {reason}."
+            else f"Le numéro {display_name} est invalide : {reason}."
         ),
         state="clear" if validation.valid else "attention",
         strength="informational" if validation.valid else "moderate",

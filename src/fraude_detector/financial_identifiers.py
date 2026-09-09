@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from stdnum import bic, iban, luhn
+from stdnum.be import nn as belgian_nn
 from stdnum.eu import vat as eu_vat
 from stdnum.exceptions import (
     InvalidChecksum,
@@ -55,6 +56,12 @@ def validate_siret(value: str) -> IdentifierValidation:
     """Validate the structure and checksum of a French SIRET."""
 
     return _validate_stdnum(value, siret, country_code="FR")
+
+
+def validate_belgian_rrn(value: str) -> IdentifierValidation:
+    """Validate a Belgian National Register Number (RRN/rijksregisternummer)."""
+
+    return _validate_stdnum(value, belgian_nn, country_code="BE")
 
 
 def validate_eu_vat(value: str) -> IdentifierValidation:

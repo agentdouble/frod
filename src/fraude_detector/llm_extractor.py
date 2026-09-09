@@ -32,7 +32,7 @@ from fraude_detector.structured_ocr import (
 
 EXTRACTION_SCHEMA_VERSION = "0.4-experimental"
 EXTRACTION_PROMPT_VERSION = "extraction-grounded-2026-09-09-v7"
-EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-09-08-v3"
+EXTRACTION_VOCABULARY_VERSION = "document-fields-2026-09-09-v4"
 
 FIELD_CODES = (
     "person_name",
@@ -45,6 +45,7 @@ FIELD_CODES = (
     "contract_number",
     "claim_number",
     "account_number",
+    "national_identifier",
     "tax_identifier",
     "professional_identifier",
     "registration_identifier",
@@ -160,6 +161,10 @@ FIELD_CODE_GUIDANCE = {
     "contract_number": "numéro de contrat, police ou convention",
     "claim_number": "numéro de dossier ou de sinistre",
     "account_number": "numéro de compte autre qu'un IBAN",
+    "national_identifier": (
+        "identifiant national d'une personne, par exemple un RRN belge, lorsqu'il est "
+        "explicitement étiqueté"
+    ),
     "tax_identifier": "identifiant fiscal ou numéro de TVA",
     "professional_identifier": "identifiant d'un professionnel réglementé",
     "registration_identifier": "numéro d'enregistrement d'une organisation ou d'un véhicule",
@@ -1154,6 +1159,7 @@ def _normalize_value(
     if field_code in {
         "bic",
         "payment_card_number",
+        "national_identifier",
         "tax_identifier",
         "professional_identifier",
         "registration_identifier",

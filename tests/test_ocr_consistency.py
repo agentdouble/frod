@@ -237,6 +237,32 @@ def test_invalid_labeled_siret_uses_the_existing_ocr_reliability_gate() -> None:
     assert finding.evidence["groups"]["identity_consistency"]["signals"] == ("OCR_SIRET_INVALID",)
 
 
+def test_invalid_belgian_rrn_uses_the_existing_ocr_reliability_gate() -> None:
+    payload = [
+        [
+            {
+                "label": "text",
+                "content": (
+                    "Attestation belge contenant suffisamment de texte pour contrôler "
+                    "le RRN : 85.07.30-033.29"
+                ),
+            },
+            {"label": "text", "content": "Coordonnées complémentaires du titulaire belge"},
+        ]
+    ]
+    markdown = "\n".join(item["content"] for item in payload[0])
+
+    result = build_ocr_content_result(
+        OcrReport(success=True, error_message=None, markdown=markdown, json_result=payload)
+    )
+
+    finding = result.findings[0]
+    assert finding.risk_points == 6
+    assert finding.evidence["groups"]["identity_consistency"]["signals"] == (
+        "OCR_BELGIAN_RRN_INVALID",
+    )
+
+
 def _fixture_report(*, markdown: str | None = None) -> OcrReport:
     payload = json.loads((FIXTURE / "document.json").read_text(encoding="utf-8"))
     return OcrReport(

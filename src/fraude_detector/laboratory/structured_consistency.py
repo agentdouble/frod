@@ -211,6 +211,7 @@ def _fact_selectors(name: str, source: str) -> tuple[tuple[str, tuple[str, ...]]
         return (("person_name", ()),)
     if lowered in {"nir", "identifiant_pe", "vin", "immatriculation"}:
         return (
+            ("national_identifier", ()),
             ("other_identifier", ()),
             ("registration_identifier", ()),
             ("professional_identifier", ()),

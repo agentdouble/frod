@@ -405,6 +405,28 @@ def test_invalid_labeled_identifiers_are_reported_but_unlabeled_numbers_are_igno
     }
 
 
+def test_labeled_belgian_rrn_is_validated_without_guessing_unlabeled_numbers() -> None:
+    payload = [
+        [
+            _region("text", "Numéro de registre national : 85.07.30-033.28"),
+            _region("text", "RRN : 85 07 30 033 29"),
+            _region("text", "Référence libre : 17073003384"),
+        ]
+    ]
+
+    checks = analyze_ocr_laboratory(payload, reference_date=date(2026, 7, 30))
+    identifiers = next(check for check in checks if check.code == "ocr_identifiers")
+
+    rrn = [item for item in identifiers.observations if item.code.startswith("OCR_BELGIAN_RRN_")]
+    assert [item.code for item in rrn] == [
+        "OCR_BELGIAN_RRN_VALID",
+        "OCR_BELGIAN_RRN_INVALID",
+    ]
+    assert rrn[0].evidence["value"] == "85073003328"
+    assert rrn[0].evidence["country_code"] == "BE"
+    assert all(item.evidence["value"] != "17073003384" for item in rrn)
+
+
 def test_future_date_is_informational_without_semantic_role() -> None:
     payload = [[_region("text", "Expiration date: 12/31/2030")]]
 

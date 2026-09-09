@@ -448,6 +448,9 @@ def test_explicit_headers_replace_only_other_column_roles(monkeypatch: Any) -> N
 
 
 def test_international_amount_and_date_formats_are_normalized_deterministically() -> None:
+    assert normalize_extracted_value(
+        "national_identifier", "85.07.30-033.28", "fr", "BE"
+    ) == ("85073003328", "normalized")
     assert normalize_extracted_value("monetary_amount", "5.01", None, None) == (
         5.01,
         "normalized",
